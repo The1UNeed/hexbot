@@ -13,11 +13,13 @@ import {
   deleteNotesQuestion,
   DreamingBlock,
   MemoryEditor,
+  MemoryTab,
   noteDay,
   noteDayLabel,
   NotesBlock
 } from './memory'
 import { ModelTab } from './model'
+import { PersonaTab } from './persona'
 import { requirementText, SkillsTab } from './skills'
 import { ToolsTab } from './tools'
 
@@ -112,6 +114,78 @@ describe('memory editor', () => {
     fireEvent.change(screen.getByLabelText('About you'), { target: { value: 'Name: Alex' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     expect(save).toHaveBeenCalledWith('Name: Alex', 'hello')
+  })
+})
+
+describe('soul and memory limits', () => {
+  it('counts the soul against its limit and keeps a soul over it from saving', () => {
+    const save = vi.fn()
+    render(<PersonaTab bot={{ ...bot, persona: 'hello', soul_cap: 10 }} onSave={save} />)
+    expect(screen.getByText(/5 \/ 10 characters/)).toBeVisible()
+    const soul = screen.getByLabelText('Soul')
+    fireEvent.change(soul, { target: { value: 'x'.repeat(11) } })
+    fireEvent.blur(soul)
+    expect(screen.getByRole('alert')).toHaveTextContent('11 / 10 characters · shorten it to save')
+    expect(save).not.toHaveBeenCalled()
+    fireEvent.change(soul, { target: { value: 'x'.repeat(10) } })
+    fireEvent.blur(soul)
+    expect(save).toHaveBeenCalledWith({ persona: 'x'.repeat(10) })
+  })
+
+  it("sets the bot's own limit, refuses one out of range, and empties back to the default", () => {
+    const save = vi.fn()
+    const { rerender } = render(<PersonaTab bot={{ ...bot, soul_cap: 4000 }} onSave={save} />)
+    const limit = screen.getByLabelText('Soul limit')
+    expect(limit).toHaveAttribute('placeholder', '4000')
+    fireEvent.change(limit, { target: { value: '100' } })
+    fireEvent.blur(limit)
+    expect(screen.getByRole('alert')).toHaveTextContent('Use a whole number from 500 to 20,000.')
+    expect(save).not.toHaveBeenCalled()
+    fireEvent.change(limit, { target: { value: '6000' } })
+    fireEvent.blur(limit)
+    expect(save).toHaveBeenCalledWith({ soul_char_limit: 6000 })
+    rerender(<PersonaTab bot={{ ...bot, soul_cap: 6000, soul_char_limit: 6000 }} onSave={save} />)
+    expect(screen.getByText(/0 \/ 6000 characters/)).toBeVisible()
+    fireEvent.change(limit, { target: { value: '' } })
+    fireEvent.blur(limit)
+    expect(save).toHaveBeenLastCalledWith({ soul_char_limit: null })
+  })
+
+  it('leaves the soul unlimited and offers no limit on a daemon from before limits', () => {
+    const save = vi.fn()
+    render(<PersonaTab bot={bot} onSave={save} />)
+    expect(screen.queryByLabelText('Soul limit')).toBeNull()
+    const soul = screen.getByLabelText('Soul')
+    fireEvent.change(soul, { target: { value: 'x'.repeat(5000) } })
+    fireEvent.blur(soul)
+    expect(screen.getByText(/5000 characters/)).toBeVisible()
+    expect(save).toHaveBeenCalledWith({ persona: 'x'.repeat(5000) })
+  })
+})
+
+describe('memory tab', () => {
+  it('keeps the limit, notes and dreaming but leaves editing memory to the Fingerprint tab', async () => {
+    const call = fakeRpc({
+      'hexbot.dreaming.list': () => ({ dreams: [] }),
+      'hexbot.dreaming.status': () => ({ enabled: true, last_error: null, next_run_at: 2 }),
+      'hexbot.memory.notes.list': () => ({
+        cap: 4000,
+        days: [],
+        retention_days: 30,
+        today: '2026-11-04'
+      })
+    })
+
+    const save = vi.fn()
+    render(<MemoryTab bot={{ ...bot, memory_cap: 2200 }} onSave={save} />)
+    expect(await screen.findByText('Dream now')).toBeVisible()
+    expect(screen.queryByLabelText('Bot memory')).toBeNull()
+    expect(call).not.toHaveBeenCalledWith('hexbot.memory.bot.get', expect.anything())
+    const limit = screen.getByLabelText('Memory limit')
+    fireEvent.change(limit, { target: { value: '3000' } })
+    fireEvent.blur(limit)
+    expect(save).toHaveBeenCalledWith({ memory_char_limit: 3000 })
+    setActiveRpc(null)
   })
 })
 
@@ -366,6 +440,27 @@ describe('model tab', () => {
     fireEvent.click(high)
     expect(save).toHaveBeenCalledWith({ reasoning_effort: 'high' })
   })
+
+  it('offers fast mode only on a model that has it, in both directions', async () => {
+    const opus = { fast: true, id: 'claude-opus-5-5', label: 'Claude Opus 5.5', provider: 'anthropic' }
+    const sonnet = { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5', provider: 'anthropic' }
+    fakeRpc({
+      'hexbot.models.list': () => ({ all: [sonnet], curated: [opus] }),
+      'hexbot.providers.list': () => ({ providers: [] })
+    })
+    const save = vi.fn()
+    const onOpus = { ...bot, model: opus.id, provider: 'anthropic' }
+    const { rerender } = render(<ModelTab bot={onOpus} onSave={save} />)
+    const fast = await screen.findByRole('switch', { name: 'Fast mode' })
+    expect(fast).toHaveAttribute('aria-checked', 'false')
+    fireEvent.click(fast)
+    expect(save).toHaveBeenLastCalledWith({ fast: true })
+    rerender(<ModelTab bot={{ ...onOpus, fast: true }} onSave={save} />)
+    fireEvent.click(screen.getByRole('switch', { name: 'Fast mode' }))
+    expect(save).toHaveBeenLastCalledWith({ fast: false })
+    rerender(<ModelTab bot={{ ...onOpus, model: sonnet.id }} onSave={save} />)
+    expect(screen.queryByRole('switch', { name: 'Fast mode' })).toBeNull()
+  })
 })
 
 describe('connectors page', () => {
@@ -429,6 +524,90 @@ describe('connectors page', () => {
       })
     )
     expect(screen.getByLabelText('X search for Scout')).toBeChecked()
+  })
+
+  const xSearch = (configured: boolean) =>
+    connector({
+      fields: [],
+      id: 'x_search',
+      name: 'X search',
+      providers: [
+        { configured, id: 'supergrok', label: 'SuperGrok or X Premium+', sign_in: 'xai-oauth' },
+        { configured: false, id: 'x_api', label: 'X API' }
+      ]
+    })
+
+  it('asks for the X search subscription sign-in before anything else', async () => {
+    fakeRpc({ 'hexbot.connectors.list': () => ({ connectors: [xSearch(false)] }) })
+    render(<ConnectorsTab bot={bot} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Set up' }))
+    // Not signed in: the sign-in is the one primary button.
+    expect(await screen.findByRole('button', { name: 'Sign in with xAI' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Connect and test' })).toBeNull()
+    // The sign-in is the daemon's: there is no value to keep for one bot.
+    expect(screen.queryByLabelText('Bot only')).toBeNull()
+  })
+
+  it('keeps a value for one bot on the provider the other bots use', async () => {
+    const field = (key: string, label: string, provider: string) => ({
+      advanced: false,
+      help: '',
+      hint: null,
+      key,
+      label,
+      provider,
+      secret: true,
+      set: provider === 'x_api',
+      url: null
+    })
+
+    const keyed = connector({
+      fields: [field('X_BEARER_TOKEN', 'Bearer token', 'x_api'), field('XAI_API_KEY', 'xAI key', 'xai')],
+      id: 'x_search',
+      name: 'X search',
+      provider: 'x_api',
+      providers: [
+        { configured: true, id: 'x_api', label: 'X API' },
+        { configured: false, id: 'xai', label: 'xAI API' }
+      ],
+      state: 'error'
+    })
+
+    fakeRpc({ 'hexbot.connectors.list': () => ({ connectors: [keyed] }) })
+    render(<ConnectorsTab bot={bot} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Fix' }))
+    expect(await screen.findByLabelText('Bot only')).toBeVisible()
+    fireEvent.click(screen.getByRole('combobox', { name: 'Provider' }))
+    const xai = await screen.findByRole('option', { name: 'xAI API' })
+    fireEvent.mouseMove(xai)
+    fireEvent.click(xai)
+    // Another provider is set up for every bot, never for one alone.
+    await waitFor(() => expect(screen.queryByLabelText('Bot only')).toBeNull())
+  })
+
+  it('connects X search with a subscription already signed in', async () => {
+    const call = fakeRpc({
+      'hexbot.connectors.list': () => ({ connectors: [xSearch(true)] }),
+      'hexbot.connectors.setup': () => ({
+        connector: xSearch(true),
+        test: { message: 'Signed in.', ok: true }
+      })
+    })
+
+    render(<ConnectorsTab bot={bot} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Set up' }))
+    expect(await screen.findByText('Signed in.')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Connect and test' }))
+    await waitFor(() =>
+      expect(call).toHaveBeenCalledWith('hexbot.connectors.setup', {
+        bot: 'scout',
+        bot_only: false,
+        enable_for_bot: true,
+        id: 'x_search',
+        provider: 'supergrok',
+        values: {}
+      })
+    )
   })
 
   it('keeps the set-up sheet open with the message when the test fails', async () => {
@@ -563,11 +742,13 @@ describe('tools tab', () => {
     expect(screen.getByRole('switch', { name: 'Vision' })).toBeInTheDocument()
   })
 
-  it('leaves Computer use, code and the browser to Settings, Manuals', () => {
+  it('leaves Computer use, code and the browser to Settings, Computers', () => {
     render(<ToolsTab bot={bot} onSave={vi.fn()} />)
+
     for (const name of ['Computer use', 'Code execution', 'Browser']) {
       expect(screen.queryByRole('switch', { name })).not.toBeInTheDocument()
     }
+
     expect(screen.getByText('Working directory')).toBeInTheDocument()
   })
 })

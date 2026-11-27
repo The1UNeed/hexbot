@@ -25,6 +25,8 @@ On iOS 26 the controls use Liquid Glass. Older iOS uses the system blur, and And
 
 There's no App Store or Play Store release yet. For now you build it from the source with Xcode or Android Studio, then pair it like any other device. [Mobile app](/docs/mobile/) walks you through it.
 
+*Update, 11 November: the iPhone app is now open to everyone on [TestFlight](https://testflight.apple.com/join/byKAKWMW). See [Hexbot on Windows, and on every iPhone](/blog/hexbot-on-windows-and-iphone/).*
+
 ## Also in this nightly: a daemon belongs to one person
 
 A daemon is now yours alone, with no invites, roles, or other accounts. Rooms now show the name you gave during Get Started.

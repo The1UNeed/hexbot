@@ -28,7 +28,9 @@ Each bot has a provider and model. The picker lists only providers you have set 
 
 Each bot also has a reasoning level in its Model settings. The list shows only the levels the chosen model supports, for example Low, High and Max for GLM-5.3 Flash. Higher levels think longer before answering and use more tokens. The default is Medium, or the next level up the model supports. Choose it when you create a bot, so the bot's chat starts at that level.
 
-A new model or level applies from the next message, in the chat and in rooms still on the previous one. The first reply after a switch rereads the conversation without the provider's prompt cache, so it costs more than usual.
+Some models also have a **Fast mode** switch in the same settings: Claude Opus 5.5 on Anthropic, and the ChatGPT models that offer a Fast tier. The same model answers faster and costs more for each token, twice the standard price on Claude Opus 5.5, or more of your ChatGPT plan. It applies to the bot's chat, its rooms and the threads it starts there. Scheduled jobs and the heartbeat keep the standard speed. A model without fast mode shows no switch, and a fallback model runs at its standard speed.
+
+A new model, level or speed applies from the next message, in the chat and in rooms still on the previous one, or on no model of their own because the bot had none when they started. The first reply after a switch rereads the conversation without the provider's prompt cache, so it costs more than usual.
 
 LM Studio lists the models available at its local `/v1/models` endpoint when you open its model picker. Start LM Studio's server before choosing a model. If discovery fails, the daemon's current configured model stays in the list.
 
@@ -81,7 +83,7 @@ Model names, prices, context limits, and availability can change. Check the prov
 
 ## Model credentials and connectors
 
-A model provider generates replies. Web search, image generation, and premium voice are separate [connectors](/docs/tools-and-skills/) with their own credentials and per-bot switches. If a bot can reply but cannot use one of those tools, check its Connectors settings instead of replacing the model key.
+A model provider generates replies. Web search, Google's and Microsoft's services, Notion, GitHub, and X search are separate [connectors](/docs/tools-and-skills/) with their own credentials and per-bot switches. If a bot can reply but cannot use one of those tools, check its Connectors settings instead of replacing the model key.
 
 ## Understand charges
 
@@ -89,7 +91,7 @@ Providers commonly charge for input and output tokens. Tool results, conversatio
 
 Hexbot does not add a fee to provider requests. Your provider dashboard is the source of truth for invoices and quotas.
 
-Rooms, private teammate exchanges, delegated subtasks, scheduled jobs, and dreaming can all make additional model requests. Settings, Usage reports token counts and estimated costs; estimates may differ from provider invoices. Room limits and a daily budget for each bot cap what rooms spend.
+Rooms, private teammate exchanges, delegated subtasks, scheduled jobs, and dreaming can all make additional model requests. Settings, Usage charts token counts and estimated costs over the last day, week, month or quarter, or all time, split by bot, by model, or by where they went (chats, rooms, conversations between bots, scheduled jobs, subagents, heartbeats and dreaming), with your prompt cache hit rate; estimates may differ from provider invoices. Room limits and a daily budget for each bot cap what rooms spend.
 
 ## If a provider fails
 

@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
+import * as Clipboard from 'expo-clipboard'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { Linking, StyleSheet, View } from 'react-native'
 import {
   Banner,
@@ -6,22 +7,32 @@ import {
   Button,
   ChoiceRow,
   confirm,
+  FacePicker,
+  type FaceStyle,
   Field,
   Form,
   Group,
   Layer,
+  moodForStatus,
+  PageLook,
   radius,
+  randomFace,
   Row,
-  Segmented,
+  formatAgo,
+  type SheetAction,
   SwitchRow,
   Text,
   useTheme
 } from './ui'
 import { Licenses } from './Licenses'
-import { ModelPill } from './screens/ModelMenu'
+import { Usage } from './Usage'
+import { ModelPill, useCurrentModel } from './screens/ModelMenu'
+import { SubscriptionSignIn } from './screens/SubscriptionSignIn'
 import {
   type Bot,
+  type Computer,
   type Connector,
+  type DiscordMode,
   type Device,
   type PasswordLogin,
   type Plugin,
@@ -31,13 +42,35 @@ import {
   type Section,
   type SkillRequirement
 } from './core/types'
-import { botPhoto } from './core/avatar'
+import { botPhoto, refusesFace } from './core/avatar'
+import { currentComputers, latestReads } from './core/computer'
 import { scheduleChange } from './core/jobs'
 import { requirementText } from './core/skills'
-import { pluginRows } from '../../web/src/lib/plugin-rows'
+import {
+  ACCOUNT_NAMES,
+  accountProvider,
+  accountSiblings,
+  canGive,
+  CONNECTOR_SHELVES,
+  discordBotText,
+  isConnected,
+  isDiscord,
+  pluginRows,
+  shelfOf,
+  shownBots,
+  withWaiting
+} from '../../web/src/lib/plugin-rows'
+import { DISCORD_MODES, discordModeLabel, discordModeListens } from '../../web/src/lib/discord-modes'
+import { skillContent } from '../../web/src/lib/skill-file'
+import type { DaemonUpdateOutcome } from '../../web/src/lib/types'
+import { outcomeFailure } from '../../web/src/lib/update-outcome'
+import { BrandSignInButton } from './ui/BrandSignInButton'
 import { PluginIcon } from './ui/PluginIcon'
-import { isOpenRoom } from './core/routes'
-import { pickFile } from './core/pickFile'
+import { PluginAccess } from './screens/PluginAccess'
+import { loadPluginsTable, savePluginsTable } from './core/storage'
+import { botStatusOf, isOpenRoom } from './core/routes'
+import { allowPush, pushPermission, testNotification } from './core/push'
+import { FaceEditor } from './FaceEditor'
 import { aboutFile, DocumentPanel, FingerprintCards } from './Fingerprint'
 import type { useMobile } from './core/useMobile'
 export type Panel = {
@@ -46,11 +79,15 @@ export type Panel = {
     | 'activity'
     | 'bot'
     | 'bot-create'
+    | 'computer'
     | 'connect'
     | 'connector'
     | 'connectors'
     | 'devices'
+    | 'discord'
     | 'dreams'
+    | 'experimental'
+    | 'face'
     | 'heartbeat'
     | 'job'
     | 'job-create'
@@ -59,6 +96,7 @@ export type Panel = {
     | 'mcp'
     | 'memory'
     | 'network'
+    | 'notifications'
     | 'password'
     | 'password-create'
     | 'passwords'
@@ -83,6 +121,7 @@ export type Panel = {
   title?: string
 }
 type Values = Record<string, string | boolean>
+
 type RowData = Record<string, unknown>
 const modes = [
   { id: 'inherit', label: 'Default' },
@@ -93,7 +132,7 @@ const modes = [
 const modeHelp: Record<string, string> = {
   inherit: 'Uses the approval setting of this daemon.',
   smart:
-    "Works freely in the workspace. Steps outside it are checked by the bot's model; only risky ones ask first.",
+    'Works freely in the workspace. Steps outside it are checked by a model; only risky ones ask first.',
   manual: 'Reads freely. Every file change and command asks first.',
   off: 'No prompts and no sandbox.'
 }
@@ -102,14 +141,14 @@ const TOOLS: { key: string; label: string; description: string }[] = [
   {
     key: 'terminal',
     label: 'Terminal',
-    description: 'Run commands in a sandbox. Leaving it is checked first, except in Bypass.'
+    description: 'Run commands on the computers it may use. On the computer Hexbot runs on they run in a sandbox, and leaving it is checked first, except in Bypass. If Hexbot runs on Windows, commands on that computer run only in Bypass.'
   },
   { key: 'files', label: 'Files', description: 'Read, write and search files in the workspace.' },
   { key: 'vision', label: 'Vision', description: 'Look at images you attach.' },
   {
     key: 'voice',
     label: 'Voice',
-    description: 'Speak replies with the built-in voice. Premium voice is a connector.'
+    description: 'Speak replies with the built-in voice.'
   },
   {
     key: 'message_bots',
@@ -152,39 +191,366 @@ const PASSWORD_STORE_TEXT: Record<string, string> = {
   locked: "Hexbot can't read the vault's key. Unlock the keychain on the daemon's computer.",
   secret_service: "The vault's key is in the keyring of the daemon's computer."
 }
-/** How big the bots' computer is; a new size applies when it is reset. Every bot has it. */
-function ComputerSize({ mobile }: { mobile: ReturnType<typeof useMobile> }) {
+const COMPUTER_STATE: Record<string, string> = {
+  absent: 'Made the first time a bot needs it',
+  error: 'Stopped with an error',
+  repairing: 'Repairing…',
+  resetting: 'Resetting…',
+  restarting: 'Restarting…',
+  running: 'On',
+  starting: 'Starting…',
+  stopped: 'Off',
+  stopping: 'Turning off…'
+}
+const COMPUTER_BUSY = ['repairing', 'resetting', 'restarting', 'starting', 'stopping']
+/** The bots' one shared computer: its power, size and reset. */
+function ComputerUse({ mobile }: { mobile: ReturnType<typeof useMobile> }) {
   const status = mobile.computer
   const [error, setError] = useState<string | null>(null)
+  const call = (method?: string, params?: Record<string, unknown>) => {
+    setError(null)
+    void mobile.computerCall(method, params).catch((e: unknown) => setError(String(e)))
+  }
+  // Read again on every (re)connection: an error or grants changed while
+  // offline don't stay on screen.
   useEffect(() => {
-    void mobile.computerCall().catch((e: unknown) => setError(String(e)))
-  }, [])
-  if (!status?.sizes) return error ? <Text tone="danger">{error}</Text> : null
+    if (mobile.connection === 'connected') call()
+  }, [mobile.connection, mobile.connects])
+  const offline = mobile.connection !== 'connected'
+  const busy = !!status && COMPUTER_BUSY.includes(status.state)
+  const running = status?.state === 'running'
+  if (!status)
+    return error ? <Banner message={error} tone="danger" testID="computer-error" /> : null
   return (
-    <Group
-      title="Computer use"
-      footer={
-        status.state === 'absent'
-          ? 'Every bot runs code, browses and uses apps on it. Used when the computer is made.'
-          : "Every bot runs code, browses and uses apps on it. A new size applies after Reset, on the bots' computer card."
-      }
-    >
-      {status.sizes.map(size => (
-        <ChoiceRow
-          key={size.name}
-          title={`${size.name[0]!.toUpperCase()}${size.name.slice(1)}`}
-          subtitle={`${size.cpu} CPUs, ${size.memory_gb} GB`}
-          selected={status.size === size.name}
-          disabled={mobile.connection !== 'connected'}
-          testID={`computer-size-${size.name}`}
-          onPress={() =>
-            void mobile
-              .computerCall('hexbot.computer.configure', { size: size.name })
-              .catch((e: unknown) => setError(String(e)))
+    <>
+      {error || status.error ? (
+        <Banner message={error ?? String(status.error)} tone="danger" testID="computer-error" />
+      ) : null}
+      {status.available === false ? (
+        <Group title="Set up">
+          <Row
+            title="Your bots need Cua for their computer"
+            subtitle="Install Cua on the daemon's computer with uv tool install cua, and start Docker."
+            subtitleLines={4}
+            testID="computer-setup"
+          />
+        </Group>
+      ) : (
+        <Group title="Computer">
+          <Row
+            title="Status"
+            meta={COMPUTER_STATE[status.state] ?? status.state}
+            subtitle={
+              status.state === 'starting'
+                ? 'The first start downloads the computer, a few GB.'
+                : "Open a chat's computer button to watch it or use it."
+            }
+            subtitleLines={3}
+            testID="computer-status"
+            trailing={
+              <View style={styles.controls}>
+                {running ? (
+                  <>
+                    <Button
+                      disabled={busy || offline}
+                      label="Restart"
+                      onPress={() => call('hexbot.computer.restart')}
+                      size="small"
+                      testID="computer-restart"
+                      variant="secondary"
+                    />
+                    <Button
+                      disabled={busy || offline}
+                      label="Turn off"
+                      onPress={() => call('hexbot.computer.stop')}
+                      size="small"
+                      testID="computer-stop"
+                      variant="secondary"
+                    />
+                  </>
+                ) : (
+                  <Button
+                    busy={busy}
+                    disabled={busy || offline}
+                    label="Turn on"
+                    onPress={() => call('hexbot.computer.start')}
+                    size="small"
+                    testID="computer-start"
+                  />
+                )}
+              </View>
+            }
+          />
+          <Row
+            destructive
+            disabled={busy || offline || status.state === 'absent'}
+            onPress={() =>
+              confirm(
+                'Reset',
+                "Everything on your bots' computer is erased, for every bot, and they get a fresh one.",
+                () => call('hexbot.computer.reset')
+              )
+            }
+            subtitle="Erase it and start fresh, for every bot."
+            testID="computer-reset"
+            title="Reset"
+          />
+        </Group>
+      )}
+      {status.available !== false && status.sizes ? (
+        <Group
+          title="Size"
+          footer={
+            status.state === 'absent'
+              ? 'Used when the computer is made.'
+              : 'A new size applies after Reset.'
           }
-        />
+        >
+          {status.sizes.map(size => (
+            <ChoiceRow
+              key={size.name}
+              title={`${size.name[0]!.toUpperCase()}${size.name.slice(1)}`}
+              subtitle={`${size.cpu} CPUs, ${size.memory_gb} GB`}
+              selected={status.size === size.name}
+              disabled={offline}
+              testID={`computer-size-${size.name}`}
+              onPress={() => call('hexbot.computer.configure', { size: size.name })}
+            />
+          ))}
+        </Group>
+      ) : null}
+    </>
+  )
+}
+/**
+ * Settings, Computers, as on the web: every computer bots can use
+ * (`machines.rs`) and the bots that work on each one. This
+ * phone can't be one of them; a desktop app offers its own computer.
+ */
+function Computers({ mobile }: { mobile: ReturnType<typeof useMobile> }) {
+  // What an action here failed with; how reading the list went is in
+  // `computersListed`, which an overtaken read never sets.
+  const [error, setError] = useState<string | null>(null)
+  // Only the latest action's failure shows: one overtaken by a newer action,
+  // or from before a reconnect, isn't about what's on screen now.
+  const actions = useRef(latestReads()).current
+  const call = (method?: string, params?: Record<string, unknown>) => {
+    setError(null)
+    const isLatest = actions.start()
+    void mobile
+      .computersCall(method, params)
+      .catch((e: unknown) => isLatest() && setError(e instanceof Error ? e.message : String(e)))
+  }
+  // Read again on every (re)connection: an error or grants changed while
+  // offline don't stay on screen.
+  useEffect(() => {
+    actions.drop()
+    if (mobile.connection === 'connected') call()
+  }, [mobile.connection, mobile.connects])
+  const offline = mobile.connection !== 'connected'
+  // Only this connection's list: grants may have changed while away, and a
+  // switch must not show (or change from) what was true before.
+  const listed = mobile.computersListed
+  const list = currentComputers(listed, mobile.computers)
+  // What actions left the user to do (Forget on a computer that didn't
+  // confirm): kept for this daemon until each one's OK, wherever the user
+  // went meanwhile.
+  const noticeBanner = mobile.computerNotices.map(notice => (
+    <Banner
+      actionLabel="OK"
+      key={notice}
+      message={notice}
+      onAction={() => mobile.dismissComputerNotice(notice)}
+      tone="warning"
+      testID="computers-notice"
+    />
+  ))
+  // A daemon from before computers: its bots' computer still answers, so its
+  // controls stay; choosing bots for each computer waits for an update there.
+  if (listed === 'older')
+    return (
+      <View style={styles.inset}>
+        {noticeBanner}
+        <Text tone="muted" variant="footnote">
+          Choosing bots for each computer needs a newer Hexbot on the daemon's computer.
+        </Text>
+        <ComputerUse mobile={mobile} />
+      </View>
+    )
+  if (!list) {
+    const failed = error ?? (typeof listed === 'object' ? listed.error : null)
+    return (
+      <>
+        {noticeBanner}
+        {failed ? (
+          <Banner
+            actionLabel="Try again"
+            message={failed}
+            onAction={() => call()}
+            tone="danger"
+            testID="computers-error"
+          />
+        ) : (
+          <Text tone="muted" testID="computers-loading" variant="footnote">
+            {offline ? 'Your computers show here once Hexbot reconnects.' : 'Loading computers…'}
+          </Text>
+        )}
+      </>
+    )
+  }
+  const vm = list.find(c => c.kind === 'vm')
+  const host = list.find(c => c.kind === 'host')
+  const devices = list.filter(c => c.kind === 'device')
+  const label = (c: Computer) => (c.kind === 'vm' ? "The bots' computer" : c.name)
+  // One switch per bot: the computer as one of its environments, where its
+  // terminal works. Its screen comes with the Computer Use plugin.
+  const bots = (c: Computer) =>
+    c.terminal.available || c.terminal.bots.length ? (
+      <Group
+        footer="With the Computer Use plugin, a bot also sees and uses this computer's screen where it is shared."
+        title={`${label(c)} · Works here`}
+      >
+        {mobile.bots.map(b => {
+          const on = c.terminal.bots.includes(b.name)
+          return (
+            <SwitchRow
+              disabled={offline || (!on && !c.terminal.available)}
+              key={b.name}
+              onValueChange={next =>
+                call('hexbot.computers.grant', { computer: c.id, capability: 'terminal', bot: b.name, on: next })
+              }
+              subtitle={c.desktop.bots.includes(b.name) ? 'Computer Use' : undefined}
+              testID={`computers-${c.id}-terminal-${b.name}`}
+              title={b.display_name}
+              value={on}
+            />
+          )
+        })}
+      </Group>
+    ) : null
+  const apps = (c: Computer) => {
+    const rows = Object.entries(c.apps).flatMap(([bot, names]) =>
+      names.map(app => ({ app, bot }))
+    )
+    return rows.length ? (
+      <Group
+        title={`Always allowed apps on ${label(c)}`}
+        footer="A bot asks before it uses any other app here, except in Bypass."
+      >
+        {rows.map(({ app, bot }) => (
+          <Row
+            key={`${bot}-${app}`}
+            subtitle={mobile.bots.find(b => b.name === bot)?.display_name ?? bot}
+            testID={`computers-app-${c.id}-${bot}-${app}`}
+            title={app}
+            trailing={
+              <Button
+                disabled={offline}
+                label="Remove"
+                onPress={() => call('hexbot.computers.remove_app', { computer: c.id, bot, app })}
+                size="small"
+                testID={`computers-app-remove-${c.id}-${bot}-${app}`}
+                variant="secondary"
+              />
+            }
+          />
+        ))}
+      </Group>
+    ) : null
+  }
+  return (
+    <>
+      {noticeBanner}
+      {error ? <Banner message={error} tone="danger" testID="computers-error" /> : null}
+      {vm ? (
+        <>
+          <Group
+            title="The bots' computer"
+            footer="A Linux desktop of their own, separate from yours, that every bot shares. Suggested: easy to reset, so commands run there without a sandbox and Auto checks only risky ones."
+          >
+            <SwitchRow
+              disabled={offline}
+              onValueChange={next => call('hexbot.computers.set', { computer: 'vm', on: next })}
+              testID="computers-vm-on"
+              title="Use the bots' computer"
+              value={vm.on}
+            />
+          </Group>
+          {vm.on ? (
+            <>
+              <ComputerUse mobile={mobile} />
+              {bots(vm)}
+            </>
+          ) : null}
+        </>
+      ) : null}
+      {host ? (
+        <>
+          <Group
+            title={`${host.name}, where Hexbot runs`}
+            footer={
+              host.terminal.sandboxed
+                ? 'The computer Hexbot runs on. Commands run in the sandbox in Auto and Manual.'
+                : 'The computer Hexbot runs on. Hexbot has no sandbox on Windows yet, so its terminal works only in Bypass.'
+            }
+          >
+            <SwitchRow
+              disabled={offline || (!host.desktop.on && !host.desktop.available)}
+              onValueChange={next => call('hexbot.computers.set', { computer: 'host', desktop: next })}
+              subtitle={
+                host.desktop.note ??
+                'Bots with Computer Use see its screen, click and type in the apps you allow (in Bypass, without asking), never in terminals, editors or Hexbot.'
+              }
+              testID="computers-host-desktop"
+              title="Computer Use here"
+              value={!!host.desktop.on}
+            />
+          </Group>
+          {bots(host)}
+          {apps(host)}
+        </>
+      ) : null}
+      <Group
+        title="Your computers"
+        footer="Online while Hexbot is open there. A computer is added when you let bots use it in Hexbot on that computer; this phone can't be one."
+      >
+        {devices.length ? (
+          devices.map(d => (
+            <Row
+              key={d.id}
+              meta={d.online ? 'Online' : 'Offline'}
+              subtitle={d.os || undefined}
+              testID={`computers-device-${d.id}`}
+              title={d.name}
+              trailing={
+                <Button
+                  disabled={offline}
+                  label="Forget"
+                  onPress={() =>
+                    confirm(
+                      `Forget ${d.name}?`,
+                      'Bots lose it and its allowed apps, and what they are doing there stops. It shows again, with no bots, when Hexbot there connects.',
+                      () => call('hexbot.computers.forget', { computer: d.id })
+                    )
+                  }
+                  size="small"
+                  testID={`computers-forget-${d.id}`}
+                  variant="secondary"
+                />
+              }
+            />
+          ))
+        ) : (
+          <Row testID="computers-none" title="None yet" subtitle="Open Hexbot on another computer and let bots use it there." subtitleLines={3} />
+        )}
+      </Group>
+      {devices.map(d => (
+        <View key={d.id}>
+          {bots(d)}
+          {apps(d)}
+        </View>
       ))}
-    </Group>
+    </>
   )
 }
 export function Management({
@@ -194,7 +560,9 @@ export function Management({
   onNavigate,
   mobile,
   onSaved,
-  onOpenRoom
+  onOpenRoom,
+  frame,
+  active = true
 }: {
   panel: Panel | null
   onClose: () => void
@@ -205,6 +573,13 @@ export function Management({
   mobile: ReturnType<typeof useMobile>
   onSaved?: () => void
   onOpenRoom?: (room: Room) => void
+  /**
+   * Draws the page in place of a front card: on iOS the page is pushed on
+   * the system's navigation stack, which puts its title and action in the bar.
+   */
+  frame?: (page: { title: string; action?: SheetAction; children: ReactNode }) => ReactNode
+  /** The page is on top of the stack; leave out for a front card. */
+  active?: boolean
 }) {
   const theme = useTheme()
   const [rows, setRows] = useState<RowData[]>([])
@@ -215,6 +590,15 @@ export function Management({
   const [notice, setNotice] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [loadedPanel, setLoadedPanel] = useState<Panel | null>(null)
+  // The new-bot card's shapes and colours, behind its Change face button.
+  const [choosingFace, setChoosingFace] = useState(false)
+  // Experimental, on this phone only: Plugins as a table in place of the list.
+  const [pluginsTable, setPluginsTable] = useState(false)
+  useEffect(() => {
+    void loadPluginsTable()
+      .then(setPluginsTable)
+      .catch(() => {})
+  }, [requested?.kind])
   // While a closed card slides away it keeps showing what it showed.
   const panel = requested ?? loadedPanel
   const panelLoading = loading || loadedPanel !== panel
@@ -230,6 +614,17 @@ export function Management({
     ? (mobile.rooms.find(r => r.id === panel.room!.id) ?? panel.room)
     : undefined
   const kind = panel?.kind ?? ''
+  // The bot's chosen model, for what it offers beyond its levels.
+  const chosenModel = useCurrentModel(mobile.models, {
+    provider: str(values.provider),
+    model: str(values.model),
+    reasoning: ''
+  })
+  // A new bot's face, kept with its draft; typing a name never changes it.
+  const newFace: FaceStyle | null =
+    kind === 'bot-create' && values.face_shape && values.face_color
+      ? { color: str(values.face_color), shape: str(values.face_shape) }
+      : null
   // The primary bot first, as on the web.
   const pluginRoster: PluginBot[] = [...mobile.bots]
     .sort((a, b) => Number(Boolean(b.primary)) - Number(Boolean(a.primary)))
@@ -253,7 +648,9 @@ export function Management({
           'jobs',
           'dreams',
           'heartbeat',
+          'discord',
           'network',
+          'notifications',
           'usage',
           'updates',
           'plugins',
@@ -269,7 +666,8 @@ export function Management({
       if (current === epoch.current) setBusy(false)
     }
   }
-  const load = async () => {
+  /** Reads the page's data; `keep` leaves what was typed but not saved. */
+  const load = async (keep = false) => {
     const current = epoch.current
     let data: RowData[] = []
     let fields: Values = {}
@@ -284,8 +682,12 @@ export function Management({
             .map(([k, v]) => [k, typeof v === 'number' ? String(v) : v])
         ) as Values
         break
-      case 'bot-create':
+      case 'bot-create': {
+        // A face picked once for this draft, none of the other bots has; a name never changes it.
+        const face = randomFace(mobile.bots.flatMap(b => [b.face, b.kept_face]))
         fields = {
+          face_color: face.color,
+          face_shape: face.shape,
           name: '',
           display_name: '',
           title: '',
@@ -296,6 +698,7 @@ export function Management({
           reasoning_effort: ''
         }
         break
+      }
       case 'bot':
         if (bot)
           fields = {
@@ -307,10 +710,13 @@ export function Management({
             provider: bot.provider ?? '',
             model: bot.model ?? '',
             reasoning_effort: bot.reasoning_effort ?? '',
+            fast: bot.fast ?? false,
             approval_mode: bot.approval_mode ?? 'inherit',
             workdir: bot.workdir ?? '',
             dream_enabled: bot.dream_enabled,
-            notify: bot.notify ?? true
+            notify: bot.notify ?? true,
+            soul_char_limit: str(bot.soul_char_limit),
+            memory_char_limit: str(bot.memory_char_limit)
           }
         // The memory card shows the day it changed; the card opens without it if the read fails.
         if (bot) detail = await rpc('hexbot.memory.bot.get', { bot: bot.name }).catch(() => ({}))
@@ -366,9 +772,15 @@ export function Management({
         data = (await rpc<{ devices: Device[] }>('hexbot.devices.list'))
           .devices as unknown as RowData[]
         break
-      case 'usage':
-        detail = await rpc('hexbot.usage.summary')
+      case 'notifications': {
+        const [{ devices }, permission] = await Promise.all([
+          rpc<{ devices: Device[] }>('hexbot.devices.list'),
+          pushPermission()
+        ])
+        data = devices.filter(d => d.push) as unknown as RowData[]
+        detail = permission as unknown as RowData
         break
+      }
       case 'connectors':
         data = (
           await rpc<{ connectors: Connector[] }>(
@@ -378,7 +790,19 @@ export function Management({
         ).connectors as unknown as RowData[]
         break
       case 'connector':
-        fields = { provider: str(panel?.data?.provider) }
+        // As on the web: the provider in use, else the first one.
+        fields = {
+          provider:
+            str(panel?.data?.provider) ||
+            str((panel?.data?.providers as RowData[] | undefined)?.[0]?.id)
+        }
+        // A Google or Microsoft connector: the account's other connectors,
+        // to connect with the same sign-in, and the primary bot to give it to.
+        // With plugins as a table no bot is chosen here: it is ticked there.
+        if (panel?.data?.account) {
+          detail = { plugins: pluginRows(await rpc<PluginsList>('hexbot.plugins.list')) }
+          if (!bot && pluginRoster[0] && !pluginsTable) fields[`give:${pluginRoster[0].name}`] = true
+        }
         break
       case 'plugins':
         data = pluginRows(await rpc<PluginsList>('hexbot.plugins.list')) as unknown as RowData[]
@@ -443,16 +867,32 @@ export function Management({
         fields = {
           content: str(result.content),
           name: str(result.name),
-          category: str(panel?.data?.category)
+          category: str(panel?.data?.category),
+          source: str(result.source)
         }
         break
       }
       case 'skill-create':
-        fields = { name: '', category: '', content: '---\ndescription: \n---\n\n' }
+        fields = { name: '', description: '', instructions: '' }
         break
       case 'dreams':
         data = (await rpc<{ dreams: RowData[] }>('hexbot.dreaming.list', { bot: bot?.name })).dreams
         detail = await rpc('hexbot.dreaming.status', { bot: bot?.name })
+        break
+      case 'discord':
+        try {
+          const got = await rpc<{ discord: RowData | null; enabled?: boolean }>(
+            'hexbot.discord.get',
+            { bot: bot?.name }
+          )
+          // Discord is turned on for a bot in Plugins; an older daemon says nothing.
+          detail = { ...(got.discord ?? {}), off: got.enabled === false }
+        } catch (e) {
+          // A daemon from before Discord has no such method.
+          if (!/unknown method/i.test(e instanceof Error ? e.message : String(e))) throw e
+          detail = { unsupported: true }
+        }
+        fields = { token: '' }
         break
       case 'heartbeat':
         detail = await rpc('hexbot.heartbeat.status', { bot: bot?.name })
@@ -515,7 +955,7 @@ export function Management({
       setRows(data)
       // A plugin card reloads after each action; keep values typed but not
       // yet saved. It opens empty, and Save values clears them itself.
-      if (kind !== 'plugin') setValues(fields)
+      if (kind !== 'plugin' && !keep) setValues(fields)
       setExtra(detail)
     }
   }
@@ -545,6 +985,18 @@ export function Management({
     }
     // A panel is a snapshot; changing it loads a fresh form.
   }, [requested])
+  // A page on the stack stays while one is pushed over it, so it reads again
+  // when it is back on top: a provider just connected shows as connected.
+  const wasActive = useRef(active)
+  useEffect(() => {
+    const back = active && !wasActive.current
+    wasActive.current = active
+    if (!back || !requested || panelLoading) return
+    const current = epoch.current
+    void load(true).catch(e => {
+      if (current === epoch.current) setError(e instanceof Error ? e.message : String(e))
+    })
+  }, [active])
   // A heartbeat starts or ends, or the bot changes its checklist, while the card is open.
   useEffect(() => {
     if (kind !== 'heartbeat' || panelLoading) return
@@ -565,6 +1017,90 @@ export function Management({
       newer = true
     }
   }, [mobile.heartbeats])
+  // A bot's Discord connection comes online, drops, or joins a room while its
+  // page, or the Discord plugin's, is open.
+  useEffect(() => {
+    const discordPlugin = kind === 'plugin' && panel?.data?.kind === 'connector' && panel?.data?.id === 'discord'
+    if ((kind !== 'discord' && !discordPlugin) || panelLoading) return
+    const current = epoch.current
+    void load(true).catch(e => {
+      if (current === epoch.current) setError(e instanceof Error ? e.message : String(e))
+    })
+  }, [mobile.discordChanges])
+  // A connector panel reads its row again after a sign-in or sign-out, so
+  // it shows who is signed in and offers the right actions.
+  const reloadConnector = async () => {
+    if (kind !== 'connector' || !panel) return
+    const { connectors } = await rpc<{ connectors: Connector[] }>(
+      'hexbot.connectors.list',
+      bot ? { bot: bot.name } : {}
+    )
+    const fresh = connectors.find(c => c.id === str(panel.data?.id))
+    setExtra({})
+    if (fresh) onNavigate({ ...panel, data: fresh as unknown as RowData })
+  }
+  // What the form holds now, for a sign-in that finishes later.
+  const latestValues = useRef(values)
+  latestValues.current = values
+  // A sign-in finished: each connector it connected goes to the bots chosen
+  // before it, and a bot that was waiting for one keeps it. A sign-in that
+  // renews one that stopped working changes no bots.
+  const signedIn = async (next: RowData) => {
+    setNotice(
+      Array.isArray(next.skipped) && next.skipped.length
+        ? str(next.message)
+        : next.email
+          ? `Signed in as ${str(next.email)}`
+          : str(next.message)
+    )
+    const account = (panel?.data as unknown as Connector | undefined)?.account
+    // From a bot's own plugins, that bot gets it, as on the web.
+    const give = bot
+      ? [bot.name]
+      : pluginsTable
+        ? []
+        : pluginRoster.filter(b => latestValues.current[`give:${b.name}`] === true).map(b => b.name)
+    if (!account?.signed_in && give.length) {
+      // An older daemon connects the one connector and does not say so.
+      const ids = Array.isArray(next.connected) ? next.connected.map(str) : [str(panel?.data?.id)]
+      const plugins = pluginRows(await rpc<PluginsList>('hexbot.plugins.list'))
+      for (const id of ids) {
+        const item = plugins.find(p => p.kind === 'connector' && p.id === id)
+        await rpc('hexbot.plugins.set_bots', {
+          kind: 'connector',
+          id,
+          bots: item ? withWaiting(item, [...new Set([...item.bots, ...give])]) : give
+        })
+      }
+    }
+    void mobile.refresh()
+    await reloadConnector()
+  }
+  // A Google or Microsoft sign-in from a connector panel finishes on its
+  // own: the daemon is asked until it says done.
+  const signingIn =
+    kind === 'connector' && extra.account_login === true && extra.status === 'pending'
+  // The sign-in still waiting, so an answer for one the user stopped is dropped.
+  const waitingLogin = useRef<unknown>(null)
+  waitingLogin.current = signingIn ? extra.login_id : null
+  useEffect(() => {
+    if (!signingIn) return
+    const current = epoch.current
+    const timer = setInterval(() => {
+      void rpc<RowData>('hexbot.accounts.sign_in_poll', { login_id: extra.login_id })
+        .then(next => {
+          if (current !== epoch.current || waitingLogin.current !== next.login_id) return
+          setExtra(e => ({ ...e, ...next }))
+          if (next.status === 'done') {
+            void signedIn(next).catch(e => setError(e instanceof Error ? e.message : String(e)))
+          } else if (next.status === 'error' || next.status === 'cancelled')
+            // Cancelled elsewhere: another sign-in replaced it, or Sign out ended it.
+            setError(str(next.message))
+        })
+        .catch(() => {})
+    }, 2000)
+    return () => clearInterval(timer)
+  }, [signingIn, extra.login_id])
   const set = (key: string, value: string | boolean) => setValues(v => ({ ...v, [key]: value }))
   const field = (
     key: string,
@@ -583,6 +1119,18 @@ export function Management({
       multiline={multiline}
       hint={hint}
       secureTextEntry={secret}
+      // An empty row still reads as a field, as the desktop's placeholders do.
+      placeholder={
+        /_char_limit$/.test(key) && kind === 'bot'
+          ? 'Default'
+          : /budget|turns_per/.test(key)
+            ? kind === 'room'
+              ? 'Daemon setting'
+              : 'No limit'
+            : kind === 'settings'
+              ? 'Not set'
+              : undefined
+      }
       autoCapitalize="none"
       autoCorrect={!secret && multiline}
       maxLength={maxLength}
@@ -638,15 +1186,17 @@ export function Management({
     const options = modes.filter(m => inherit || m.id !== 'inherit')
     const selected = str(values[key]) || (inherit ? 'inherit' : 'smart')
     return (
-      <Group title="Approvals" footer={modeHelp[selected]}>
-        <View style={styles.segment}>
-          <Segmented
-            onChange={value => set(key, value)}
-            options={options.map(m => ({ key: m.id, label: m.label }))}
-            selected={selected}
-            testID="mode"
+      <Group title="Approvals">
+        {options.map(m => (
+          <ChoiceRow
+            key={m.id}
+            title={m.label}
+            subtitle={modeHelp[m.id]}
+            selected={selected === m.id}
+            onPress={() => set(key, m.id)}
+            testID={`mode-${m.id}`}
           />
-        </View>
+        ))}
       </Group>
     )
   }
@@ -671,42 +1221,59 @@ export function Management({
               : {}),
             default_model: values.default_model || null,
             fallback_model: values.fallback_model || null,
+            // A daemon from before the review model has no such setting.
+            ...(mobile.settings && 'review_model' in mobile.settings
+              ? { review_model: values.review_model || null }
+              : {}),
             bot_daily_token_budget: num(values.bot_daily_token_budget),
             room_bot_turns_per_human_turn: num(values.room_bot_turns_per_human_turn),
-            room_budget_tokens_per_human_turn: num(values.room_budget_tokens_per_human_turn)
+            room_budget_tokens_per_human_turn: num(values.room_budget_tokens_per_human_turn),
+            // A daemon from before the limits has no such settings.
+            ...(typeof mobile.settings?.soul_char_limit === 'number'
+              ? {
+                  soul_char_limit: num(values.soul_char_limit),
+                  memory_char_limit: num(values.memory_char_limit)
+                }
+              : {})
           }
         })
       content = (
         <>
           {chooseMode('approval_mode', false)}
           <Group title="Models" footer="Provider/model, such as anthropic/claude-sonnet-5.">
-            <View style={styles.inset}>
-              {field('default_model', 'Default for new bots')}
-              {field('fallback_model', 'Fallback when a provider fails')}
-            </View>
+            {field('default_model', 'Default for new bots')}
+            {field('fallback_model', 'Fallback when a provider fails')}
+            {mobile.settings && 'review_model' in mobile.settings
+              ? field(
+                  'review_model',
+                  'Review model for Auto',
+                  false,
+                  "Reviews each step outside the sandbox. Empty uses each bot's own model."
+                )
+              : null}
           </Group>
           {field('workspace_dir', 'Workspace on the daemon')}
           <Group title="Budgets" footer="Leave a budget empty for no limit.">
-            <View style={styles.inset}>
-              {field('bot_daily_token_budget', 'Daily tokens for each bot')}
-              {field('room_bot_turns_per_human_turn', 'Bot replies per room message')}
-              {field('room_budget_tokens_per_human_turn', 'Tokens per room message')}
-            </View>
+            {field('bot_daily_token_budget', 'Daily tokens for each bot')}
+            {field('room_bot_turns_per_human_turn', 'Bot replies per room message')}
+            {field('room_budget_tokens_per_human_turn', 'Tokens per room message')}
           </Group>
           <Group
             title="Dreaming"
             footer="Each night, bots fold the day's conversations into their memory."
           >
             {toggle('dream_enabled', 'Dreaming')}
-            <View style={styles.inset}>
-              {field(
-                'dream_time',
-                'Dream time',
-                false,
-                '24-hour time on the daemon, such as 03:00'
-              )}
-            </View>
+            {field('dream_time', 'Dream time', false, '24-hour time on the daemon, such as 03:00')}
           </Group>
+          {typeof mobile.settings?.soul_char_limit === 'number' ? (
+            <Group
+              title="Limits"
+              footer="The most characters a bot's soul and memory can hold, from 500 to 20,000. Both sit in every message a bot sends, so longer ones cost more. A bot can have its own."
+            >
+              {field('soul_char_limit', 'Soul')}
+              {field('memory_char_limit', 'Memory')}
+            </Group>
+          ) : null}
           {typeof mobile.settings?.heartbeat_enabled === 'boolean' ? (
             <Group
               title="Heartbeat"
@@ -715,7 +1282,6 @@ export function Management({
               {toggle('heartbeat_enabled', 'Heartbeat')}
             </Group>
           ) : null}
-          <ComputerSize mobile={mobile} />
           {typeof mobile.settings?.usage_data === 'boolean' ? (
             <Group
               title="Privacy"
@@ -727,6 +1293,9 @@ export function Management({
         </>
       )
       break
+    case 'computer':
+      content = <Computers mobile={mobile} />
+      break
     case 'bot-create':
     case 'bot':
       save = async () => {
@@ -736,7 +1305,7 @@ export function Management({
           title: values.title,
           description: values.description,
           // A bot's soul is saved from its own card; only a new bot starts with one here.
-          ...(bot ? {} : { persona: values.persona }),
+          ...(bot ? {} : { persona: values.persona, ...(newFace ? { face: newFace } : {}) }),
           // Without a model the daemon uses its default.
           ...(values.provider && values.model
             ? { provider: values.provider, model: values.model }
@@ -747,14 +1316,28 @@ export function Management({
                 approval_mode: values.approval_mode,
                 workdir: values.workdir || null,
                 dream_enabled: values.dream_enabled,
-                notify: values.notify
+                notify: values.notify,
+                // Only when changed: a daemon from before fast mode refuses the field.
+                ...(values.fast !== (bot.fast ?? false) ? { fast: values.fast === true } : {}),
+                // Only a limit the user changed: a daemon from before the limits
+                // refuses them, and a limit the field can't show is kept.
+                ...Object.fromEntries(
+                  (['soul_char_limit', 'memory_char_limit'] as const)
+                    .filter(key => str(values[key]) !== str(bot[key]))
+                    .map(key => [key, num(values[key])])
+                )
               }
             : {})
         }
         const result = await rpc<{ bot: Bot; section?: Section }>(
           bot ? 'hexbot.bots.update' : 'hexbot.bots.create',
           params
-        )
+        ).catch(error => {
+          // A daemon from before stored faces refuses the field; it draws one from the name.
+          if (!('face' in params) || !refusesFace(error)) throw error
+          const { face: _face, ...rest } = params
+          return rpc<{ bot: Bot; section?: Section }>('hexbot.bots.create', rest)
+        })
         if (!bot && result.section) await mobile.openSection(result.bot, result.section)
         return result
       }
@@ -762,61 +1345,59 @@ export function Management({
         <>
           <View style={[styles.identity, { backgroundColor: theme.surface }]}>
             <BotFace
-              face={bot?.face}
+              face={bot ? bot.face : newFace}
               imageUri={botPhoto(bot)}
-              name={str(values.display_name) || str(values.name) || 'New bot'}
+              // What the bot is doing now, wherever it is, as in Library.
+              mood={bot ? moodForStatus(botStatusOf(bot, mobile.sections)) : undefined}
+              name={
+                bot ? bot.display_name : str(values.display_name) || str(values.name) || 'New bot'
+              }
               size={88}
             />
-            {bot ? (
-              <View style={styles.pictureActions}>
+            <View style={styles.pictureActions}>
+              {bot ? null : (
                 <Button
-                  disabled={busy || mobile.connection !== 'connected'}
-                  icon="image-outline"
-                  label={botPhoto(bot) ? 'Change photo' : 'Use a photo'}
-                  onPress={() =>
-                    void run(async () => {
-                      const file = await pickFile(
-                        ['image/png', 'image/jpeg', 'image/webp'],
-                        2000000
-                      )
-                      if (!file) return
-                      const result = await rpc<{ bot: Bot }>('hexbot.bots.update', {
-                        name: bot.name,
-                        avatar: file.base64
-                      })
-                      onNavigate({ kind: 'bot', bot: result.bot, data: { draft: values } })
-                    })
-                  }
-                  style={styles.smallButton}
-                  testID="action-choose-bot-picture"
+                  disabled={busy}
+                  label="Shuffle"
+                  onPress={() => {
+                    const face = randomFace([
+                      newFace,
+                      ...mobile.bots.flatMap(b => [b.face, b.kept_face])
+                    ])
+                    setValues(v => ({ ...v, face_color: face.color, face_shape: face.shape }))
+                  }}
+                  size="small"
+                  testID="action-shuffle-face"
                   variant="secondary"
                 />
-                {botPhoto(bot) ? (
-                  <Button
-                    disabled={busy || mobile.connection !== 'connected'}
-                    label="Use its face"
-                    onPress={() =>
-                      void run(async () => {
-                        const result = await rpc<{ bot: Bot }>('hexbot.bots.update', {
-                          name: bot.name,
-                          avatar: null
-                        })
-                        onNavigate({ kind: 'bot', bot: result.bot, data: { draft: values } })
-                      })
-                    }
-                    style={styles.smallButton}
-                    testID="action-use-generated-face"
-                    variant="plain"
-                  />
-                ) : null}
+              )}
+              <Button
+                disabled={busy}
+                label="Change face"
+                onPress={() => (bot ? navigate('face') : setChoosingFace(open => !open))}
+                size="small"
+                testID="action-change-face"
+                variant={bot ? 'secondary' : 'plain'}
+              />
+            </View>
+            {!bot && choosingFace && newFace ? (
+              <View style={styles.newFace}>
+                <FacePicker
+                  onChange={face =>
+                    setValues(v => ({ ...v, face_color: face.color, face_shape: face.shape }))
+                  }
+                  testID="new-bot-face"
+                  value={newFace}
+                />
               </View>
-            ) : (
+            ) : null}
+            {bot ? null : (
               <Text align="center" tone="muted" variant="footnote">
-                Its face comes from its name. You can add a photo after it is created.
+                Renaming it keeps this face. You can add a photo after it is created.
               </Text>
             )}
           </View>
-          <View style={styles.stack}>
+          <Group title="Details">
             {!bot
               ? field('name', 'Bot name', false, 'Lowercase letters, numbers and hyphens.')
               : null}
@@ -830,7 +1411,7 @@ export function Management({
               false,
               400
             )}
-          </View>
+          </Group>
           {bot ? (
             <FingerprintCards
               disabled={busy || mobile.connection !== 'connected'}
@@ -846,10 +1427,17 @@ export function Management({
               true,
               `${str(values.display_name) || 'The bot'} can edit its soul too and says when it does. Your chat takes changes after it summarises older messages.`,
               false,
-              4000
+              Number(mobile.settings?.soul_char_limit) || 4000
             )
           )}
-          <Group title="Model" footer="Applies from the next message.">
+          <Group
+            title="Model"
+            footer={
+              bot && chosenModel?.fast
+                ? 'Applies from the next message. Fast mode answers faster and costs more for each token; scheduled jobs and the heartbeat keep the standard speed.'
+                : 'Applies from the next message.'
+            }
+          >
             <View style={styles.inset}>
               <ModelPill
                 disabled={busy || mobile.connection !== 'connected'}
@@ -871,6 +1459,7 @@ export function Management({
                 }}
               />
             </View>
+            {bot && chosenModel?.fast ? toggle('fast', 'Fast mode') : null}
           </Group>
           {bot ? (
             <>
@@ -885,12 +1474,23 @@ export function Management({
                 {row('Tools', 'tools', `${bot.tools.length} on`)}
                 {row('Connectors', 'connectors')}
                 {row('Skills', 'skills', bot.skills.length ? `${bot.skills.length} on` : undefined)}
+                {/* Shown once Discord is on for the bot in Plugins. */}
+                {bot.discord !== false ? row('Discord', 'discord') : null}
               </Group>
               <Group title="What it remembers">
                 {toggle('dream_enabled', 'Dreaming')}
                 {row('Dreaming history', 'dreams')}
                 {row('Scheduled jobs', 'jobs')}
               </Group>
+              {bot.soul_cap !== undefined ? (
+                <Group
+                  title="Limits"
+                  footer={`The most characters its soul and memory can hold, from 500 to 20,000. Leave one empty for the default in Settings: soul ${str(mobile.settings?.soul_char_limit) || '4000'}, memory ${str(mobile.settings?.memory_char_limit) || '2200'}.`}
+                >
+                  {field('soul_char_limit', 'Soul limit')}
+                  {field('memory_char_limit', 'Memory limit')}
+                </Group>
+              ) : null}
               {typeof mobile.settings?.heartbeat_enabled === 'boolean' ? (
                 <Group title="On its own">{row('Heartbeat', 'heartbeat')}</Group>
               ) : null}
@@ -960,11 +1560,15 @@ export function Management({
       content = (
         <DocumentPanel
           about={aboutFile('soul', bot?.display_name ?? 'The bot')}
+          cap={(mobile.bots.find(b => b.name === bot?.name) ?? bot)?.soul_cap}
           fileName="SOUL.md"
           onChange={text => set('persona', text)}
           value={str(values.persona)}
         />
       )
+      break
+    case 'face':
+      content = bot ? <FaceEditor bot={bot} mobile={mobile} /> : null
       break
     case 'licenses':
       content = <Licenses />
@@ -977,7 +1581,7 @@ export function Management({
       const available = bot?.available_tools as string[] | undefined
       content = (
         <Group
-          footer={`What ${bot?.display_name ?? 'this bot'} can do on this computer. Tools this computer isn't set up for don't appear. Changes apply from the next message.`}
+          footer={`What ${bot?.display_name ?? 'this bot'} can do. Which computers it uses is in Settings, Computers. Tools the daemon isn't set up for don't appear. Changes apply from the next message.`}
         >
           {TOOLS.filter(tool => !available || available.includes(tool.key)).map(tool => (
             <SwitchRow
@@ -1045,11 +1649,13 @@ export function Management({
                     bot_turns_per_human_turn: num(values.bot_turns_per_human_turn),
                     budget_tokens_per_human_turn: num(values.budget_tokens_per_human_turn)
                   },
-                  approval_mode: values.approval_mode
+                  // A Discord room stays on Manual.
+                  ...(room.discord ? {} : { approval_mode: values.approval_mode })
                 }
               : { members }),
             name: values.name,
-            main_bot: mainBot || null
+            // A Discord room has no main bot.
+            ...(room?.discord ? {} : { main_bot: mainBot || null })
           }
         )
         if (!room) await mobile.openRoom(result.room)
@@ -1058,71 +1664,98 @@ export function Management({
       content = (
         <>
           {field('name', 'Room name')}
-          <Group
-            title="Main bot"
-            footer="Answers when nobody is mentioned. Mention a bot with @ to ask it directly. Only bots in the room can be its main bot."
-          >
-            {[
-              { name: '', display_name: 'No main bot' },
-              ...mobile.bots.filter(b => joined(b.name))
-            ].map(b => (
-              <ChoiceRow
-                key={b.name || 'none'}
-                title={b.display_name}
-                testID={`main-bot-${b.name || 'none'}`}
-                selected={mainBot === b.name}
-                onPress={() => set('main_bot', b.name)}
-              />
-            ))}
-          </Group>
-          <Group title="Bots">
-            {mobile.bots.map(b => {
-              return (
-                <SwitchRow
-                  key={b.name}
+          {room?.discord ? null : (
+            <Group
+              title="Main bot"
+              footer="Answers when nobody is mentioned. Mention a bot with @ to ask it directly. Only bots in the room can be its main bot."
+            >
+              {[
+                { name: '', display_name: 'No main bot' },
+                ...mobile.bots.filter(b => joined(b.name))
+              ].map(b => (
+                <ChoiceRow
+                  key={b.name || 'none'}
                   title={b.display_name}
-                  testID={`member-${b.name}`}
-                  value={joined(b.name)}
-                  disabled={busy || mobile.connection !== 'connected'}
-                  leading={<BotFace name={b.display_name} size={28} />}
-                  onValueChange={enabled => {
-                    if (!room) {
-                      // A bot that leaves the new room cannot stay its main bot.
-                      if (!enabled && str(values.main_bot) === b.name) set('main_bot', '')
-                      return set(`member-${b.name}`, enabled)
-                    }
-                    const change = () =>
-                      void run(async () => {
-                        const updated = await rpc<{ room: Room & { deleted?: boolean } }>(
-                          enabled ? 'hexbot.rooms.add_member' : 'hexbot.rooms.remove_member',
-                          { id: room.id, bot: b.name }
-                        )
-                        // Removing the last bot deleted the room; the refresh leaves it.
-                        if (updated.room.deleted) return onClose()
-                        onNavigate({ kind: 'room', room: updated.room })
-                      })
-                    const last = !room.members.some(
-                      m => m.member_kind === 'bot' && m.member_id !== b.name && !m.left_at
-                    )
-                    if (enabled || !last) return change()
-                    confirm(
-                      'Remove and delete room',
-                      `${b.display_name} is the last bot here. Removing it deletes this room, its transcript and the memory made from it. The bot itself stays.`,
-                      change
-                    )
-                  }}
+                  testID={`main-bot-${b.name || 'none'}`}
+                  selected={mainBot === b.name}
+                  onPress={() => set('main_bot', b.name)}
                 />
-              )
-            })}
+              ))}
+            </Group>
+          )}
+          <Group
+            title="Bots"
+            footer={
+              room?.discord
+                ? 'A bot joins when someone mentions it in Discord, or when anyone writes where it is an active member or answers everyone. One you remove comes back when someone mentions it.'
+                : undefined
+            }
+          >
+            {mobile.bots
+              .filter(b => !room?.discord || joined(b.name))
+              .map(b => {
+                return (
+                  <SwitchRow
+                    key={b.name}
+                    title={b.display_name}
+                    testID={`member-${b.name}`}
+                    value={joined(b.name)}
+                    disabled={busy || mobile.connection !== 'connected'}
+                    leading={
+                      <BotFace
+                        face={b.face}
+                        imageUri={botPhoto(b)}
+                        name={b.display_name}
+                        size={28}
+                      />
+                    }
+                    onValueChange={enabled => {
+                      if (!room) {
+                        // A bot that leaves the new room cannot stay its main bot.
+                        if (!enabled && str(values.main_bot) === b.name) set('main_bot', '')
+                        return set(`member-${b.name}`, enabled)
+                      }
+                      const change = () =>
+                        void run(async () => {
+                          const updated = await rpc<{ room: Room & { deleted?: boolean } }>(
+                            enabled ? 'hexbot.rooms.add_member' : 'hexbot.rooms.remove_member',
+                            { id: room.id, bot: b.name }
+                          )
+                          // Removing the last bot deleted the room; the refresh leaves it.
+                          if (updated.room.deleted) return onClose()
+                          onNavigate({ kind: 'room', room: updated.room })
+                        })
+                      const last = !room.members.some(
+                        m => m.member_kind === 'bot' && m.member_id !== b.name && !m.left_at
+                      )
+                      if (enabled || !last) return change()
+                      confirm(
+                        'Remove and delete room',
+                        `${b.display_name} is the last bot here. Removing it deletes this room, its transcript and the memory made from it. The bot itself stays.`,
+                        change
+                      )
+                    }}
+                  />
+                )
+              })}
           </Group>
           {room ? (
             <>
-              {chooseMode('approval_mode')}
+              {room.discord ? (
+                <Group title="Approvals">
+                  <Row
+                    title="Manual"
+                    subtitle="People in Discord are not you, so bots there only search the web, read the server and keep notes."
+                    testID="room-discord-approvals"
+                  />
+                  {action('Open in Discord', () => Linking.openURL(room.discord!.url))}
+                </Group>
+              ) : (
+                chooseMode('approval_mode')
+              )}
               <Group title="Budgets" footer="Leave a budget empty to use the daemon setting.">
-                <View style={styles.inset}>
-                  {field('bot_turns_per_human_turn', 'Bot replies per message')}
-                  {field('budget_tokens_per_human_turn', 'Tokens per message')}
-                </View>
+                {field('bot_turns_per_human_turn', 'Bot replies per message')}
+                {field('budget_tokens_per_human_turn', 'Tokens per message')}
               </Group>
               <Group>
                 {action(room.archived_at ? 'Restore room' : 'Archive room', async () => {
@@ -1150,22 +1783,32 @@ export function Management({
       )
       break
     }
-    case 'providers':
+    case 'providers': {
+      const provider = (p: RowData) => (
+        <Row
+          key={str(p.id)}
+          title={str(p.label)}
+          subtitle={p.configured ? 'Connected' : 'Not connected'}
+          testID={`provider-${p.id}`}
+          chevron
+          onPress={() => navigate('provider', p)}
+        />
+      )
+      // Connected ones first, under their own label, as on the desktop.
+      const connected = rows.filter(p => p.configured === true)
+      const rest = rows.filter(p => p.configured !== true)
       content = (
-        <Group>
-          {rows.map(p => (
-            <Row
-              key={str(p.id)}
-              title={str(p.label)}
-              subtitle={p.configured ? 'Connected' : 'Not connected'}
-              testID={`provider-${p.id}`}
-              chevron
-              onPress={() => navigate('provider', p)}
-            />
-          ))}
-        </Group>
+        <>
+          {connected.length ? <Group title="Connected">{connected.map(provider)}</Group> : null}
+          {rest.length ? (
+            <Group title={connected.length ? 'More providers' : 'All providers'}>
+              {rest.map(provider)}
+            </Group>
+          ) : null}
+        </>
       )
       break
+    }
     case 'provider': {
       const provider = str(panel?.data?.id)
       content = (
@@ -1259,36 +1902,139 @@ export function Management({
           {rows.map(d => (
             <Row
               key={str(d.id)}
+              leading={
+                <View
+                  style={[
+                    styles.dot,
+                    { backgroundColor: d.current ? theme.success : theme.hairline }
+                  ]}
+                />
+              }
               title={str(d.name)}
-              subtitle={d.current ? 'This device' : str(d.platform)}
+              subtitle={`${d.current ? 'This device' : str(d.platform)} · Last seen ${formatAgo(
+                typeof d.last_seen_at === 'number'
+                  ? d.last_seen_at * (d.last_seen_at < 10_000_000_000 ? 1000 : 1)
+                  : null
+              )}`}
               testID={`device-${d.id}`}
-              destructive
-              onPress={() =>
-                confirm(
-                  'Revoke device',
-                  d.current
-                    ? 'This phone will disconnect and need pairing again.'
-                    : 'This device will need pairing again.',
-                  () => void run(() => rpc('hexbot.devices.revoke', { id: d.id }))
-                )
+              trailing={
+                <Button
+                  disabled={busy || mobile.connection !== 'connected'}
+                  label="Revoke"
+                  onPress={() =>
+                    confirm(
+                      'Revoke device',
+                      d.current
+                        ? 'This phone will disconnect and need pairing again.'
+                        : 'This device will need pairing again.',
+                      () => void run(() => rpc('hexbot.devices.revoke', { id: d.id }))
+                    )
+                  }
+                  size="small"
+                  testID={`device-revoke-${d.id}`}
+                  variant="destructive"
+                />
               }
             />
           ))}
         </Group>
       )
       break
-    case 'usage':
+    case 'notifications': {
+      const offline = busy || mobile.connection !== 'connected'
+      const status = str(extra.status)
       content = (
-        <Group>
-          <Row title="Input tokens" meta={str(extra.input_tokens ?? 0)} testID="usage-input" />
-          <Row title="Output tokens" meta={str(extra.output_tokens ?? 0)} testID="usage-output" />
-          <Row
-            title="Estimated cost"
-            meta={`$${Number(extra.estimated_cost_usd ?? 0).toFixed(4)}`}
-            testID="usage-cost"
-          />
-        </Group>
+        <>
+          <Group
+            footer={
+              status === 'denied' && extra.canAsk === false
+                ? 'Turn on opens Settings, where Hexbot’s notifications are allowed.'
+                : undefined
+            }
+            title="This phone"
+          >
+            {status === 'unavailable' ? (
+              <Row
+                subtitle="This build of Hexbot cannot show notifications."
+                testID="notifications-unavailable"
+                title="Not available"
+              />
+            ) : status === 'granted' ? (
+              <Row
+                meta="On"
+                testID="notifications-this-phone"
+                title="Notifications"
+                trailing={
+                  <Button
+                    label="Send a test"
+                    onPress={() => void run(testNotification)}
+                    size="small"
+                    testID="notifications-test"
+                    variant="plain"
+                  />
+                }
+              />
+            ) : (
+              <Row
+                subtitle="Know when a bot replies or needs you."
+                testID="notifications-this-phone"
+                title="Off"
+                trailing={
+                  <Button
+                    disabled={offline}
+                    label="Turn on"
+                    onPress={() => void run(() => allowPush(rpc, mobile.active?.deviceId))}
+                    size="small"
+                    testID="notifications-allow"
+                  />
+                }
+              />
+            )}
+          </Group>
+          <Group
+            footer="A reply still unread 30 seconds after it finished, or a bot waiting on you, wakes these phones through Hex Connect. The push names no bot and holds no message."
+            title="Phones"
+          >
+            {rows.length ? (
+              rows.map(d => (
+                <Row
+                  key={str(d.id)}
+                  meta="On"
+                  subtitle={d.id === mobile.active?.deviceId ? 'This phone' : undefined}
+                  testID={`notifications-phone-${d.id}`}
+                  title={str(d.name) || 'Phone'}
+                />
+              ))
+            ) : (
+              <Row testID="notifications-no-phones" title="No phone takes notifications yet" />
+            )}
+          </Group>
+          <Group
+            footer="Replies, approvals, questions, stops and heartbeat messages, on every device. Never about the chat you have open."
+            title="Bots"
+          >
+            {mobile.bots.map(b => (
+              <SwitchRow
+                disabled={offline}
+                key={b.name}
+                leading={
+                  <BotFace face={b.face} imageUri={botPhoto(b)} name={b.display_name} size={28} />
+                }
+                onValueChange={on =>
+                  void run(() => rpc('hexbot.bots.update', { name: b.name, notify: on }))
+                }
+                testID={`notifications-bot-${b.name}`}
+                title={b.display_name || b.name}
+                value={b.notify !== false}
+              />
+            ))}
+          </Group>
+        </>
       )
+      break
+    }
+    case 'usage':
+      content = <Usage mobile={mobile} />
       break
     case 'connectors':
       content = (
@@ -1309,21 +2055,200 @@ export function Management({
       break
     case 'connector': {
       const c = panel!.data as unknown as Connector
+      const account = c.account
+      const provider = account ? accountProvider(account) : 'google'
+      const accountName = ACCOUNT_NAMES[provider]
+      const pending = extra.account_login === true && extra.status === 'pending'
+      // Through Hex Connect Google comes back by itself; on 127.0.0.1 the
+      // phone can't load the page, so its address is pasted here.
+      const pasteBack =
+        pending && extra.mode === 'browser' && !str(extra.redirect_uri).startsWith('https:')
+      // The account's other connectors that still wait for a sign-in.
+      const listed = (extra.plugins as unknown as Plugin[] | undefined) ?? []
+      const self = listed.find(p => p.kind === 'connector' && p.id === c.id)
+      const siblings = self && !account?.signed_in ? accountSiblings(self, listed) : []
+      const startSignIn = async () => {
+        const also = siblings.filter(p => values[`also:${p.id}`] === true).map(p => p.id)
+        // The phone is never the daemon's computer: Google returns through
+        // Hex Connect when the daemon has it.
+        const login = await rpc<RowData>('hexbot.accounts.sign_in_start', {
+          service: account!.service,
+          ...(also.length ? { also } : {}),
+          ...(provider === 'google' ? { return_via: 'connect' } : {})
+        })
+        setExtra(e => ({ ...e, ...login, account_login: true }))
+        // Microsoft's page waits until the code is copied, so the phone
+        // doesn't switch away before the user has it.
+        if (login.mode === 'device') {
+          setNotice(`Copy the code, then sign in on the ${accountName} page.`)
+          return
+        }
+        setNotice(`Finish signing in on the ${accountName} page.`)
+        await Linking.openURL(str(login.url))
+      }
+      const chosen = c.providers?.find(p => p.id === values.provider)
+      // A subscription waits for its sign-in, or its renewal; there is nothing to save before it.
+      const renewing = values.renewing === true
+      const needsSignIn = Boolean(chosen?.sign_in) && (renewing || !chosen?.configured)
       content = (
         <>
           <Text tone="muted">{c.description}</Text>
+          {/* With plugins as a table, bots are ticked there once it is a column. */}
+          {account && !account.signed_in && !bot && !pending && pluginRoster.length > 1 && !pluginsTable ? (
+            <Group title="Bots that get it">
+              {pluginRoster.map(b => (
+                <SwitchRow
+                  key={b.name}
+                  title={b.display_name}
+                  testID={`account-give-${b.name}`}
+                  value={values[`give:${b.name}`] === true}
+                  disabled={busy}
+                  onValueChange={on => set(`give:${b.name}`, on)}
+                />
+              ))}
+            </Group>
+          ) : null}
+          {account && siblings.length && !pending ? (
+            <Group
+              title="Connect with the same sign-in"
+              footer={`${accountName} asks you to allow each one. Each goes to the same bots as ${c.name}.`}
+            >
+              {siblings.map(p => (
+                <SwitchRow
+                  key={p.id}
+                  leading={<PluginIcon icon={p.icon} />}
+                  title={p.name}
+                  testID={`account-also-${p.id}`}
+                  value={values[`also:${p.id}`] === true}
+                  disabled={busy}
+                  onValueChange={on => set(`also:${p.id}`, on)}
+                />
+              ))}
+            </Group>
+          ) : null}
+          {account ? (
+            <Group
+              title="Account"
+              footer={
+                pasteBack
+                  ? `Google ends on a page that doesn't load on this phone. Copy that page's address and paste it here.`
+                  : pluginsTable
+                    ? `You sign in once on this daemon. ${c.name} then becomes a column in Plugins, where you tick its bots.`
+                    : `You sign in once on this daemon. Bots you turn ${c.name} on for use it.`
+              }
+            >
+              <Row
+                title={
+                  account.signed_in
+                    ? `Signed in as ${account.email || accountName}`
+                    : 'Not connected'
+                }
+                subtitle={c.state === 'error' ? c.state_text : undefined}
+                testID="account-state"
+              />
+              {pending && extra.code ? (
+                <Row
+                  title={str(extra.code)}
+                  subtitle={`Enter this code on the ${accountName} page`}
+                  testID="account-code"
+                />
+              ) : null}
+              {pasteBack ? field('account_url', 'Address the browser ended on') : null}
+              {pasteBack
+                ? action(
+                    'Finish sign-in',
+                    async () => {
+                      const next = await rpc<RowData>('hexbot.accounts.sign_in_finish', {
+                        login_id: extra.login_id,
+                        url: str(values.account_url).trim()
+                      })
+                      setExtra(e => ({ ...e, ...next }))
+                      if (next.status === 'error') throw new Error(str(next.message))
+                      await signedIn(next)
+                    },
+                    false,
+                    '',
+                    !str(values.account_url).trim()
+                  )
+                : null}
+              {pending && extra.mode === 'device'
+                ? action(`Copy code and open ${accountName}`, async () => {
+                    await Clipboard.setStringAsync(str(extra.code))
+                    await Linking.openURL(str(extra.url))
+                  })
+                : pending
+                  ? action('Open the page again', () => Linking.openURL(str(extra.url)))
+                  : null}
+              {pending
+                ? action('Stop signing in', async () => {
+                    await rpc('hexbot.accounts.sign_in_cancel', { login_id: extra.login_id })
+                    setExtra(e => ({ plugins: e.plugins }))
+                  })
+                : null}
+              {account.signed_in
+                ? action(
+                    'Disconnect',
+                    async () => {
+                      await rpc('hexbot.accounts.disconnect', { service: account.service })
+                      await reloadConnector()
+                    },
+                    true,
+                    `Bots lose ${c.name} until you connect it again. Your other connectors stay connected.`
+                  )
+                : null}
+            </Group>
+          ) : null}
+          {account && !pending ? (
+            <BrandSignInButton
+              busy={busy}
+              disabled={mobile.connection !== 'connected'}
+              onPress={() => void run(startSignIn)}
+              provider={provider}
+              testID={`account-${provider}-sign-in`}
+            />
+          ) : null}
           {c.providers?.length ? (
             <Group title="Provider">
               {c.providers.map(p => (
                 <ChoiceRow
                   key={p.id}
                   title={p.label}
+                  subtitle={[
+                    p.configured ? (p.sign_in ? 'Signed in' : 'Connected') : '',
+                    p.description
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
                   testID={`connector-provider-${p.id}`}
                   selected={values.provider === p.id}
                   onPress={() => set('provider', p.id)}
                 />
               ))}
             </Group>
+          ) : null}
+          {chosen?.sign_in ? (
+            <SubscriptionSignIn
+              configured={chosen.configured}
+              grant={chosen.sign_in}
+              key={chosen.id}
+              label={chosen.label}
+              onRenewingChange={value => set('renewing', value)}
+              renewing={renewing}
+              onSignedIn={() =>
+                onNavigate({
+                  ...panel!,
+                  data: {
+                    ...panel!.data,
+                    provider: chosen.id,
+                    providers: c.providers!.map(p =>
+                      p.id === chosen.id ? { ...p, configured: true } : p
+                    )
+                  }
+                })
+              }
+              rpc={rpc}
+              testID="connector-sign-in"
+            />
           ) : null}
           {c.fields
             .filter(f => !f.provider || f.provider === values.provider)
@@ -1352,17 +2277,26 @@ export function Management({
                 }
               />
             ) : null}
-            {action('Save credentials', () =>
-              rpc('hexbot.connectors.setup', {
-                id: c.id,
-                provider: values.provider || undefined,
-                ...(bot ? { bot: bot.name } : {}),
-                values: Object.fromEntries(
-                  c.fields
-                    .filter(f => values[f.key] !== undefined && values[f.key] !== '')
-                    .map(f => [f.key, values[f.key]])
-                )
-              })
+            {action(
+              account
+                ? 'Save your own OAuth client'
+                : chosen?.sign_in
+                  ? 'Use subscription'
+                  : 'Save credentials',
+              () =>
+                rpc('hexbot.connectors.setup', {
+                  id: c.id,
+                  provider: values.provider || undefined,
+                  ...(bot ? { bot: bot.name } : {}),
+                  values: Object.fromEntries(
+                    c.fields
+                      .filter(f => values[f.key] !== undefined && values[f.key] !== '')
+                      .map(f => [f.key, values[f.key]])
+                  )
+                }),
+              false,
+              '',
+              needsSignIn
             )}
             {action('Test connector', async () => {
               const result = await rpc('hexbot.connectors.test', {
@@ -1371,7 +2305,13 @@ export function Management({
               })
               setNotice(str(result.message))
             })}
-            {action('Clear credentials', () => rpc('hexbot.connectors.clear', { id: c.id }), true)}
+            {c.fields.some(f => f.set)
+              ? action(
+                  account ? 'Remove your client' : 'Clear credentials',
+                  () => rpc('hexbot.connectors.clear', { id: c.id }),
+                  true
+                )
+              : null}
             {c.mcp
               ? action(
                   'Remove MCP server',
@@ -1465,28 +2405,58 @@ export function Management({
       const skills = plugins.filter(
         p => p.kind === 'skill' || (p.kind === 'package' && p.category !== 'mcp')
       )
-      const item = (p: Plugin) => (
+      const item = (p: Plugin) => {
+        // One that stopped working says so and nothing else, in red, as on
+        // the web; a connected one no bot has yet says that, not "Off".
+        const failed = p.state === 'error'
+        const who = pluginBots(p, bots)
+        const waits = p.kind === 'connector' && p.category !== 'mcp' && who === 'Off'
+        return (
+          <Row
+            key={keyOf(p)}
+            leading={<PluginIcon icon={p.icon} />}
+            title={p.name}
+            subtitle={failed ? p.state_text : `${p.state_text} · ${waits ? 'No bot yet' : who}`}
+            subtitleTone={failed ? 'danger' : undefined}
+            testID={`plugin-${keyOf(p)}`}
+            chevron
+            onPress={() => navigate('plugin', p as unknown as RowData)}
+          />
+        )
+      }
+      // Connectors as on the web: what is connected first, then what each
+      // account, and each kind of service, still offers.
+      const connectors = plugins.filter(p => p.kind === 'connector' && p.category !== 'mcp')
+      const connected = connectors.filter(isConnected)
+      const offer = (p: Plugin) => (
         <Row
           key={keyOf(p)}
           leading={<PluginIcon icon={p.icon} />}
           title={p.name}
-          subtitle={`${p.state_text} · ${pluginBots(p, bots)}`}
+          subtitle={p.description}
           testID={`plugin-${keyOf(p)}`}
           chevron
           onPress={() => navigate('plugin', p as unknown as RowData)}
         />
       )
-      content = (
+      const list = (
         <>
-          <Text tone="muted">
-            Everything your bots can use beyond their own tools. Open one to choose its bots.
-          </Text>
-          <Group
-            title="Connectors"
-            footer="Services Hexbot supports. Keys are stored once on this daemon."
-          >
-            {plugins.filter(p => p.kind === 'connector' && p.category !== 'mcp').map(item)}
-          </Group>
+          {connected.length ? (
+            <Group
+              title="Connected"
+              footer="Open one to choose its bots, test it or disconnect it."
+            >
+              {connected.map(item)}
+            </Group>
+          ) : null}
+          {CONNECTOR_SHELVES.map(shelf => {
+            const waiting = connectors.filter(p => !isConnected(p) && shelfOf(p) === shelf.id)
+            return waiting.length ? (
+              <Group key={shelf.id} title={shelf.title} footer={shelf.description}>
+                {waiting.map(offer)}
+              </Group>
+            ) : null
+          })}
           <Group
             title="MCP servers"
             footer="Servers you or your bots add. A bot that needs one asks you first."
@@ -1500,25 +2470,67 @@ export function Management({
           </Group>
         </>
       )
+      content = pluginsTable ? (
+        <PluginAccess
+          bots={mobile.bots}
+          daemon={mobile.active?.id ?? ''}
+          // The pages that add a server or a skill are the list's own.
+          onAdd={what => navigate(what === 'server' ? 'mcp' : 'skill-create')}
+          // Straight to the sign-in or the keys, past the plugin's own page.
+          onConnect={p => navigate('connector', p.connector as unknown as RowData)}
+          onOpenPlugin={p => navigate('plugin', p as unknown as RowData)}
+          plugins={plugins}
+          reload={() => load()}
+          // Only bots that still exist are sent: one deleted elsewhere
+          // would make the daemon refuse the whole change.
+          setBots={(p, names) =>
+            rpc('hexbot.plugins.set_bots', {
+              kind: p.kind,
+              id: p.id,
+              bots: names.filter(name => bots.some(b => b.name === name))
+            })
+          }
+        />
+      ) : (
+        list
+      )
       break
     }
+    case 'experimental':
+      content = (
+        <Group footer="Settings, Plugins opens as a table of every bot against every plugin. Bots with the same label and plugins fold into one row, and changes wait until you review them. Plugins are added and connected there too, from Add plugin.">
+          <SwitchRow
+            onValueChange={on => {
+              setPluginsTable(on)
+              void savePluginsTable(on).catch(() => {})
+            }}
+            testID="experimental-plugins-table"
+            title="Plugins as a table"
+            value={pluginsTable}
+          />
+        </Group>
+      )
+      break
     case 'plugin': {
       const bots = pluginRoster
       const p = (extra.plugin ?? panel!.data) as unknown as Plugin
-      // A connector or skill can be ready for one bot through its own key, so
-      // only the daemon can tell whether a bot may have it.
       const server = p.server
       const values_ = server ? (server.transport === 'http' ? server.headers : server.env) : []
       const valueKind = server?.transport === 'http' ? 'headers' : 'env'
       // `run` reloads this card after each change. Only bots that still exist
       // are sent: one deleted elsewhere while the card was open would make the
       // daemon refuse the whole change.
+      // As on the web: a connector whose sign-in stopped working shows the
+      // bots waiting for it as on, and a change sends just what is shown.
+      const shown = shownBots(p)
       const choose = (next: string[]) =>
         void run(() =>
           rpc('hexbot.plugins.set_bots', {
             kind: p.kind,
             id: p.id,
-            bots: next.filter(name => bots.some(b => b.name === name))
+            bots: (shown.exact ? next : withWaiting(p, next)).filter(name =>
+              bots.some(b => b.name === name)
+            )
           })
         )
       content = (
@@ -1527,45 +2539,137 @@ export function Management({
           <Text tone={p.state === 'error' ? 'danger' : 'muted'} variant="footnote">
             {p.state_text}
           </Text>
-          <Group title="Bots">
-            {bots.map(b => (
-              <SwitchRow
-                key={b.name}
-                title={b.display_name}
-                testID={`plugin-bot-${b.name}`}
-                value={p.bots.includes(b.name)}
-                disabled={busy || mobile.connection !== 'connected'}
-                onValueChange={on =>
-                  choose(on ? [...p.bots, b.name] : p.bots.filter(name => name !== b.name))
+          {p.connector?.abilities?.length ? (
+            <Group title="What bots can do">
+              {p.connector.abilities.map(ability => (
+                <Row key={ability} title={ability} testID={`plugin-ability-${ability}`} />
+              ))}
+            </Group>
+          ) : null}
+          {/* Discord is connected in each bot's own settings: turning it on for
+              a bot opens them, and a connected bot is disconnected before it
+              is turned off, as on the web. */}
+          {isDiscord(p) ? (
+            <Group
+              title="Bots"
+              footer="Each bot joins Discord as its own app. Turn it on for a bot, then connect it and choose how it acts in that bot's settings."
+            >
+              {bots.map(b => {
+                const on = p.bots.includes(b.name)
+                const target = mobile.bots.find(item => item.name === b.name)
+                const state = p.discord?.[b.name]?.status
+                const open = () => target && onNavigate({ kind: 'discord', bot: target })
+                const turnOn = async () => {
+                  let done = false
+                  await run(async () => {
+                    await rpc('hexbot.plugins.set_bots', {
+                      kind: p.kind,
+                      id: p.id,
+                      bots: [...new Set([...p.bots, b.name])]
+                    })
+                    done = true
+                  })
+                  if (done) open()
                 }
-              />
-            ))}
-          </Group>
+                // Disconnecting first is harmless when the bot isn't connected,
+                // and right when it was connected from another device since.
+                const turnOff = () =>
+                  void run(async () => {
+                    await rpc('hexbot.discord.disconnect', { bot: b.name })
+                    await rpc('hexbot.plugins.set_bots', {
+                      kind: p.kind,
+                      id: p.id,
+                      bots: p.bots.filter(name => name !== b.name)
+                    })
+                  })
+                return (
+                  <View key={b.name}>
+                    <SwitchRow
+                      title={b.display_name}
+                      subtitle={discordBotText(p, b.name)}
+                      testID={`plugin-bot-${b.name}`}
+                      value={on}
+                      disabled={busy || mobile.connection !== 'connected'}
+                      onValueChange={next => {
+                        if (next) void turnOn()
+                        else if (state && state !== 'not_connected')
+                          confirm(
+                            'Turn off',
+                            `${b.display_name} goes offline in Discord, the token is deleted and its Discord choices are reset. Its Discord rooms stay here.`,
+                            turnOff
+                          )
+                        else turnOff()
+                      }}
+                    />
+                    {on && target ? (
+                      <Row
+                        title={
+                          state === 'online'
+                            ? `Open ${b.display_name}'s Discord`
+                            : `Connect ${b.display_name}`
+                        }
+                        testID={`plugin-discord-open-${b.name}`}
+                        chevron
+                        onPress={open}
+                      />
+                    ) : null}
+                  </View>
+                )
+              })}
+            </Group>
+          ) : null}
+          {/* Until it is set up, a plugin can be taken away from bots but not given,
+              except to a bot whose own settings hold its key. */}
+          {isDiscord(p) ? null : (
+            <Group
+              title="Bots"
+              footer={p.ready ? undefined : `Set up ${p.name} before giving it to a bot.`}
+            >
+              {bots.map(b => (
+                <SwitchRow
+                  key={b.name}
+                  title={b.display_name}
+                  testID={`plugin-bot-${b.name}`}
+                  value={shown.bots.includes(b.name)}
+                  disabled={
+                    busy ||
+                    mobile.connection !== 'connected' ||
+                    (!canGive(p, b.name) && !shown.bots.includes(b.name))
+                  }
+                  onValueChange={on =>
+                    choose(on ? [...shown.bots, b.name] : shown.bots.filter(name => name !== b.name))
+                  }
+                />
+              ))}
+              {/* As on the web: off for every bot takes grants waiting for setup too. */}
+              {bots.length > 1 && shown.bots.length
+                ? action('Turn off for every bot', () =>
+                    rpc('hexbot.plugins.set_bots', { kind: p.kind, id: p.id, bots: [] })
+                  )
+                : null}
+            </Group>
+          )}
           {server ? (
             <Group
               title={valueKind === 'headers' ? 'Headers' : 'Environment'}
               footer={server.url ?? [server.command, ...(server.args ?? [])].join(' ')}
             >
-              <View style={styles.inset}>
-                {values_.map(v =>
-                  field(
-                    `value:${v.key}`,
-                    v.key,
-                    false,
-                    v.set
-                      ? `Saved${v.hint ? ` ${v.hint}` : ''}. Leave empty to keep it.`
-                      : 'Not set',
-                    true
-                  )
-                )}
-                {field(
-                  'new_key',
-                  valueKind === 'headers' ? 'New header' : 'New environment value',
+              {values_.map(v =>
+                field(
+                  `value:${v.key}`,
+                  v.key,
                   false,
-                  valueKind === 'headers' ? 'Such as Authorization' : 'Such as API_TOKEN'
-                )}
-                {field('new_value', 'Value', false, undefined, true)}
-              </View>
+                  v.set ? `Saved${v.hint ? ` ${v.hint}` : ''}. Leave empty to keep it.` : 'Not set',
+                  true
+                )
+              )}
+              {field(
+                'new_key',
+                valueKind === 'headers' ? 'New header' : 'New environment value',
+                false,
+                valueKind === 'headers' ? 'Such as Authorization' : 'Such as API_TOKEN'
+              )}
+              {field('new_value', 'Value', false, undefined, true)}
               {action('Save values', async () => {
                 const change: Record<string, string> = Object.fromEntries(
                   values_
@@ -1593,21 +2697,52 @@ export function Management({
             </Group>
           ) : null}
           {p.skills?.length ? (
-            <Group title="Skills">
-              {p.skills.map(skill => (
-                <Row
-                  key={skill.name}
-                  title={skill.name}
-                  subtitle={skill.description}
-                  testID={`plugin-skill-${skill.name}`}
-                />
-              ))}
+            <Group
+              title={p.kind === 'connector' ? 'Skills that come with it' : 'Skills'}
+              footer={
+                p.kind === 'connector' ? `Bots that have ${p.name} have these skills.` : undefined
+              }
+            >
+              {p.skills.map(skill =>
+                skill.disabled_globally ? (
+                  // Switched off for every bot: turned back on here.
+                  <SwitchRow
+                    key={skill.name}
+                    title={skill.name}
+                    subtitle="Off for every bot"
+                    testID={`plugin-skill-${skill.name}`}
+                    value={false}
+                    disabled={busy || mobile.connection !== 'connected'}
+                    onValueChange={() =>
+                      void run(() =>
+                        rpc('hexbot.skills.set_global', { name: skill.name, enabled: true })
+                      )
+                    }
+                  />
+                ) : (
+                  <Row
+                    key={skill.name}
+                    title={skill.name}
+                    subtitle={skill.description}
+                    testID={`plugin-skill-${skill.name}`}
+                  />
+                )
+              )}
             </Group>
           ) : null}
           <Group>
-            {p.kind === 'connector' && p.connector
+            {p.kind === 'connector' && p.connector && !isDiscord(p)
               ? row(
-                  p.state === 'not_set_up' ? 'Set up' : 'Keys and provider',
+                  // A Google or Microsoft connector signs in; others take keys.
+                  p.connector.account
+                    ? p.connector.account.signed_in
+                      ? p.state === 'error'
+                        ? 'Sign in again'
+                        : 'Account'
+                      : 'Connect'
+                    : p.state === 'not_set_up'
+                      ? 'Set up'
+                      : 'Keys and provider',
                   'connector',
                   undefined,
                   p.connector as unknown as RowData
@@ -1624,7 +2759,7 @@ export function Management({
                   category: p.category
                 })
               : null}
-            {p.connector && (p.kind !== 'connector' || p.state !== 'not_set_up')
+            {p.connector && !isDiscord(p) && (p.kind !== 'connector' || p.state !== 'not_set_up')
               ? action('Test', async () => {
                   const result = await rpc('hexbot.connectors.test', { id: p.connector!.id })
                   setNotice(str(result.message))
@@ -1655,10 +2790,6 @@ export function Management({
       const store = str(extra.store)
       content = (
         <>
-          <Text tone="muted">
-            Sign-ins your bots use for you. A bot has Hexbot type them into a page and never sees
-            them.
-          </Text>
           <Group footer={store ? PASSWORD_STORE_TEXT[store] : undefined}>
             {row('Add password', 'password-create')}
             {logins.map(login => (
@@ -1877,8 +3008,38 @@ export function Management({
         </Group>
       )
       break
-    case 'skill':
     case 'skill-create':
+      save = () =>
+        rpc('hexbot.skills.save', {
+          name: str(values.name).trim().toLowerCase(),
+          content: skillContent(str(values.description), str(values.instructions)),
+          // Adding never replaces a skill of the same name.
+          create: true,
+          ...(bot ? { bot: bot.name } : {})
+        })
+      content = (
+        <Group footer="A skill built into Hexbot can't be added again.">
+          {field(
+            'name',
+            'Skill name',
+            false,
+            'Lowercase letters, digits, - or _, such as release-notes.'
+          )}
+          {field('description', 'When to use it')}
+          {field('instructions', 'Instructions', true)}
+        </Group>
+      )
+      break
+    case 'skill':
+      // A skill built into Hexbot is read, not changed or deleted.
+      if (values.source === 'bundled') {
+        content = (
+          <Group footer="Built into Hexbot. Turn it off for a bot; it can't be changed or deleted.">
+            <Text selectable>{str(values.content)}</Text>
+          </Group>
+        )
+        break
+      }
       save = () =>
         rpc('hexbot.skills.save', {
           name: values.name,
@@ -1888,7 +3049,6 @@ export function Management({
         })
       content = (
         <>
-          {kind === 'skill-create' ? field('name', 'Skill name') : null}
           {field('category', 'Category')}
           {field('content', 'Skill instructions', true)}
           {kind === 'skill' ? (
@@ -1994,6 +3154,237 @@ export function Management({
       )
       break
     }
+    case 'discord': {
+      const name = bot?.display_name ?? 'The bot'
+      const token = str(values.token).trim()
+      const connect = action(
+        'Connect',
+        async () => {
+          await rpc('hexbot.discord.connect', { bot: bot?.name, token })
+          set('token', '')
+        },
+        false,
+        '',
+        !token
+      )
+      const tokenField = field(
+        'token',
+        'Bot token',
+        false,
+        "Saved on the daemon, where bots' tools can't read it, except in Bypass.",
+        true
+      )
+      if (extra.unsupported) {
+        content = <Text tone="muted">Update the daemon to connect bots to Discord.</Text>
+        break
+      }
+      if (extra.off) {
+        content = (
+          <>
+            <Text tone="muted" variant="callout">
+              {`${name} can join Discord servers as its own Discord app and talk with people there.`}
+            </Text>
+            <Group footer="Turn it on in Settings, Plugins, then come back here to connect it.">
+              <Row title={`Discord is off for ${name}.`} testID="discord-off" />
+              <Row
+                title="Open Plugins"
+                testID="discord-open-plugins"
+                chevron
+                onPress={() => onNavigate({ kind: 'plugins' })}
+              />
+            </Group>
+          </>
+        )
+        break
+      }
+      const defaultMode = str(extra.mode) || 'reads'
+      const servers = (extra.servers as RowData[] | undefined) ?? []
+      // One server's own choice, pushed from the Servers list.
+      const server = panel?.data?.server ? str(panel.data.server) : null
+      if (server && extra.bot) {
+        const chosen = servers.find(item => item.id === server)
+        const current = chosen ? str(chosen.mode) : ''
+        const choose = (mode: string | null) =>
+          void run(() =>
+            rpc('hexbot.discord.set_mode', { bot: bot?.name, guild_id: server, mode })
+          )
+        content = (
+          <>
+            <Group
+              title={`How ${name} acts here`}
+              footer={`To keep ${name} out of a channel, change its permissions in Discord.`}
+            >
+              <ChoiceRow
+                title={`Same as default (${discordModeLabel(defaultMode as DiscordMode)})`}
+                selected={!current}
+                onPress={() => choose(null)}
+                testID="discord-server-default"
+              />
+              {DISCORD_MODES.map(mode => (
+                <ChoiceRow
+                  key={mode.value}
+                  title={mode.label}
+                  subtitle={mode.description}
+                  selected={current === mode.value}
+                  onPress={() => choose(mode.value)}
+                  testID={`discord-server-mode-${mode.value}`}
+                />
+              ))}
+            </Group>
+          </>
+        )
+        break
+      }
+      if (!extra.bot) {
+        content = (
+          <>
+            <Text tone="muted" variant="callout">
+              {`${name} joins Discord servers as its own Discord app and talks with people there. Each channel it talks in becomes a room you can watch here.`}
+            </Text>
+            <Group title="Make a Discord app for this bot">
+              <Row
+                title="1. Open the Discord Developer Portal"
+                subtitle={`Choose New Application and name it ${name}.`}
+                testID="discord-portal"
+                chevron
+                onPress={() => void Linking.openURL('https://discord.com/developers/applications')}
+              />
+              <Row
+                title="2. Under Bot, turn on Message Content Intent"
+                testID="discord-intent"
+                subtitle="Without it the app sees only messages that mention it."
+              />
+              <Row
+                title="3. Copy the bot's token"
+                testID="discord-token-step"
+                subtitle="Still under Bot, choose Reset Token and copy the token."
+              />
+            </Group>
+            <Group>
+              {tokenField}
+              {connect}
+            </Group>
+          </>
+        )
+        break
+      }
+      const state =
+        extra.status === 'online'
+          ? 'Online in Discord'
+          : extra.status === 'error'
+            ? str(extra.error) || 'Not connected'
+            : 'Connecting'
+      const discordRooms = (extra.rooms as RowData[] | undefined) ?? []
+      content = (
+        <>
+          <Group
+            footer={`In Discord, ${name} can only search the web, read the server and keep notes. It never sees About you, and it is told never to share what it knows about you.`}
+          >
+            <Row title={str(extra.username) || name} subtitle={state} testID="discord-state" />
+            {action('Add to a server', () => Linking.openURL(str(extra.invite_url)))}
+          </Group>
+          {extra.status === 'error' ? (
+            <Group title="Connect again">
+              {tokenField}
+              {connect}
+            </Group>
+          ) : null}
+          {/* A daemon from before modes reads along everywhere and lists no servers. */}
+          {extra.mode ? (
+            <Group
+              title={`How ${name} acts in Discord`}
+              footer={
+                discordModeListens(defaultMode as DiscordMode) ||
+                servers.some(item => discordModeListens(item.mode as DiscordMode))
+                  ? `${name} spends tokens on messages that don't mention it. In a busy server, set a daily token budget for each bot; your primary bot can do it for you.`
+                  : servers.length
+                    ? 'Each server can have its own choice below.'
+                    : undefined
+              }
+            >
+              {DISCORD_MODES.map(mode => (
+                <ChoiceRow
+                  key={mode.value}
+                  title={mode.label}
+                  subtitle={mode.description}
+                  selected={defaultMode === mode.value}
+                  onPress={() =>
+                    void run(() =>
+                      rpc('hexbot.discord.set_mode', { bot: bot?.name, mode: mode.value })
+                    )
+                  }
+                  testID={`discord-mode-${mode.value}`}
+                />
+              ))}
+            </Group>
+          ) : null}
+          {extra.mode ? (
+            <Group
+              title="Servers"
+              footer={servers.length ? undefined : `Add ${name} to a server and it shows here.`}
+            >
+              {servers.map(item => (
+                <Row
+                  key={str(item.id)}
+                  title={str(item.name)}
+                  subtitle={
+                    item.mode ? discordModeLabel(item.mode as DiscordMode) : 'Same as default'
+                  }
+                  testID={`discord-server-${str(item.id)}`}
+                  chevron
+                  onPress={() =>
+                    onNavigate({
+                      kind: 'discord',
+                      bot,
+                      data: { server: item.id, name: item.name }
+                    })
+                  }
+                />
+              ))}
+            </Group>
+          ) : null}
+          <Group
+            title="Rooms in Discord"
+            footer={
+              discordRooms.length
+                ? undefined
+                : discordModeListens(defaultMode as DiscordMode)
+                  ? `Add ${name} to a server. Each channel where someone writes becomes a room here.`
+                  : `Add ${name} to a server, then @mention it in a channel. That channel becomes a room here.`
+            }
+          >
+            {discordRooms.map(r => {
+              const opened = mobile.rooms.find(item => item.id === r.id)
+              return (
+                <Row
+                  key={str(r.id)}
+                  title={`#${str(r.channel_name) || 'channel'}`}
+                  subtitle={str(r.guild_name)}
+                  testID={`discord-room-${r.id}`}
+                  chevron={Boolean(opened && onOpenRoom)}
+                  onPress={opened && onOpenRoom ? () => onOpenRoom(opened) : undefined}
+                />
+              )
+            })}
+          </Group>
+          <Group>
+            {action(
+              'Disconnect',
+              () => rpc('hexbot.discord.disconnect', { bot: bot?.name }),
+              true,
+              `${name} goes offline in Discord and the token is deleted. Its Discord rooms stay here.`
+            )}
+            <Row
+              title="Turn off in Plugins"
+              testID="discord-plugins"
+              chevron
+              onPress={() => onNavigate({ kind: 'plugins' })}
+            />
+          </Group>
+        </>
+      )
+      break
+    }
     case 'connect':
       content = (
         <>
@@ -2035,9 +3426,37 @@ export function Management({
     case 'updates':
       content = (
         <>
-          <Group>
-            <Row title={str(extra.status)} subtitle={str(extra.message)} testID="update-state" />
-            <Row title="Current version" meta={str(extra.version)} testID="update-version" />
+          <Group
+            footer={
+              extra.capability
+                ? undefined
+                : 'This daemon runs from source. Update its checkout on its computer.'
+            }
+          >
+            <Row
+              title="Status"
+              meta={str(extra.status).replace(/^./, c => c.toUpperCase())}
+              subtitle={str(extra.message)}
+              testID="update-state"
+            />
+            <Row
+              title="Current version"
+              meta={str(extra.version) || mobile.info?.version}
+              testID="update-version"
+            />
+            {extra.outcome &&
+            Date.now() - Date.parse((extra.outcome as DaemonUpdateOutcome).at) < 86_400_000 ? (
+              <Row
+                title="Last update"
+                subtitle={
+                  outcomeFailure(
+                    extra.outcome as DaemonUpdateOutcome,
+                    (extra.outcome as DaemonUpdateOutcome).id
+                  ) ?? `Updated to ${(extra.outcome as DaemonUpdateOutcome).to}.`
+                }
+                testID="update-outcome"
+              />
+            ) : null}
           </Group>
           {extra.capability ? (
             <>
@@ -2049,11 +3468,7 @@ export function Management({
                 'The daemon will install this released version and restart. Running work may be interrupted.'
               )}
             </>
-          ) : (
-            <Text tone="muted">
-              This daemon runs from source. Update its checkout on its computer.
-            </Text>
-          )}
+          ) : null}
         </>
       )
       break
@@ -2195,25 +3610,29 @@ export function Management({
   }
   const titles: Record<string, string> = {
     settings: 'Daemon settings',
+    computer: 'Computers',
     'bot-create': 'New bot',
     bot: bot ? `Edit ${bot.display_name}` : 'Edit bot',
     memory: 'Memory',
     soul: 'Soul',
+    face: 'Face',
     about: 'About you',
     licenses: 'Licenses',
     tools: 'Tools',
     rooms: 'All rooms',
     'room-create': 'New room',
     room: room?.name ?? 'Room',
-    providers: 'Models',
+    providers: 'Providers',
     provider: str(panel?.data?.label),
-    network: 'Network and pairing',
+    network: 'Network',
     devices: 'Paired devices',
+    notifications: 'Notifications',
     usage: 'Usage',
     connectors: 'Connectors',
     connector: str(panel?.data?.name),
     mcp: 'Add MCP server',
     plugins: 'Plugins',
+    experimental: 'Experimental',
     plugin: str(panel?.data?.name),
     passwords: 'Passwords',
     password: str(panel?.data?.title),
@@ -2223,12 +3642,37 @@ export function Management({
     'skill-create': 'Create skill',
     dreams: 'Dreaming',
     heartbeat: 'Heartbeat',
+    discord: panel?.data?.server ? str(panel.data.name) : 'Discord',
     connect: 'Hex Connect',
     updates: 'Daemon updates',
     jobs: 'Scheduled jobs',
     job: 'Scheduled job',
     'job-create': 'New scheduled job',
     activity: 'Bot activity'
+  }
+  /** One line under the title saying what the page is for, as on the desktop. */
+  const descriptions: Record<string, string> = {
+    about: 'About you goes to every bot you own. Each bot keeps its own memory in its profile.',
+    activity: 'Messages your bots sent each other.',
+    computer: "Where your bots can work. Choose which bots use each computer's terminal and desktop.",
+    connect:
+      'Reach this daemon from outside your network. Chat traffic never passes through Connect.',
+    devices: 'Phones, browsers and computers that can use this daemon.',
+    network: 'Pair devices with this daemon over your local network.',
+    passwords:
+      "Sign-ins your bots use for you. A bot has Hexbot type them into a page and never sees them. They're kept in a KeePass vault on this daemon.",
+    plugins:
+      pluginsTable
+        ? 'Every bot against every plugin, under the account it comes from. Changes wait until you review them.'
+        : 'Connectors, MCP servers and skills your bots can use. Choose which bots get each one.',
+    experimental:
+      'Features still being tried. Each is off until you switch it on, applies to this phone only, and may change or go.',
+    providers:
+      'The model providers your bots can use. Usage is billed by them; Hexbot includes no credits.',
+    settings:
+      'Choose when Hexbot asks before a bot acts, and set the defaults, budgets and daily work of every bot.',
+    updates: 'Version and release status for this daemon.',
+    usage: 'Tokens and estimated cost reported by this daemon, by bot, model, and kind of work.'
   }
   const empty: Record<string, string> = {
     devices: 'No paired devices.',
@@ -2239,25 +3683,24 @@ export function Management({
     heartbeat: 'No heartbeats yet.',
     rooms: 'No rooms yet.'
   }
-  return (
-    <Layer
-      visible={!!requested}
-      onClose={onClose}
-      onBack={onBack}
-      title={titles[kind] || 'Settings'}
-      testID="management-sheet"
-      action={
-        save && !panelLoading
-          ? {
-              label: kind === 'bot-create' ? 'Create' : 'Save',
-              busy,
-              disabled: mobile.connection !== 'connected',
-              onPress: () => void run(save!, true)
-            }
-          : undefined
-      }
-    >
+  const title = titles[kind] || 'Settings'
+  const sheetAction: SheetAction | undefined =
+    save && !panelLoading
+      ? {
+          label: kind === 'bot-create' ? 'Create' : 'Save',
+          busy,
+          disabled: mobile.connection !== 'connected',
+          onPress: () => void run(save!, true)
+        }
+      : undefined
+  const body = (
+    <PageLook.Provider value>
       <Form>
+        {descriptions[kind] ? (
+          <Text style={styles.description} tone="muted" variant="callout">
+            {descriptions[kind]}
+          </Text>
+        ) : null}
         {error ? <Banner message={error} tone="danger" testID="management-error" /> : null}
         {notice ? (
           <Text selectable tone="muted" testID="management-notice">
@@ -2276,21 +3719,35 @@ export function Management({
         ) : null}
         {busy ? <Text tone="muted">Working…</Text> : null}
       </Form>
+    </PageLook.Provider>
+  )
+  if (frame) return frame({ action: sheetAction, children: body, title })
+  return (
+    <Layer
+      visible={!!requested}
+      onClose={onClose}
+      onBack={onBack}
+      title={title}
+      testID="management-sheet"
+      action={sheetAction}
+    >
+      {body}
     </Layer>
   )
 }
 
 const styles = StyleSheet.create({
+  controls: { flexDirection: 'row', gap: 6 },
+  description: { marginBottom: -8, marginTop: 4, paddingHorizontal: 4 },
+  dot: { borderRadius: 4, height: 8, width: 8 },
   identity: { alignItems: 'center', borderRadius: radius.panel, gap: 12, padding: 18 },
   inset: { gap: 14, paddingHorizontal: 16, paddingVertical: 14 },
+  newFace: { alignSelf: 'stretch' },
   pictureActions: {
     alignItems: 'center',
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 4,
     justifyContent: 'center'
-  },
-  segment: { padding: 6 },
-  smallButton: { minHeight: 40, paddingHorizontal: 16 },
-  stack: { gap: 16 }
+  }
 })

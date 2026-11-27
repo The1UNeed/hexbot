@@ -47,6 +47,7 @@ import {
   Wrench
 } from 'lucide-react'
 
+import { BRAND_LOGOS } from '../../lib/brand-logos'
 import { cn } from '../../lib/cn'
 import { BRAND_ICONS } from '../../lib/connector-icons'
 
@@ -107,7 +108,19 @@ export function ConnectorIcon({ className, icon }: { className?: string; icon: s
   const brand = BRAND_ICONS[icon]
   const box = 'inline-flex size-7 shrink-0 items-center justify-center rounded-control'
 
-  if (brand) {
+  const logo = brand?.logo ? BRAND_LOGOS[icon] : undefined
+
+  // The owner's own file, whole and in its own colours on white: sized
+  // inside the tile with clear space around it, so the tile never crops it.
+  if (logo) {
+    return (
+      <span aria-hidden className={cn(box, 'border border-border bg-white', className)}>
+        <img alt="" className="size-[70%] object-contain" draggable={false} src={logo} />
+      </span>
+    )
+  }
+
+  if (brand?.path) {
     return (
       <span aria-hidden className={cn(box, className)} style={{ backgroundColor: brand.color }}>
         <svg fill="#ffffff" height="16" viewBox="0 0 24 24" width="16">

@@ -50,6 +50,8 @@
   --hex-bubble: #f0f0f2;
   /* How much of a bot's face colour washes its bubbles. */
   --hex-bot-wash: 14%;
+  /* How much of a bot's face colour tints speaker names (4.5:1+ on every face colour). */
+  --hex-bot-label-mix: 32%;
   /* Secondary text inside a washed bubble: 4.5:1 or better on every face colour. */
   --hex-bot-muted: #5c5c5c;
   --hex-glass-bg: rgb(255 255 255 / 0.58);
@@ -130,6 +132,7 @@
     --hex-canvas: #09090a;
     --hex-bubble: #232326;
     --hex-bot-wash: 20%;
+    --hex-bot-label-mix: 42%;
     --hex-bot-muted: #bebebe;
     --hex-glass-bg: rgb(28 28 31 / 0.6);
     --hex-glass-strong: rgb(24 24 27 / 0.82);
@@ -173,6 +176,8 @@
   --hex-bubble: #f0f0f2;
   /* How much of a bot's face colour washes its bubbles. */
   --hex-bot-wash: 14%;
+  /* How much of a bot's face colour tints speaker names (4.5:1+ on every face colour). */
+  --hex-bot-label-mix: 32%;
   /* Secondary text inside a washed bubble: 4.5:1 or better on every face colour. */
   --hex-bot-muted: #5c5c5c;
   --hex-glass-bg: rgb(255 255 255 / 0.58);
@@ -215,6 +220,7 @@
   --hex-canvas: #09090a;
   --hex-bubble: #232326;
   --hex-bot-wash: 20%;
+  --hex-bot-label-mix: 42%;
   --hex-bot-muted: #bebebe;
   --hex-glass-bg: rgb(28 28 31 / 0.6);
   --hex-glass-strong: rgb(24 24 27 / 0.82);
@@ -292,6 +298,14 @@ body {
 }
 ::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* A list that scrolls with no bar beside it: the chat list. */
+.hex-no-scrollbar {
+  scrollbar-width: none;
+}
+.hex-no-scrollbar::-webkit-scrollbar {
+  display: none;
 }
 
 /*
@@ -379,6 +393,80 @@ body {
       -webkit-backdrop-filter: none;
       backdrop-filter: none;
     }
+  }
+  /*
+   * Nothing scrolls into a line. Every scrolling surface runs the full height
+   * of its card, its controls float over it as glass (`ScrollArea` top and
+   * bottom), and where the content meets an edge it fades out: a mask on the
+   * scroller itself, so what shows through is whatever is really behind it,
+   * the chat card, the panel's glass or the dimmed app, in either theme. Three
+   * lengths say where the top fade starts being see-through (`-from`) and
+   * where each edge's content is whole again; `ScrollArea` sets them from the
+   * measured chrome. The fade eases the same at both edges: 15% of the way in
+   * at 45% of its length. The scrollbar fades with the content, as an overlay
+   * scrollbar does; a strip left unmasked for it kept sharp text at the edge.
+   */
+  .hex-fade-mask {
+    --hex-fade: linear-gradient(
+      to bottom,
+      transparent var(--hex-fade-top-from),
+      rgb(0 0 0 / 0.15)
+        calc(var(--hex-fade-top-from) + (var(--hex-fade-top) - var(--hex-fade-top-from)) * 0.45),
+      #000 var(--hex-fade-top),
+      #000 calc(100% - var(--hex-fade-bottom)),
+      rgb(0 0 0 / 0.15) calc(100% - var(--hex-fade-bottom) * 0.45),
+      transparent 100%
+    );
+    -webkit-mask-image: var(--hex-fade);
+    mask-image: var(--hex-fade);
+    transition:
+      --hex-fade-top var(--hex-motion-fast) var(--hex-ease-out),
+      --hex-fade-top-from var(--hex-motion-fast) var(--hex-ease-out),
+      --hex-fade-bottom var(--hex-motion-fast) var(--hex-ease-out);
+  }
+  /*
+   * Glass inside glass cannot blur: the outer pane's backdrop filter makes it
+   * the backdrop root, and the inner one shows what scrolls under it sharp.
+   * Floating controls inside a panel or a window take the dense field fill
+   * instead, so content never shows through them unblurred.
+   */
+  .hex-glass-strong .hex-glass {
+    background: var(--hex-glass-field);
+  }
+  @media (prefers-reduced-transparency: reduce) {
+    .hex-glass-strong .hex-glass {
+      background: var(--hex-surface);
+    }
+  }
+  /*
+   * Floating chrome lets clicks through to the content under it, except on
+   * the controls themselves, which also opt out of the window's drag handle.
+   */
+  .hex-chrome {
+    pointer-events: none;
+  }
+  .hex-chrome
+    :is(
+      a,
+      button,
+      input,
+      textarea,
+      select,
+      label,
+      [role='alert'],
+      [role='group'],
+      [role='listbox'],
+      [role='menu'],
+      [role='status'],
+      [role='tablist'],
+      [role='toolbar'],
+      [title],
+      .hex-glass,
+      .hex-glass-strong,
+      .hex-glass-field
+    ) {
+    pointer-events: auto;
+    -webkit-app-region: no-drag;
   }
   /* Keyboard focus: the accent ring, outside the shape, on every rounded control. */
   .hex-focus {
@@ -1027,6 +1115,59 @@ html {
   }
 }
 
+/* Bot-to-bot messaging row: gentle entrance, smooth label settle, and calm active glow. */
+@keyframes hex-ask-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes hex-ask-label {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes hex-ask-breathe {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* Full-pane bot-to-bot conversation view entering and closing smoothly over the chat. */
+@keyframes hex-thread-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.992);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes hex-thread-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(8px) scale(0.992);
+  }
+}
+
 @keyframes hex-shimmer {
   from {
     background-position: 200% 0;
@@ -1165,9 +1306,13 @@ html {
 .hex-dialog-in {
   animation: hex-dialog-in var(--hex-motion-panel) var(--hex-ease-out) both;
 }
+/* Let the column shrink to its container: an implicit `auto` column grows to
+   the longest unbreakable line, such as a path in a <pre>, instead of letting
+   it scroll. */
 .hex-unfold,
 .hex-fold {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
 }
 .hex-unfold > *,
 .hex-fold > * {
@@ -1209,6 +1354,100 @@ html {
 .hex-rise {
   animation: hex-rise var(--hex-motion-enter) var(--hex-ease-out) both;
 }
+.hex-ask-enter {
+  animation: hex-ask-enter 280ms var(--hex-ease-out) both;
+}
+/* Reserves the widest prefix ("Message from") purely in CSS so the pill stays locked in place. */
+.hex-ask-prefix {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  font-size: var(--text-secondary);
+}
+.hex-ask-prefix::before {
+  content: 'Message from';
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
+  user-select: none;
+}
+.hex-ask-label {
+  animation: hex-ask-label var(--hex-motion-rise) var(--hex-ease-out) both;
+}
+.hex-ask-live-text {
+  animation: hex-ask-breathe 2s ease-in-out infinite;
+}
+/* Dedicated tinted aura layer so opacity fades out smoothly with zero box-shadow snap. */
+.hex-ask-ring {
+  pointer-events: none;
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--hex-ask-tint, var(--hex-muted-text)) 40%, transparent),
+    0 0 12px -3px color-mix(in srgb, var(--hex-ask-tint, var(--hex-muted-text)) 26%, transparent);
+}
+.hex-ask-ring-live {
+  animation: hex-ask-breathe 2s ease-in-out infinite;
+}
+.hex-thread-in {
+  animation: hex-thread-in var(--hex-motion-panel) var(--hex-ease-out) both;
+}
+.hex-thread-out {
+  animation: hex-thread-out var(--hex-motion-rise) var(--hex-ease-in-out) both;
+  pointer-events: none;
+}
+/* A tick or a mark arriving: it springs to size. */
+@keyframes hex-tick {
+  from {
+    opacity: 0;
+    scale: 0.4;
+  }
+  to {
+    opacity: 1;
+    scale: 1;
+  }
+}
+.hex-tick {
+  animation: hex-tick var(--hex-motion-rise) var(--hex-ease-spring) both;
+}
+/* One step of a window taking the last one's place. */
+@keyframes hex-step {
+  from {
+    opacity: 0;
+    transform: translateX(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.hex-step {
+  animation: hex-step var(--hex-motion-panel) var(--hex-ease-out) both;
+}
+/*
+ * The plugins table. The row under the pointer is tinted across its pinned
+ * name too, which is opaque so the plugins can scroll under it. A column that
+ * just arrived is lit once, then settles.
+ */
+.hex-grid-row > * {
+  transition: background-color var(--hex-motion-fast) var(--hex-ease-out);
+}
+@media (hover: hover) {
+  .hex-grid-row:hover > * {
+    background-color: color-mix(in srgb, var(--hex-text) 3.5%, var(--hex-background));
+  }
+}
+@keyframes hex-lit {
+  from,
+  40% {
+    background-color: color-mix(in srgb, var(--hex-success) 18%, transparent);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+.hex-lit {
+  animation: hex-lit 2400ms var(--hex-ease-in-out);
+}
 /* Like hex-bubble, but honours an animation-delay: hidden until its turn. */
 .hex-pop-in {
   animation: hex-pop var(--hex-motion-enter) var(--hex-ease-out) both;
@@ -1249,7 +1488,7 @@ html {
 }
 @keyframes hex-split {
   from {
-    width: 2rem;
+    width: 2.25rem;
   }
 }
 @keyframes hex-split-in {
@@ -1358,6 +1597,14 @@ html {
   .hex-fade,
   .hex-pending-mark,
   .hex-rise,
+  .hex-ask-enter,
+  .hex-ask-label,
+  .hex-ask-live-text,
+  .hex-ask-ring-live,
+  .hex-thread-in,
+  .hex-tick,
+  .hex-step,
+  .hex-lit,
   .hex-pop-in,
   .hex-menu-in,
   .hex-dialog-in,
@@ -1367,7 +1614,8 @@ html {
     animation: none;
   }
   .hex-fold,
-  .hex-slide-out {
+  .hex-slide-out,
+  .hex-thread-out {
     display: none;
   }
   .hex-pending {
@@ -1403,5 +1651,64 @@ html {
   .hex-card {
     background: var(--hex-card);
     box-shadow: var(--hex-card-shadow);
+  }
+}
+
+/* The fade lengths animate, so a fade eases in as content first scrolls past an edge. */
+@property --hex-fade-top {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+@property --hex-fade-top-from {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+@property --hex-fade-bottom {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+
+/*
+ * Sign in with Google and Sign in with Microsoft are the owners' own button
+ * files, drawn as images at their own size: nothing of them is restyled.
+ * Both publish a light and a dark version; the one for the theme shows.
+ */
+:root {
+  --hex-brand-button-light: block;
+  --hex-brand-button-dark: none;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --hex-brand-button-light: none;
+    --hex-brand-button-dark: block;
+  }
+}
+[data-theme='light'] {
+  --hex-brand-button-light: block;
+  --hex-brand-button-dark: none;
+}
+[data-theme='dark'] {
+  --hex-brand-button-light: none;
+  --hex-brand-button-dark: block;
+}
+@layer components {
+  .hex-brand-button {
+    display: inline-flex;
+    padding: 0;
+    border: 0;
+    background: none;
+    line-height: 0;
+  }
+  .hex-brand-button:disabled {
+    opacity: 0.6;
+  }
+  .hex-brand-button img[data-scheme='light'] {
+    display: var(--hex-brand-button-light);
+  }
+  .hex-brand-button img[data-scheme='dark'] {
+    display: var(--hex-brand-button-dark);
   }
 }

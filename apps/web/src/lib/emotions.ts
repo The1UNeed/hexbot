@@ -14,14 +14,20 @@ import type { Message } from './types'
 
 /** How long each emotion shows, in seconds. */
 export const EMOTION_SECONDS: Record<FaceEmotion, number> = {
+  amused: 2.4,
   bored: 6,
   celebrating: 2.8,
+  cheerful: 2.2,
   confused: 1.8,
   curious: 1.4,
+  determined: 2.6,
   drowsy: Number.POSITIVE_INFINITY,
+  excited: 2.4,
   frustrated: 2.4,
   proud: 3,
+  relieved: 3,
   sad: 3.5,
+  sheepish: 2.6,
   shy: 2.2,
   surprised: 1.3
 }
@@ -91,9 +97,32 @@ export function momentOf(
   // You pressed Stop: the daemon reports it as an error, but nothing failed.
   const cut = interrupted(reply?.error)
 
+  const unresolvedErrorCount = (() => {
+    const seen = new Set<string>()
+    let count = 0
+
+    for (const call of calls) {
+      if (call.status !== 'unresolved') {
+        continue
+      }
+
+      const key = `${call.messageId ?? ''}\u0000${call.parentToolCallId ?? ''}\u0000${call.toolId}\u0000${call.name}`
+
+      if (seen.has(key)) {
+        continue
+      }
+
+      seen.add(key)
+      const failedCount = (call.result as { failed?: unknown } | null)?.failed
+      count += typeof failedCount === 'number' && failedCount > 0 ? failedCount : 1
+    }
+
+    return count
+  })()
+
   return {
     reply: reply && {
-      errors: calls.filter(call => call.status === 'error').length,
+      errors: calls.filter(call => call.status === 'error').length + unresolvedErrorCount,
       failed: !cut && (Boolean(reply.error) || reply.status === 'error' || Boolean(stopped)),
       id: reply.id,
       status: cut ? 'interrupted' : reply.status,
@@ -109,7 +138,23 @@ export function momentOf(
 const PRAISE =
   /\b(thanks|thank you|thx|ty|great job|good job|nice work|well done|awesome|amazing|brilliant|perfect|love (it|this)|you rock)\b|👍|🙏|❤|👏/iu
 
+/** You tell the bot it got something wrong. */
+const CORRECTION =
+  /\b((that'?s|that is|this is|it'?s|you'?re|you are) (wrong|incorrect|not right|not correct)|not what i (asked|meant|wanted)|you (missed|forgot|misunderstood|misread)|(wrong|incorrect) again)\b/i
+
+/** You ask for another go; "retry" inside a request about retries is not one. */
+const RETRY =
+  /\b(try (it |that |once )?again|(retry|redo) (it|that|this)|one more (time|try)|(give it|have) another (go|shot|try))\b|^\W*(retry|again)\W*$/i
+
 const ALARM = /\b(urgent|asap|emergency|broken|crash(ed|ing)?|outage|help)\b|!{2,}/i
+
+const LAUGH = /\b(a?ha(ha)+|he(he)+|lol+|lmao|rofl)\b|😂|🤣|😆/iu
+
+const ENERGY =
+  /\b(let'?s go+|can'?t wait|so excited|woo+(hoo+)?|yay+|hooray|(good|great) news)\b|🚀|🙌|🤩/iu
+
+const GREETING =
+  /^\W*(hi|hello|hey|heya|howdy|good (morning|afternoon|evening)|morning|g'?day)\b|👋/iu
 
 const APOLOGY =
   /^\W*(sorry|i'?m sorry|i apologi[sz]e|apologies|unfortunately|i (couldn'?t|can'?t|wasn'?t able|was unable))/i
@@ -131,14 +176,37 @@ function shouting(text: string): boolean {
   return letters.length >= 8 && letters.replace(/[^A-Z]/g, '').length / letters.length > 0.7
 }
 
-/** How the bot takes something you just said. */
+/**
+ * How the bot takes something you just said. The first that fits: praise, a
+ * correction, a request to go again, alarm, a laugh, good news, a greeting.
+ */
 export function feelingAbout(text: string): FaceEmotion {
   if (PRAISE.test(text)) {
     return 'shy'
   }
 
+  if (CORRECTION.test(text)) {
+    return 'sheepish'
+  }
+
+  if (RETRY.test(text)) {
+    return 'determined'
+  }
+
   if (ALARM.test(text) || shouting(text)) {
     return 'surprised'
+  }
+
+  if (LAUGH.test(text)) {
+    return 'amused'
+  }
+
+  if (ENERGY.test(text)) {
+    return 'excited'
+  }
+
+  if (GREETING.test(text)) {
+    return 'cheerful'
   }
 
   return 'curious'
@@ -163,6 +231,11 @@ export function feelingAfter(reply: NonNullable<Moment['reply']>): FaceEmotion |
 
   if (CELEBRATION.test(text)) {
     return 'celebrating'
+  }
+
+  // It got there although steps failed on the way.
+  if (reply.errors) {
+    return 'relieved'
   }
 
   if (reply.workedMs >= PROUD_AFTER_MS || reply.steps >= PROUD_STEPS) {

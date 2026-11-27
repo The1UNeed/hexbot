@@ -14,6 +14,7 @@ export function ConnectCard({
   action,
   children,
   icon,
+  joined = false,
   status,
   subtitle,
   testID,
@@ -23,6 +24,8 @@ export function ConnectCard({
   action?: ReactNode
   children?: ReactNode
   icon: ReactNode
+  /** Right under the bot's own bubble or card: it sits 4 pt below, one stack. */
+  joined?: boolean
   status?: ReactNode
   subtitle?: null | string
   testID: string
@@ -33,7 +36,11 @@ export function ConnectCard({
   return (
     <View
       accessibilityLabel={accessibilityLabel}
-      style={[styles.card, { borderColor: theme.hairline, backgroundColor: theme.background }]}
+      style={[
+        styles.card,
+        joined && styles.joined,
+        { borderColor: theme.hairline, backgroundColor: theme.background }
+      ]}
       testID={testID}
     >
       <View style={styles.head}>
@@ -164,6 +171,7 @@ const styles = StyleSheet.create({
     padding: 12
   },
   field: { position: 'relative' },
+  joined: { marginTop: 4 },
   fieldActions: {
     alignItems: 'center',
     flexDirection: 'row',

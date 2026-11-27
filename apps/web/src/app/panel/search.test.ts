@@ -41,9 +41,15 @@ const chat = chatEntries(
       role: 'assistant',
       text: 'The budget is tight in March.',
       toolCalls: [
-        call({ args: { path: '/Users/me/Hexbot/notes/budget-summary.md' }, toolId: 'w1' }),
-        call({ args: '{"path":"draft.md"}', name: 'edit', toolId: 'w2' }),
-        call({ args: { path: 'failed.md' }, status: 'error', toolId: 'w3' }),
+        // Only files the bot shared count; one it only wrote stays out.
+        call({ args: { path: '/Users/me/Hexbot/notes/budget-notes.md' }, toolId: 'w0' }),
+        call({
+          args: { path: '/Users/me/Hexbot/notes/budget-summary.md' },
+          name: 'hexbot_share_file',
+          toolId: 'w1'
+        }),
+        call({ args: '{"path":"draft.md"}', name: 'hexbot_share_file', toolId: 'w2' }),
+        call({ args: { path: 'failed.md' }, name: 'hexbot_share_file', status: 'error', toolId: 'w3' }),
         call({
           args: {
             html: '<style>.budget{}</style><h1>Spend by month</h1><script>budget()</script>',
@@ -60,7 +66,7 @@ const chat = chatEntries(
 )
 
 describe('chatEntries', () => {
-  it('reads what was said, shared, written and drawn, and skips other roles', () => {
+  it('reads what was said, shared and drawn, and skips other roles', () => {
     expect(chat.map(entry => entry.id)).toEqual(['m1', 'm2'])
     expect(chat[0]!.author).toBe('You')
     expect(chat[1]!.author).toBe('Muse')

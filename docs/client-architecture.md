@@ -171,19 +171,30 @@ when multiple preserved owner conversations make its source uncertain.
 | `message.complete` | finalize, attach usage, call `hexbot.sections.touch` |
 | `reasoning.delta` | append to the message's reasoning trace; the conversation never shows it |
 | `thinking.delta` | replace the daemon's status line (a wait notice); spinner copy is dropped |
-| `tool.start` / `tool.complete` | add or resolve a tool call in the current assistant message |
+| `tool.start` / `tool.complete` | add or resolve a tool call in the current assistant message; the running one, with its arguments, gives the live status its words and the face its mood (`lib/work-label.ts`) |
 | `approval.request` | push an approval card (session scoped) and notify; one with a `form` is the sign-in card, answered with the username and password, or the plugin card (`kind: "plugin"`), answered with `values` and `provider` |
 | `approval.resolved` / `approval.expire` | show that card's answer / drop it while unanswered |
-| `clarify.request` / `clarify.resolved` / `clarify.expire` | push a question card / show its answers / freeze it |
+| `clarify.request` / `clarify.resolved` / `clarify.expire` | push a question card / show its answers / stop it asking the daemon: until you write after it, its answer goes as your next message |
 | `status.update` | header status line; `checking` replaces the live status with "Checking this step" until an empty `checking` line |
 | `session.info` | update section's model and provider chips |
 | `session.usage` | usage badge |
 | `error` | inline error row |
 | `hexbot.passwords.changed` | refresh Settings, Passwords while it is open |
+| `hexbot.reactions.changed` | replace one message's reactions in `stores/reactions.ts`, by its history row; `input_id` finds your own message before it is read back from history |
 
-Sending: `prompt.submit {session_id, text}`; before it, attachments are
-staged with `image.attach_bytes` (images) or `file.attach {data_url,
-name}` (other files) or `pdf.attach`. Stop: `session.interrupt`.
+Sending: `prompt.submit {session_id, text, attachments}`. Each file is
+staged the moment it is dropped, picked or pasted, with `image.attach_bytes`
+(images), `file.attach {data_url, name}` (other files) or `pdf.attach`, one
+at a time (`app/conversation/draft-files.tsx`), in 768 KiB
+`attachments.part` calls, so the chip's percentage is what the daemon has
+confirmed; the attach call then names the upload. A daemon without parts
+cannot take a file back either: there the file stays on this device (`kept`)
+and goes whole with Send, as before; only media and PDFs preview from the
+local copy. A file taken out while it is on its
+way sends no more parts. Send waits until every file is staged in
+the chat's live session in this daemon process (`replay_epoch`); a reopen or
+restart stages them again, and a file taken out is taken back with
+`attachments.remove`. Stop: `session.interrupt`.
 
 ## Routes
 
@@ -200,9 +211,34 @@ name}` (other files) or `pdf.attach`. Stop: `session.interrupt`.
 Closing the app window keeps its page and daemon connection alive in both
 editions. Full keeps an app-owned daemon running; Client keeps receiving
 notifications from its remote daemon. Chromium keeps its default background
-throttling. Reply completions request a background-only native notification;
-the main process checks whether the window is hidden or minimized at delivery
-time. Browser reply notifications use the page's visibility.
+throttling. A `message.complete` with `chat: true` (a bot's own chat, sent to
+every client) requests one native notification with the turn's last words,
+whichever chat the page shows, unless the turn failed (its Stopped
+notification says so) or the bot's Notify me is off. Every notification goes
+through `lib/notify.ts`, which shortens the text to 1,000 characters and stays
+quiet only about the chat on screen while Hexbot is in front: the roster names
+that chat (`setShownSection` in `lib/page-visible.ts`), the app passes
+`backgroundOnly` for it and the main process checks the window's focus at
+delivery time; a browser tab checks `document.hasFocus()`. A window left open
+behind another app, or another chat, still notifies. Clicking a notification
+opens the chat; the main process keeps the newest notifications referenced,
+because Electron drops the click of one nothing refers to. Settings,
+Notifications holds this device's permission and a test, the phones that take
+pushes, and each bot's Notify me; a banner under the chat's header asks once
+per device to turn notifications on. A chat is marked read only while the page
+is focused, so a window behind another app leaves a reply unread for the
+phone push.
+
+The app cannot read its system's permission. macOS asks once whether Hexbot
+may notify, the first time the app touches notifications; until Allow is
+chosen it shows nothing the app sends and still reports each one as shown,
+and a question left unanswered, or gone because the app quit, is never asked
+again. So the main process touches notifications as the window opens
+(`askToNotify` in `notify.ts`), which puts the question in front of the user,
+and the page takes the user's word instead of the system's: the banner's
+Enable sends a test and asks whether it appeared. Yes ends the banner
+(`confirmed`); No offers the system's notification settings and another test.
+Settings, Notifications has the same test and button.
 macOS hides the window as before. Windows hides it to the tray, or minimizes
 if tray setup fails. Linux always minimizes, because a tray object does not
 prove that the desktop displays an icon, including on GNOME without a tray
@@ -224,9 +260,13 @@ Exposed by the preload with contextIsolation on:
 - `daemon.localToken()` reads `~/.hexbot/local-device.token`.
 - `pair(host, port, code, deviceName)` performs the password-login from
   the main process and returns the device token.
-- `notify({title, body, sectionId, backgroundOnly?})` shows a native notification;
-  background-only requests stay silent while the window is visible and not
-  minimized. Clicking focuses the window and navigates.
+- `notify({title, body, sectionId?, backgroundOnly?})` shows a native notification;
+  background-only requests stay silent only while the window is shown, not
+  minimized and focused. Clicking focuses the window and navigates.
+- `openNotificationSettings()` opens the system's page for Hexbot's
+  notifications: System Settings on macOS, at Hexbot when the bundle id is
+  known, and Windows Settings. It rejects on Linux, where the page hides the
+  button.
 - `openExternal(url)`, `pickFiles()`.
 - `updater.state()`, `updater.check()`, `updater.download()`, `updater.install()`,
   `updater.setChannel(track)`, `updater.onStatus(cb)`. `stores/updates.ts`
@@ -252,8 +292,10 @@ threads keep their own route and accept only answers to existing approval and
 question cards. Metadata or open failures offer Retry. The same
 navigation and daemon guards cover closing bot settings, so a late lookup cannot
 pull the user out of a later room or route. Mobile Pulse opens a waiting teammate
-thread's approval or question on its own live ID; ordinary bot taps still open
-the canonical owner chat. Reconnects discard old chooser state, and a fresh
+thread's approval or question on its own live ID; the web roster's waiting row
+opens the thread's route from `status_detail.peer_bot` and `section_id`, and a
+notification for a thread finds its bot through the same status or
+`include_threads`. Ordinary bot taps still open the canonical owner chat. Reconnects discard old chooser state, and a fresh
 modern capability never accepts a stale ordinary chooser row as canonical.
 
 Closing settings for a deleted bot clears only that bot's remembered chat and

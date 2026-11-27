@@ -8,14 +8,14 @@
  * Give `size` for a fixed face, or omit it and size the parent: the SVG then fills its container.
  * `moods` makes the face go through those moods in turn, as a bot's face does while it works.
  */
-import { AVATAR_SHAPES, ballTransform, CAPSULE_EYE, type FaceLook, type FaceMood, INK } from '../../../web/src/lib/face-geometry'
+import { AVATAR_COLORS, AVATAR_SHAPES, ballTransform, CAPSULE_EYE, EYES, type FaceLook, type FaceMood } from '../../../web/src/lib/face-geometry'
 import { coreTransform, dotLift, dotTransform, MORPH_KINDS, pencilTransform, restFrame, SPARKS, tints } from '../../../web/src/lib/face-motion'
 
 interface Props { shape: string; color: string; size?: number; class?: string; mood?: FaceMood; moods?: FaceMood[]; look?: FaceLook }
 const { shape, color, size, class: className = '', mood = 'idle', moods, look } = Astro.props
 const outline = AVATAR_SHAPES.find(item => item.id === shape) ?? AVATAR_SHAPES[0]!
-/** Chalk is the one colour too light for white eyes. */
-const eyes = color.toLowerCase() === '#ececf0' ? INK : '#ffffff'
+/** The pale colours of the app's palette take ink eyes; every other colour, white. */
+const eyes = AVATAR_COLORS.find(item => item.value === color.toLowerCase())?.eyes ?? EYES
 const start = moods?.[0] ?? mood
 const rest = restFrame(start, look)
 const tint = `face-tint-${Math.random().toString(36).slice(2, 9)}`

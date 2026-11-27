@@ -14,7 +14,8 @@ defaults:
     pnpm: 10.29.3
 
 jobs:
-  testflight:
+  # Same upload as testflight.yml; testflight-testers.yml takes it from there.
+  submit_ios:
     name: Upload to App Store Connect
     type: submit
     params:

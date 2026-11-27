@@ -1,9 +1,23 @@
 import { Ionicons } from '@expo/vector-icons'
-import { memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  type ComponentRef,
+  memo,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from 'react'
+import * as Clipboard from 'expo-clipboard'
+import {
+  AccessibilityInfo,
+  ActionSheetIOS,
+  Alert,
+  Animated,
   FlatList,
   type ListRenderItemInfo,
-  Image,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -13,6 +27,10 @@ import {
 } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
+import type { FileComment } from '../../../web/src/lib/file-comments'
+import type { WorkLabel } from '../../../web/src/lib/work-label'
+import { messageText } from '../core/message-text'
+
 import {
   Banner,
   BotFace,
@@ -20,6 +38,8 @@ import {
   type BotStatus,
   bubbleFill,
   Button,
+  faceColor,
+  faceWash,
   dividesChat,
   type FaceMood,
   type FaceSource,
@@ -35,13 +55,22 @@ import {
   useTheme,
   withAlpha
 } from '../ui'
+import type { AttachSource } from '../core/pickFile'
+import type { Rpc } from '../core/types'
+import { AttachMenu } from './AttachMenu'
+import { FileCard } from './FileCard'
+import { MediaAttachment } from './MediaAttachment'
+import { MessageMenu } from './MessageMenu'
+import { EmailDraftCard } from './EmailDraftCard'
 import { PluginCard } from './PluginCard'
+import { SelectTextSheet } from './SelectTextSheet'
 import { SignInCard } from './SignInCard'
 import type {
   ApprovalChoice,
   ApprovalRequestView,
   AttachmentView,
   CardAnswer,
+  ComposerAttachment,
   ChatItem
 } from './types'
 
@@ -61,19 +90,30 @@ export interface ChatScreenProps {
 
   /** The transcript, oldest first. */
   items: ChatItem[]
-  /** A bot is working but has not written anything yet. */
-  waiting?: { label?: string | null; who?: FaceSource | null } | null
-  /** A turn is running; the composer offers Stop. */
+  /**
+   * A bot is working and writing nothing right now: what it does, in two parts
+   * ("Opening" "Taobao"), and the face that goes with it. `computer` is a
+   * moving pointer.
+   */
+  waiting?: { label: WorkLabel; mood?: FaceMood; who?: FaceSource | null } | null
+  /** A turn is running. With `onStop`, a room's, the composer offers Stop until there is text. */
   busy?: boolean
-  /** Keep Send next to Stop while busy, for rooms and for answering a question. */
-  sendWhileBusy?: boolean
 
   onSend: (text: string) => void
   onStop?: () => void
-  /** Leave out to hide the attach button. */
-  onAttach?: () => void
-  attachments?: AttachmentView[]
+  /** Leave out to hide the attach button. Its menu offers photos, the camera and files. */
+  onAttach?: (source: AttachSource) => void
+  attachments?: ComposerAttachment[]
   onRemoveAttachment?: (id: string) => void
+  /** Opens a file that finished uploading, to preview it. */
+  onOpenAttachment?: (id: string) => void
+  /** Tries a failed upload again. */
+  onRetryAttachment?: (id: string) => void
+  /** Comments left on files, numbered; they go with the next message. */
+  comments?: FileComment[]
+  onRemoveComment?: (id: string) => void
+  /** Opens the file a comment is on. */
+  onOpenComment?: (comment: FileComment) => void
   /** Controlled draft; leave both out to let the screen keep it. */
   draft?: string
   onDraftChange?: (text: string) => void
@@ -87,13 +127,26 @@ export interface ChatScreenProps {
     choice: ApprovalChoice,
     answer?: CardAnswer
   ) => Promise<unknown> | void
-  onMessageLongPress?: (id: string) => void
-  /** Your message Recall can take back; a long press on it recalls it. */
+  /** Lets a plugin card run a subscription sign-in, such as SuperGrok for X search. */
+  rpc?: Rpc
+  /** Your message Recall can take back; a long press on it offers Recall. */
   recallId?: string | null
   onRecall?: (id: string) => void
+  /**
+   * Leaves your emoji on a bot's message, by its history row; the same emoji
+   * again takes it back. A long press on such a message offers it; a bot's
+   * own chat only.
+   */
+  onReact?: (rowId: string, emoji: string) => void
+  /** Opens the conversation in which `peer` asked `bot`; the ask row opens it. */
+  onOpenThread?: (bot: string, peer: string, sectionId?: string) => void
 
   archived?: boolean
   onUnarchive?: () => void
+  /** A room that is a Discord channel: its face carries Discord's mark. */
+  discord?: boolean
+  /** Replies go somewhere else, such as a room that is a Discord channel: no composer. */
+  elsewhere?: { text: string; actionLabel: string; onAction: () => void } | null
 
   /** The history is still on its way: show the face loading, not an empty chat. */
   opening?: boolean
@@ -107,18 +160,27 @@ export interface ChatScreenProps {
 
   /** Draw a message's text yourself, such as with a Markdown renderer. */
   renderMessageText?: (item: MessageItem) => ReactNode
+  /**
+   * A file the daemon keeps, as a URI to play; a bot's own chat only. `id` is
+   * the message's file, so a file shared again after a change is read again.
+   */
+  loadMedia?: (path: string, id: string) => Promise<string>
   /** Opens the bots' computer on its own card; the button shows only with this. */
   onOpenComputer?: () => void
-  /** A bot is acting on the computer, or you have it: the button shows a dot. */
+  /** A bot is acting on the computer, or you paused them: the button shows a dot. */
   computerLive?: boolean
   /** Opens a visual item from the transcript. */
   onOpenVisual?: (id: string) => void
+  /** Previews a file the daemon keeps; its card opens it only with this. */
+  onOpenFile?: (file: AttachmentView) => void
   /** Opens search in this conversation; the button shows only with this. */
   onOpenSearch?: () => void
   /** A message search found: the transcript scrolls to it and marks it. A new nonce shows it again. */
   focus?: { id: string; nonce: number } | null
   /** Under the empty state of a new chat, such as the model it will use. */
   intro?: ReactNode
+  /** A card above the composer the chat needs answered before the next message, such as a new model. */
+  notice?: ReactNode
 }
 
 type Entry = ChatItem | { id: string; kind: 'waiting' }
@@ -191,6 +253,7 @@ export function chatActions(props: ChatScreenProps): BarAction[] {
 export function ChatTitle(props: ChatScreenProps) {
   const { face, members, onOpenSettings, status, subtitle, title } = props
   const room = !!members
+  const theme = useTheme()
 
   return (
     <Pressable
@@ -204,9 +267,21 @@ export function ChatTitle(props: ChatScreenProps) {
       style={({ pressed }) => [styles.titleButton, { opacity: pressed ? 0.7 : 1 }]}
       testID="chat-title"
     >
-      <Glass interactive={!!onOpenSettings} radius={24} style={styles.titlePill}>
+      <Glass
+        interactive={!!onOpenSettings}
+        radius={24}
+        // The Discord mark hangs off the face's corner; room for it inside the capsule.
+        style={[styles.titlePill, room && props.discord && styles.titlePillDiscord]}
+      >
         {room ? (
-          <RoomFace members={members} name={title} size={30} status={status} />
+          <RoomFace
+            discord={props.discord}
+            members={members}
+            name={title}
+            outline={theme.chrome}
+            size={30}
+            status={status}
+          />
         ) : (
           <BotFace
             {...(face ?? { name: title })}
@@ -276,6 +351,8 @@ function ChatBody(props: ChatScreenProps) {
     const list: ListEntry[] = []
     // The last message with something to show; a step with no words or files draws nothing.
     let said: MessageItem | undefined
+    // Whether the last thing drawn is the bot's own bubble or card, which a card joins.
+    let botLast = false
     for (const [index, entry] of items.entries()) {
       const previous = items[index - 1]
       const shown =
@@ -295,11 +372,15 @@ function ChatBody(props: ChatScreenProps) {
         entry,
         continued:
           !divided &&
-          entry.kind === 'message' &&
-          previous?.kind === 'message' &&
-          previous.role === entry.role &&
-          previous.author?.name === entry.author?.name
+          (entry.kind === 'approval'
+            ? botLast
+            : entry.kind === 'message' &&
+              previous?.kind === 'message' &&
+              previous.role === entry.role &&
+              previous.author?.name === entry.author?.name)
       })
+      if (shown) botLast = entry.role === 'bot' && !entry.error
+      else if (entry.kind !== 'message') botLast = entry.kind === 'approval'
     }
     list.reverse()
 
@@ -329,13 +410,55 @@ function ChatBody(props: ChatScreenProps) {
   const {
     emotion,
     onApprove,
-    onMessageLongPress,
+    onOpenFile,
+    onOpenThread,
     onOpenVisual,
+    onReact,
     onRecall,
     recallId,
-    renderMessageText
+    renderMessageText,
+    loadMedia,
+    rpc
   } = props
+  // The text a long press chose to select from; the sheet shows while it is set.
+  const [selecting, setSelecting] = useState<string | null>(null)
+  // The bot's message a long press chose to react to; its menu shows while it is set.
+  const [reacting, setReacting] = useState<null | { mine?: string; rowId: string; text: string }>(
+    null
+  )
+  // Read at the press, so a message streaming in does not draw every row again.
+  const latest = useRef(items)
+  latest.current = items
+  const pressMessage = useCallback(
+    (id: string) => {
+      const recall = id === recallId && onRecall ? () => onRecall(id) : undefined
+      const item = latest.current.find(
+        (entry): entry is MessageItem => entry.kind === 'message' && entry.id === id
+      )
+      if (!item?.text) return recall?.()
+      // What the bubble shows: a bot's Markdown marks are drawn, not written.
+      const text = item.role === 'user' || !renderMessageText ? item.text : messageText(item.text)
+      // A bot's message that can take a reaction opens the menu with the emoji row.
+      if (item.role === 'bot' && item.rowId && onReact && !item.streaming) {
+        setReacting({
+          mine: item.reactions?.find(reaction => reaction.mine)?.emoji,
+          rowId: item.rowId,
+          text
+        })
+        return
+      }
+      // The browser preview selects with the mouse; a press there only recalls.
+      if (Platform.OS === 'web') return recall?.()
+      messageMenu({
+        copy: () => void Clipboard.setStringAsync(text),
+        select: () => setSelecting(text),
+        recall
+      })
+    },
+    [onReact, onRecall, recallId, renderMessageText]
+  )
   const waitingLabel = waiting?.label
+  const waitingMood = waiting?.mood
   const waitingWho = waiting?.who ?? (room ? null : fallbackFace)
   const renderItem = useCallback(
     ({ item: { entry, continued } }: ListRenderItemInfo<ListEntry>) => {
@@ -343,21 +466,24 @@ function ChatBody(props: ChatScreenProps) {
         <TranscriptEntry
           entry={entry}
           continued={continued}
-          face={entry.kind === 'message' && !room ? fallbackFace : undefined}
-          room={room}
-          onLongPress={
-            entry.kind === 'message'
-              ? entry.id === recallId && onRecall
-                ? onRecall
-                : onMessageLongPress
+          face={
+            (entry.kind === 'message' || entry.kind === 'visual') && !room
+              ? fallbackFace
               : undefined
           }
+          room={room}
+          onLongPress={entry.kind === 'message' ? pressMessage : undefined}
           renderText={entry.kind === 'message' ? renderMessageText : undefined}
+          loadMedia={entry.kind === 'message' ? loadMedia : undefined}
+          onOpenFile={entry.kind === 'message' ? onOpenFile : undefined}
           onApprove={entry.kind === 'approval' ? onApprove : undefined}
+          rpc={entry.kind === 'approval' ? rpc : undefined}
           onOpenVisual={entry.kind === 'visual' ? onOpenVisual : undefined}
+          onOpenThread={entry.kind === 'ask' ? onOpenThread : undefined}
+          onReact={entry.kind === 'message' ? onReact : undefined}
           waitingLabel={entry.kind === 'waiting' ? waitingLabel : undefined}
           waitingWho={entry.kind === 'waiting' ? waitingWho : undefined}
-          mood={entry.kind === 'waiting' ? emotion : undefined}
+          mood={entry.kind === 'waiting' ? (emotion ?? waitingMood) : undefined}
         />
       )
       return entry.id === flash?.id ? (
@@ -373,20 +499,34 @@ function ChatBody(props: ChatScreenProps) {
       theme.accent,
       room,
       fallbackFace,
-      recallId,
-      onRecall,
-      onMessageLongPress,
+      pressMessage,
       renderMessageText,
+      loadMedia,
       onApprove,
+      onOpenFile,
+      rpc,
       onOpenVisual,
-      waitingLabel,
+      onOpenThread,
+      onReact,
+      // The words, not the object the parent builds anew each time.
+      waitingLabel?.verb,
+      waitingLabel?.object,
       waitingWho,
+      waitingMood,
       emotion
     ]
   )
 
   return (
     <>
+      <SelectTextSheet onClose={() => setSelecting(null)} text={selecting} />
+      <MessageMenu
+        message={reacting}
+        onClose={() => setReacting(null)}
+        onCopy={() => reacting && void Clipboard.setStringAsync(reacting.text)}
+        onReact={emoji => reacting && onReact?.(reacting.rowId, emoji)}
+        onSelect={() => reacting && setSelecting(reacting.text)}
+      />
       {items.length === 0 && !waiting && opening ? (
         <View style={styles.empty} testID="chat-opening">
           <LoadingFace {...(face ?? { name: title })} name={title} />
@@ -399,7 +539,7 @@ function ChatBody(props: ChatScreenProps) {
           testID="chat-empty"
         >
           {room ? (
-            <RoomFace members={members} name={title} size={88} />
+            <RoomFace discord={props.discord} members={members} name={title} size={88} />
           ) : (
             <BotFace {...(face ?? { name: title })} mood="happy" name={title} size={88} />
           )}
@@ -483,8 +623,33 @@ function ChatBody(props: ChatScreenProps) {
             />
           ) : null}
         </View>
+      ) : props.elsewhere ? (
+        <View style={[styles.archived, { paddingBottom: bottom }]} testID="chat-elsewhere">
+          <Text style={styles.archivedText} tone="muted" variant="callout">
+            {props.elsewhere.text}
+          </Text>
+          <View style={styles.elsewhereActions}>
+            {busy && props.onStop ? (
+              <Button
+                label="Stop"
+                onPress={props.onStop}
+                testID="chat-elsewhere-stop"
+                variant="secondary"
+              />
+            ) : null}
+            <Button
+              label={props.elsewhere.actionLabel}
+              onPress={props.elsewhere.onAction}
+              testID="chat-elsewhere-open"
+              variant="secondary"
+            />
+          </View>
+        </View>
       ) : (
-        <Composer {...props} bottom={bottom} busy={busy} />
+        <>
+          {props.notice ? <View style={styles.modelNotice}>{props.notice}</View> : null}
+          <Composer {...props} bottom={bottom} busy={busy} />
+        </>
       )}
     </>
   )
@@ -497,8 +662,13 @@ const TranscriptEntry = memo(function TranscriptEntry({
   room,
   onLongPress,
   renderText,
+  loadMedia,
   onApprove,
+  onOpenFile,
+  rpc,
   onOpenVisual,
+  onOpenThread,
+  onReact,
   waitingLabel,
   waitingWho,
   mood
@@ -509,15 +679,22 @@ const TranscriptEntry = memo(function TranscriptEntry({
   room: boolean
   onLongPress?: (id: string) => void
   renderText?: ChatScreenProps['renderMessageText']
+  loadMedia?: ChatScreenProps['loadMedia']
   onApprove?: ChatScreenProps['onApprove']
+  onOpenFile?: ChatScreenProps['onOpenFile']
+  rpc?: Rpc
   onOpenVisual?: ChatScreenProps['onOpenVisual']
-  waitingLabel?: string | null
+  onOpenThread?: ChatScreenProps['onOpenThread']
+  onReact?: ChatScreenProps['onReact']
+  waitingLabel?: WorkLabel
   waitingWho?: FaceSource | null
   mood?: FaceMood
 }) {
   switch (entry.kind) {
     case 'waiting':
       return <WaitingRow label={waitingLabel} mood={mood} who={waitingWho} />
+    case 'ask':
+      return <AskRow ask={entry} onOpen={onOpenThread} />
     case 'day':
       return (
         <Text align="center" style={styles.day} tone="muted" variant="caption">
@@ -539,6 +716,7 @@ const TranscriptEntry = memo(function TranscriptEntry({
       return (
         <View style={styles.visualItem}>
           <VisualCard
+            face={face}
             onOpen={() => onOpenVisual?.(entry.id)}
             testID={`visual-open-${entry.index}`}
             title={entry.title}
@@ -546,12 +724,30 @@ const TranscriptEntry = memo(function TranscriptEntry({
         </View>
       )
     case 'approval':
-      return entry.request.form?.kind === 'plugin' ? (
-        <PluginCard form={entry.request.form} onAnswer={onApprove!} request={entry.request} />
+      return entry.request.form?.kind === 'email_draft' ? (
+        <EmailDraftCard
+          form={entry.request.form}
+          joined={continued}
+          onAnswer={onApprove!}
+          request={entry.request}
+        />
+      ) : entry.request.form?.kind === 'plugin' ? (
+        <PluginCard
+          form={entry.request.form}
+          joined={continued}
+          onAnswer={onApprove!}
+          request={entry.request}
+          rpc={rpc}
+        />
       ) : entry.request.form ? (
-        <SignInCard form={entry.request.form} onAnswer={onApprove!} request={entry.request} />
+        <SignInCard
+          form={entry.request.form}
+          joined={continued}
+          onAnswer={onApprove!}
+          request={entry.request}
+        />
       ) : (
-        <ApprovalCard onAnswer={onApprove!} request={entry.request} />
+        <ApprovalCard joined={continued} onAnswer={onApprove!} request={entry.request} />
       )
     case 'message': {
       return (
@@ -561,7 +757,15 @@ const TranscriptEntry = memo(function TranscriptEntry({
           item={entry}
           onLongPress={onLongPress}
           renderText={renderText}
-          showAuthor={room && entry.role !== 'user' && !continued}
+          loadMedia={loadMedia}
+          onOpenFile={onOpenFile}
+          onReact={onReact}
+          // In a room every bot is named; in a thread between bots, the one that asks.
+          showAuthor={
+            (room || (!!entry.author && entry.author.name !== face?.name)) &&
+            entry.role !== 'user' &&
+            !continued
+          }
         />
       )
     }
@@ -574,6 +778,9 @@ function MessageBubble({
   item,
   onLongPress,
   renderText,
+  loadMedia,
+  onOpenFile,
+  onReact,
   showAuthor
 }: {
   /** The thread's bot, for replies that do not name one. */
@@ -583,6 +790,9 @@ function MessageBubble({
   showAuthor: boolean
   onLongPress?: (id: string) => void
   renderText?: (item: MessageItem) => ReactNode
+  loadMedia?: ChatScreenProps['loadMedia']
+  onOpenFile?: ChatScreenProps['onOpenFile']
+  onReact?: ChatScreenProps['onReact']
 }) {
   const theme = useTheme()
   const mine = item.role === 'user'
@@ -614,31 +824,63 @@ function MessageBubble({
           {rendered ? (
             rendered
           ) : (
-            <Text selectable style={mine ? { color: theme.onInk } : null} variant="body">
+            <Text
+              selectable={Platform.OS === 'web'}
+              style={mine ? { color: theme.onInk } : null}
+              variant="body"
+            >
               {item.text}
             </Text>
           )}
         </Pressable>
       ) : null}
+      {/* Tucked under the bubble's corner: yours on a bot's message, the bot's on yours. */}
+      {item.reactions?.length ? (
+        <View style={styles.reactions} testID={`chat-reactions-${item.id}`}>
+          {item.reactions.map(reaction => {
+            const remove =
+              reaction.mine && item.rowId && onReact
+                ? () => onReact(item.rowId!, reaction.emoji)
+                : undefined
+            return (
+              <Pressable
+                accessibilityHint={remove ? 'Removes your reaction' : undefined}
+                accessibilityLabel={
+                  reaction.mine ? `You reacted ${reaction.emoji}` : `Reacted ${reaction.emoji}`
+                }
+                accessibilityRole={remove ? 'button' : 'text'}
+                disabled={!remove}
+                hitSlop={8}
+                key={`${reaction.mine ? 'mine' : 'bot'}-${reaction.emoji}`}
+                onPress={remove}
+                style={[
+                  styles.reactionChip,
+                  { backgroundColor: theme.background, borderColor: theme.hairline }
+                ]}
+              >
+                <Text style={styles.reactionEmoji}>{reaction.emoji}</Text>
+              </Pressable>
+            )
+          })}
+        </View>
+      ) : null}
       {item.attachments?.length ? (
         <View style={[styles.attachments, { justifyContent: mine ? 'flex-end' : 'flex-start' }]}>
-          {item.attachments.map(file =>
-            file.kind === 'image' && file.uri ? (
-              <Image
-                accessibilityLabel={file.name}
+          {item.attachments.map(file => {
+            const card = (
+              <FileCard
                 key={file.id}
-                source={{ uri: file.uri }}
-                style={[styles.image, { backgroundColor: theme.fill }]}
+                name={file.name}
+                onOpen={file.path && onOpenFile ? () => onOpenFile(file) : undefined}
+                testID={`chat-file-${file.id}`}
               />
-            ) : (
-              <View key={file.id} style={[styles.file, { borderColor: theme.hairline }]}>
-                <Ionicons color={theme.muted} name="document-outline" size={16} />
-                <Text numberOfLines={1} style={styles.fileName} variant="footnote">
-                  {file.name}
-                </Text>
-              </View>
             )
-          )}
+            return file.kind === 'image' || file.kind === 'video' || file.kind === 'audio' ? (
+              <MediaAttachment card={card} file={file} key={file.id} load={loadMedia} />
+            ) : (
+              card
+            )
+          })}
         </View>
       ) : null}
       {item.error ? (
@@ -653,36 +895,277 @@ function MessageBubble({
   )
 }
 
+/**
+ * What a long press on a message offers: the system's action sheet on iOS,
+ * a dialog on Android, which holds three choices and closes with Back.
+ */
+function messageMenu(actions: { copy: () => void; select: () => void; recall?: () => void }) {
+  const { copy, select, recall } = actions
+  if (Platform.OS === 'ios') {
+    const options = ['Copy', 'Select text', ...(recall ? ['Recall'] : []), 'Cancel']
+    ActionSheetIOS.showActionSheetWithOptions(
+      {
+        cancelButtonIndex: options.length - 1,
+        destructiveButtonIndex: recall ? 2 : undefined,
+        options
+      },
+      index => [copy, select, recall][index]?.()
+    )
+    return
+  }
+  Alert.alert(
+    'Message',
+    undefined,
+    [
+      ...(recall ? [{ onPress: recall, style: 'destructive' as const, text: 'Recall' }] : []),
+      { onPress: select, text: 'Select text' },
+      { onPress: copy, text: 'Copy' }
+    ],
+    { cancelable: true }
+  )
+}
+
+/**
+ * The live line while a bot works: its face and what it is doing, in two
+ * tones. The specific part ("Taobao" in "Opening Taobao") is drawn stronger
+ * than the verb, as on the web.
+ */
 function WaitingRow({
   label,
   mood,
   who
 }: {
-  label?: string | null
+  label?: WorkLabel
   mood?: FaceMood
   who?: FaceSource | null
 }) {
+  const theme = useTheme()
+  const verb = label?.verb ?? 'Thinking…'
+
   return (
-    <View accessibilityLiveRegion="polite" style={styles.waiting} testID="chat-waiting">
+    <View
+      accessibilityLabel={label?.object ? `${verb} ${label.object}` : verb}
+      accessibilityLiveRegion="polite"
+      style={styles.waiting}
+      testID="chat-waiting"
+    >
       {who ? <BotFace {...who} mood={mood ?? 'working'} size={26} /> : null}
-      <Text tone="muted" variant="footnote">
-        {label || 'Thinking…'}
+      <Text numberOfLines={1} style={styles.waitingText} tone="muted" variant="footnote">
+        {verb}
+        {label?.object ? (
+          <Text style={{ color: withAlpha(theme.text, 0.8) }} variant="footnote">
+            {` ${label.object}`}
+          </Text>
+        ) : null}
       </Text>
     </View>
   )
 }
 
+const nativeDriver = Platform.OS !== 'web'
+
+function useReduceMotion() {
+  const [reduce, setReduce] = useState<boolean | null>(() =>
+    typeof AccessibilityInfo?.isReduceMotionEnabled === 'function' ? null : false
+  )
+
+  useEffect(() => {
+    let alive = true
+    void AccessibilityInfo?.isReduceMotionEnabled?.()
+      .then(enabled => {
+        if (alive) setReduce(Boolean(enabled))
+      })
+      .catch(() => {
+        if (alive) setReduce(false)
+      })
+    const subscription = AccessibilityInfo?.addEventListener?.('reduceMotionChanged', setReduce)
+
+    return () => {
+      alive = false
+      subscription?.remove()
+    }
+  }, [])
+
+  return reduce
+}
+
+/**
+ * One bot messaging another in a turn, marked with the other bot's face and
+ * name: "Messaging" Biology while running, settling smoothly in place to
+ * "Message from" Biology or "Messaged" Biology. Opens the conversation between
+ * the two when it can.
+ */
+function AskRow({
+  ask,
+  onOpen
+}: {
+  ask: Extract<ChatItem, { kind: 'ask' }>
+  onOpen?: ChatScreenProps['onOpenThread']
+}) {
+  const theme = useTheme()
+  const reduceMotion = useReduceMotion()
+  const running = ask.running ?? ask.before === 'Messaging'
+  const labelOpacity = useRef(new Animated.Value(1)).current
+  const ringOpacity = useRef(new Animated.Value(running ? 0.45 : 0)).current
+  const prevRunning = useRef(running)
+  const prevBefore = useRef(ask.before)
+
+  useEffect(() => {
+    const wasRunning = prevRunning.current
+    const beforeChanged = prevBefore.current !== ask.before
+    prevRunning.current = running
+    prevBefore.current = ask.before
+
+    let active: Animated.CompositeAnimation | null = null
+
+    if (running) {
+      if (reduceMotion !== false) {
+        labelOpacity.setValue(1)
+        ringOpacity.setValue(0.45)
+      } else {
+        labelOpacity.setValue(1)
+        ringOpacity.setValue(0.28)
+        active = Animated.loop(
+          Animated.parallel([
+            Animated.sequence([
+              Animated.timing(labelOpacity, {
+                duration: 1100,
+                toValue: 0.56,
+                useNativeDriver: nativeDriver
+              }),
+              Animated.timing(labelOpacity, {
+                duration: 1100,
+                toValue: 1,
+                useNativeDriver: nativeDriver
+              })
+            ]),
+            Animated.sequence([
+              Animated.timing(ringOpacity, {
+                duration: 1100,
+                toValue: 0.72,
+                useNativeDriver: nativeDriver
+              }),
+              Animated.timing(ringOpacity, {
+                duration: 1100,
+                toValue: 0.28,
+                useNativeDriver: nativeDriver
+              })
+            ])
+          ])
+        )
+        active.start()
+      }
+    } else if (wasRunning || beforeChanged) {
+      if (reduceMotion !== false) {
+        ringOpacity.setValue(0)
+        labelOpacity.setValue(1)
+      } else {
+        if (beforeChanged) labelOpacity.setValue(0.35)
+        active = Animated.parallel([
+          Animated.timing(ringOpacity, {
+            duration: 200,
+            toValue: 0,
+            useNativeDriver: nativeDriver
+          }),
+          Animated.timing(labelOpacity, {
+            duration: 220,
+            toValue: 1,
+            useNativeDriver: nativeDriver
+          })
+        ])
+        active.start()
+      }
+    } else {
+      ringOpacity.setValue(0)
+      labelOpacity.setValue(1)
+    }
+
+    return () => {
+      active?.stop()
+    }
+  }, [ask.before, labelOpacity, reduceMotion, ringOpacity, running])
+
+  const open =
+    onOpen && ask.bot && ask.peer
+      ? () =>
+          ask.sectionId
+            ? onOpen(ask.bot!, ask.peer!, ask.sectionId)
+            : onOpen(ask.bot!, ask.peer!)
+      : undefined
+  const ringTint = (ask.face ? faceColor?.(ask.face)?.color : null) ?? theme.accent ?? theme.hairline
+  const ringColor = ringTint ? withAlpha(ringTint, 0.55) : theme.hairline
+
+  return (
+    <Pressable
+      accessibilityHint={open ? 'Opens their conversation' : undefined}
+      accessibilityLabel={[ask.before, ask.name, ask.after].filter(Boolean).join(' ')}
+      accessibilityRole={open ? 'button' : 'text'}
+      disabled={!open}
+      hitSlop={6}
+      onPress={open}
+      style={({ pressed }) => [styles.ask, { opacity: pressed ? 0.65 : 1 }]}
+      testID={`chat-ask-${ask.id}`}
+    >
+      {ask.before ? (
+        <View style={styles.askPrefixSlot}>
+          <Text
+            accessibilityElementsHidden
+            aria-hidden
+            importantForAccessibility="no-hide-descendants"
+            numberOfLines={1}
+            pointerEvents="none"
+            style={styles.askPrefixSizer}
+            variant="caption"
+          >
+            Message from
+          </Text>
+          <Animated.View style={[styles.askPrefixOverlay, { opacity: labelOpacity }]}>
+            <Text numberOfLines={1} style={styles.askPrefix} tone="muted" variant="caption">
+              {ask.before}
+            </Text>
+          </Animated.View>
+        </View>
+      ) : null}
+      <View
+        style={[
+          styles.askPill,
+          { backgroundColor: theme.fill, borderColor: theme.hairline }
+        ]}
+      >
+        <Animated.View
+          pointerEvents="none"
+          style={[styles.askRing, { borderColor: ringColor, opacity: ringOpacity }]}
+        />
+        {ask.face ? <BotFace {...ask.face} size={18} /> : null}
+        <Text numberOfLines={1} style={styles.askName} variant="caption">
+          {ask.name}
+        </Text>
+      </View>
+      {ask.after ? (
+        <Text tone="muted" variant="caption">
+          {ask.after}
+        </Text>
+      ) : null}
+    </Pressable>
+  )
+}
+
 /** A bot's visual as a post in the transcript; Open shows it on its own card. */
 export function VisualCard({
+  face,
   onOpen,
   testID,
   title
 }: {
+  /** The bot that drew it: the card takes its bubbles' wash and its face colour. */
+  face?: FaceSource | null
   title: string
   onOpen: () => void
   testID: string
 }) {
   const theme = useTheme()
+  const paint = face ? faceColor(face) : null
+  const wash = face ? faceWash(face, theme.fill, theme.scheme) : theme.fill
 
   return (
     <Pressable
@@ -692,12 +1175,18 @@ export function VisualCard({
       onPress={onOpen}
       style={({ pressed }) => [
         styles.visual,
-        { backgroundColor: theme.surface, borderColor: theme.hairline, opacity: pressed ? 0.7 : 1 }
+        { backgroundColor: wash, opacity: pressed ? 0.7 : 1 }
       ]}
       testID={testID}
     >
-      <View style={[styles.visualIcon, { backgroundColor: withAlpha(theme.accent, 0.12) }]}>
-        <Ionicons color={theme.accent} name="bar-chart" size={22} />
+      <View
+        style={[
+          styles.visualIcon,
+          { backgroundColor: paint?.color ?? withAlpha(theme.text, 0.08) }
+        ]}
+        testID={`${testID}-icon`}
+      >
+        <Ionicons color={paint?.on ?? theme.muted} name="bar-chart" size={22} />
       </View>
       <View style={styles.visualText}>
         <Text numberOfLines={2} variant="subhead">
@@ -707,7 +1196,7 @@ export function VisualCard({
           Interactive visual
         </Text>
       </View>
-      <View style={[styles.visualOpen, { backgroundColor: theme.fill }]}>
+      <View style={[styles.visualOpen, { backgroundColor: withAlpha(theme.text, 0.08) }]}>
         <Text variant="subhead">Open</Text>
       </View>
     </Pressable>
@@ -715,12 +1204,14 @@ export function VisualCard({
 }
 
 const CHOICE_LABELS: Record<ApprovalChoice, string> = {
+  always: 'Always allow',
   deny: 'Deny',
   once: 'Allow once',
   session: 'Allow for now'
 }
 
 const DECISION_LABELS: Record<ApprovalChoice, string> = {
+  always: 'Always allowed',
   deny: 'Denied',
   once: 'Allowed once',
   session: 'Allowed for now'
@@ -728,28 +1219,116 @@ const DECISION_LABELS: Record<ApprovalChoice, string> = {
 
 /** A bot asking before it acts: what it wants to run, why, and the answers. */
 export function ApprovalCard({
+  joined,
   onAnswer,
   request
 }: {
+  /** Right under the bot's own bubble or card: it sits 4 pt below, one stack. */
+  joined?: boolean
   request: ApprovalRequestView
   onAnswer: (requestId: string, choice: ApprovalChoice) => void
 }) {
   const theme = useTheme()
+  const [open, setOpen] = useState(false)
+  const [showCommand, setShowCommand] = useState(false)
   const decided = request.decision
   const allow = request.choices.filter(choice => choice !== 'deny')
+  const hideCommandByDefault = Boolean(request.title && request.command)
+
+  // Once answered, fold down to the compact footprint of a normal bot message;
+  // tapping opens the reason, command, and saved rule in place.
+  if (decided) {
+    const denied = decided === 'deny'
+    const summary = request.title || request.command?.trim().split('\n')[0] || request.reason
+    const hasDetails = Boolean(
+      request.reason || request.command || (decided === 'always' && request.rule)
+    )
+
+    return (
+      <View
+        style={[
+          styles.approvalSettled,
+          open && styles.approvalSettledOpen,
+          joined && styles.joined,
+          { backgroundColor: theme.fill }
+        ]}
+        testID={`approval-${request.requestId}`}
+      >
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ expanded: open }}
+          onPress={() => hasDetails && setOpen(value => !value)}
+          style={styles.approvalSettledRow}
+        >
+          <Ionicons
+            color={denied ? theme.danger : theme.success}
+            name={denied ? 'close-circle' : 'checkmark-circle'}
+            size={16}
+          />
+          <Text variant="footnote">{DECISION_LABELS[decided]}</Text>
+          {summary ? (
+            <Text numberOfLines={1} style={styles.approvalSummary} tone="muted" variant="footnote">
+              {summary}
+            </Text>
+          ) : null}
+          {hasDetails ? (
+            <Ionicons
+              color={theme.muted}
+              name={open ? 'chevron-up' : 'chevron-down'}
+              size={14}
+            />
+          ) : null}
+        </Pressable>
+        {open && hasDetails ? (
+          <View style={[styles.approvalDetails, { borderTopColor: theme.hairline }]}>
+            {request.reason ? (
+              <Text tone="muted" variant="footnote">
+                {request.reason}
+              </Text>
+            ) : null}
+            {request.command ? (
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                style={[styles.command, { backgroundColor: theme.inset }]}
+              >
+                <Text selectable style={styles.commandText} variant="footnote">
+                  {request.command}
+                </Text>
+              </ScrollView>
+            ) : null}
+            {decided === 'always' && request.rule ? (
+              <Text tone="muted" variant="footnote">
+                Saved rule: {request.rule}
+              </Text>
+            ) : null}
+          </View>
+        ) : null}
+      </View>
+    )
+  }
 
   return (
     <View
-      accessibilityLabel={decided ? undefined : 'Approval needed'}
-      style={[styles.approval, { backgroundColor: theme.fill }]}
+      accessibilityLabel="Approval needed"
+      style={[styles.approval, joined && styles.joined, { backgroundColor: theme.fill }]}
       testID={`approval-${request.requestId}`}
     >
       <View style={styles.approvalHead}>
-        <Ionicons color={decided ? theme.muted : theme.accent} name="hand-left-outline" size={18} />
-        <Text variant="subhead">{request.toolLabel || 'Wants to run a command'}</Text>
+        <Ionicons color={theme.accent} name="hand-left-outline" size={18} />
+        <Text variant="subhead">
+          {request.title || request.toolLabel || 'Wants to run a command'}
+        </Text>
       </View>
       {request.reason ? <Text variant="callout">{request.reason}</Text> : null}
-      {request.command ? (
+      {hideCommandByDefault ? (
+        <Pressable onPress={() => setShowCommand(value => !value)}>
+          <Text tone="muted" variant="footnote">
+            {showCommand ? 'Hide command' : 'Show command'}
+          </Text>
+        </Pressable>
+      ) : null}
+      {request.command && (!hideCommandByDefault || showCommand) ? (
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
@@ -760,40 +1339,32 @@ export function ApprovalCard({
           </Text>
         </ScrollView>
       ) : null}
-      {decided ? (
-        <View style={styles.decision}>
-          <Ionicons
-            color={decided === 'deny' ? theme.danger : theme.success}
-            name={decided === 'deny' ? 'close-circle' : 'checkmark-circle'}
-            size={16}
+      {request.choices.includes('always') && request.rule ? (
+        <Text tone="muted" variant="footnote">
+          Always allow saves: {request.rule}
+        </Text>
+      ) : null}
+      <View style={styles.approvalActions}>
+        {allow.map((choice, index) => (
+          <Button
+            key={choice}
+            label={CHOICE_LABELS[choice]}
+            onPress={() => onAnswer(request.requestId, choice)}
+            style={[styles.approvalButton, index > 0 && { backgroundColor: theme.inset }]}
+            testID={`approval-${request.requestId}-${choice}`}
+            variant={index === 0 ? 'primary' : 'secondary'}
           />
-          <Text tone="muted" variant="footnote">
-            {DECISION_LABELS[decided]}
-          </Text>
-        </View>
-      ) : (
-        <View style={styles.approvalActions}>
-          {allow.map((choice, index) => (
-            <Button
-              key={choice}
-              label={CHOICE_LABELS[choice]}
-              onPress={() => onAnswer(request.requestId, choice)}
-              style={[styles.approvalButton, index > 0 && { backgroundColor: theme.inset }]}
-              testID={`approval-${request.requestId}-${choice}`}
-              variant={index === 0 ? 'primary' : 'secondary'}
-            />
-          ))}
-          {request.choices.includes('deny') ? (
-            <Button
-              label="Deny"
-              onPress={() => onAnswer(request.requestId, 'deny')}
-              style={[styles.approvalButton, { backgroundColor: theme.inset }]}
-              testID={`approval-${request.requestId}-deny`}
-              variant="secondary"
-            />
-          ) : null}
-        </View>
-      )}
+        ))}
+        {request.choices.includes('deny') ? (
+          <Button
+            label="Deny"
+            onPress={() => onAnswer(request.requestId, 'deny')}
+            style={[styles.approvalButton, { backgroundColor: theme.inset }]}
+            testID={`approval-${request.requestId}-deny`}
+            variant="secondary"
+          />
+        ) : null}
+      </View>
     </View>
   )
 }
@@ -802,23 +1373,30 @@ function Composer({
   attachments,
   bottom,
   busy,
+  comments,
   draft,
   onAttach,
   onDraftChange,
+  onOpenAttachment,
+  onOpenComment,
   onRemoveAttachment,
+  onRemoveComment,
+  onRetryAttachment,
   onSend,
   onStop,
   sendDisabledReason,
-  sendWhileBusy,
   title
 }: ChatScreenProps & { bottom: number }) {
   const theme = useTheme()
   // A phone held sideways is short: the field grows to a third of it at most.
   const { height } = useWindowDimensions()
   const [own, setOwn] = useState('')
+  const plus = useRef<ComponentRef<typeof View>>(null)
+  const [menu, setMenu] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
   const text = draft ?? own
   const setText = onDraftChange ?? setOwn
-  const canSend = (text.trim() !== '' || !!attachments?.length) && !sendDisabledReason
+  const canSend =
+    (text.trim() !== '' || !!attachments?.length || !!comments?.length) && !sendDisabledReason
 
   const send = () => {
     if (!canSend) {
@@ -839,6 +1417,56 @@ function Composer({
           {sendDisabledReason}
         </Text>
       ) : null}
+      {comments?.length ? (
+        <ScrollView
+          contentContainerStyle={styles.pending}
+          horizontal
+          keyboardShouldPersistTaps="handled"
+          showsHorizontalScrollIndicator={false}
+          testID="chat-comments"
+        >
+          {comments.map((comment, index) => (
+            <View
+              key={comment.id}
+              style={[styles.pendingFile, styles.comment, { backgroundColor: theme.fill }]}
+            >
+              <Pressable
+                accessibilityHint={comment.path ? 'Opens the file' : undefined}
+                accessibilityLabel={`Comment ${index + 1} on ${comment.name}${comment.where ? `, ${comment.where}` : ''}: ${comment.note}`}
+                accessibilityRole="button"
+                disabled={!comment.path || !onOpenComment}
+                onPress={() => onOpenComment?.(comment)}
+                style={styles.pendingOpen}
+                testID={`chat-comment-${index + 1}`}
+              >
+                <View style={[styles.commentNumber, { backgroundColor: theme.accent }]}>
+                  <Text style={{ color: theme.onAccent }} variant="caption">
+                    {index + 1}
+                  </Text>
+                </View>
+                <Text numberOfLines={1} style={styles.fileName} variant="footnote">
+                  {comment.note}
+                </Text>
+                {/* A short place ("line 3", "B2:C4") fits beside the note; a long one names the file. */}
+                <Text numberOfLines={1} style={styles.commentWhere} tone="muted" variant="caption">
+                  {comment.where && comment.where.length <= 16 ? comment.where : comment.name}
+                </Text>
+              </Pressable>
+              {onRemoveComment ? (
+                <IconButton
+                  accessibilityLabel={`Remove comment ${index + 1}`}
+                  color={theme.muted}
+                  icon="close"
+                  iconSize={16}
+                  onPress={() => onRemoveComment(comment.id)}
+                  size={28}
+                  testID={`chat-comment-remove-${index + 1}`}
+                />
+              ) : null}
+            </View>
+          ))}
+        </ScrollView>
+      ) : null}
       {attachments?.length ? (
         <ScrollView
           contentContainerStyle={styles.pending}
@@ -847,14 +1475,64 @@ function Composer({
         >
           {attachments.map(file => (
             <View key={file.id} style={[styles.pendingFile, { backgroundColor: theme.fill }]}>
-              <Ionicons
-                color={theme.muted}
-                name={file.kind === 'image' ? 'image-outline' : 'document-outline'}
-                size={16}
-              />
-              <Text numberOfLines={1} style={styles.fileName} variant="footnote">
-                {file.name}
-              </Text>
+              {/* Uploading spins; a failed upload says why and tries again; a
+                  finished one opens to preview. */}
+              <Pressable
+                accessibilityLabel={
+                  file.status === 'ready'
+                    ? file.previewable === false
+                      ? file.name
+                      : `Preview ${file.name}`
+                    : file.status === 'failed'
+                      ? `Retry uploading ${file.name}. ${file.error ?? ''}`
+                      : `Uploading ${file.name}, ${Math.floor((file.progress ?? 0) * 100)}%`
+                }
+                accessibilityRole="button"
+                accessibilityState={{ busy: file.status === 'uploading' }}
+                disabled={
+                  file.status === 'uploading' ||
+                  (file.status === 'ready'
+                    ? !onOpenAttachment || file.previewable === false
+                    : !onRetryAttachment)
+                }
+                onPress={() =>
+                  file.status === 'ready'
+                    ? onOpenAttachment?.(file.id)
+                    : onRetryAttachment?.(file.id)
+                }
+                style={styles.pendingOpen}
+                testID={`chat-attachment-${file.id}`}
+              >
+                {file.status === 'uploading' ? (
+                  <Text style={styles.percent} tone="muted" variant="footnote">
+                    {Math.floor((file.progress ?? 0) * 100)}%
+                  </Text>
+                ) : (
+                  <Ionicons
+                    color={file.status === 'failed' ? theme.danger : theme.muted}
+                    name={
+                      file.status === 'failed'
+                        ? 'refresh'
+                        : file.kind === 'image'
+                          ? 'image-outline'
+                          : file.kind === 'video'
+                            ? 'videocam-outline'
+                            : 'document-outline'
+                    }
+                    size={16}
+                  />
+                )}
+                <Text
+                  numberOfLines={1}
+                  style={styles.fileName}
+                  tone={file.status === 'failed' ? 'danger' : undefined}
+                  variant="footnote"
+                >
+                  {file.status === 'failed'
+                    ? `${file.name}: ${file.error ?? 'not uploaded'}`
+                    : file.name}
+                </Text>
+              </Pressable>
               {onRemoveAttachment ? (
                 <IconButton
                   accessibilityLabel={`Remove ${file.name}`}
@@ -872,14 +1550,17 @@ function Composer({
       ) : null}
       <View style={styles.composerRow}>
         {onAttach ? (
-          <IconButton
-            accessibilityLabel="Attach a file"
-            icon="add"
-            iconSize={24}
-            onPress={onAttach}
-            testID="chat-attach"
-            variant="glass"
-          />
+          <View collapsable={false} ref={plus}>
+            <IconButton
+              accessibilityLabel="Attach a photo, video or file"
+              icon="add"
+              iconSize={24}
+              onPress={() => plus.current?.measureInWindow((x, y, w, h) => setMenu({ h, w, x, y }))}
+              testID="chat-attach"
+              variant="glass"
+            />
+            <AttachMenu anchor={menu} onChoose={onAttach} onClose={() => setMenu(null)} />
+          </View>
         ) : null}
         <Glass radius={24} style={styles.inputWell}>
           <TextInput
@@ -898,7 +1579,7 @@ function Composer({
             testID="chat-input"
             value={text}
           />
-          {busy && onStop ? (
+          {busy && onStop && !canSend ? (
             <IconButton
               accessibilityLabel="Stop"
               icon="stop"
@@ -910,7 +1591,7 @@ function Composer({
               variant="filled"
             />
           ) : null}
-          {!busy || (sendWhileBusy && text.trim()) ? (
+          {!busy || canSend || !onStop ? (
             <IconButton
               accessibilityLabel="Send"
               disabled={!canSend}
@@ -933,8 +1614,68 @@ const styles = StyleSheet.create({
   approval: { borderRadius: radius.bubble, gap: 10, marginTop: 14, maxWidth: '92%', padding: 14 },
   approvalActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   approvalButton: { minHeight: 44, paddingHorizontal: 18 },
+  approvalDetails: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    gap: 8,
+    marginTop: 8,
+    paddingTop: 8
+  },
   approvalHead: { alignItems: 'center', flexDirection: 'row', gap: 8 },
+  approvalSettled: {
+    alignSelf: 'flex-start',
+    borderRadius: radius.bubble,
+    marginTop: 14,
+    maxWidth: '82%',
+    paddingHorizontal: 14,
+    paddingVertical: 9
+  },
+  approvalSettledOpen: { width: '82%' },
+  approvalSettledRow: { alignItems: 'center', flexDirection: 'row', gap: 6 },
+  approvalSummary: { flexShrink: 1 },
   archived: { alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingTop: 12 },
+  elsewhereActions: { flexDirection: 'row', gap: 8 },
+  // In the middle of the column, like the time between messages.
+  ask: {
+    alignItems: 'center',
+    alignSelf: 'center',
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 10,
+    paddingHorizontal: 4
+  },
+  // Reserve width for the widest scaled status word ("Message from") using the same caption
+  // typography so the pill stays anchored across Dynamic Type sizes when the label settles.
+  askPrefixSlot: { justifyContent: 'center' },
+  askPrefixSizer: { opacity: 0 },
+  askPrefixOverlay: {
+    bottom: 0,
+    justifyContent: 'center',
+    position: 'absolute',
+    right: 0,
+    top: 0
+  },
+  askPrefix: { textAlign: 'right' },
+  askPill: {
+    alignItems: 'center',
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    gap: 6,
+    maxWidth: 220,
+    paddingLeft: 6,
+    paddingRight: 10,
+    paddingVertical: 4
+  },
+  askRing: {
+    borderRadius: 999,
+    borderWidth: 1.5,
+    bottom: 0,
+    left: 0,
+    position: 'absolute',
+    right: 0,
+    top: 0
+  },
+  askName: { flexShrink: 1, fontWeight: '600' },
   archivedText: { textAlign: 'center' },
   attachments: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 4, maxWidth: '82%' },
   author: { alignItems: 'center', flexDirection: 'row', gap: 6, marginBottom: 4, marginLeft: 4 },
@@ -949,7 +1690,6 @@ const styles = StyleSheet.create({
   composer: { gap: 8, paddingHorizontal: 12, paddingTop: 6 },
   composerRow: { alignItems: 'flex-end', flexDirection: 'row', gap: 8 },
   day: { marginBottom: 2, marginTop: 18 },
-  decision: { alignItems: 'center', flexDirection: 'row', gap: 6 },
   earlier: { alignItems: 'center', paddingVertical: 8 },
   empty: {
     alignItems: 'center',
@@ -960,18 +1700,8 @@ const styles = StyleSheet.create({
     paddingVertical: 24
   },
   error: { paddingHorizontal: 12, paddingTop: 6 },
-  file: {
-    alignItems: 'center',
-    borderRadius: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    flexDirection: 'row',
-    gap: 6,
-    maxWidth: 240,
-    paddingHorizontal: 10,
-    paddingVertical: 8
-  },
+  modelNotice: { paddingHorizontal: 12, paddingTop: 6 },
   fileName: { flexShrink: 1 },
-  image: { borderRadius: 16, height: 140, width: 180 },
   input: {
     flex: 1,
     fontSize: 17,
@@ -991,8 +1721,32 @@ const styles = StyleSheet.create({
     marginTop: 4,
     paddingHorizontal: 4
   },
+  joined: { marginTop: 4 },
+  reactionChip: {
+    alignItems: 'center',
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+    height: 24,
+    justifyContent: 'center',
+    minWidth: 30,
+    paddingHorizontal: 5
+  },
+  reactionEmoji: { fontSize: 14, lineHeight: 18 },
+  reactions: { flexDirection: 'row', gap: 4, marginTop: -8, paddingHorizontal: 10, zIndex: 1 },
   notice: { marginTop: 14, paddingHorizontal: 24 },
+  comment: { maxWidth: 260 },
+  commentNumber: {
+    alignItems: 'center',
+    borderRadius: 9,
+    height: 18,
+    justifyContent: 'center',
+    minWidth: 18,
+    paddingHorizontal: 4
+  },
+  commentWhere: { flexShrink: 0, maxWidth: 110 },
   pending: { gap: 8 },
+  pendingOpen: { alignItems: 'center', flexDirection: 'row', flexShrink: 1, gap: 6 },
+  percent: { fontVariant: ['tabular-nums'], minWidth: 30 },
   pendingFile: {
     alignItems: 'center',
     borderRadius: 999,
@@ -1011,13 +1765,13 @@ const styles = StyleSheet.create({
     paddingLeft: 7,
     paddingRight: 14
   },
+  titlePillDiscord: { paddingLeft: 12 },
   titleText: { flexShrink: 1 },
   flash: { borderRadius: 16 },
   transcript: { paddingBottom: 8, paddingHorizontal: 14, paddingTop: 12 },
   visual: {
     alignItems: 'center',
-    borderRadius: radius.card,
-    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: radius.bubble,
     flexDirection: 'row',
     gap: 12,
     minHeight: 64,
@@ -1034,5 +1788,6 @@ const styles = StyleSheet.create({
   visualOpen: { borderRadius: 999, justifyContent: 'center', minHeight: 36, paddingHorizontal: 14 },
   visualText: { flex: 1, gap: 2 },
   waiting: { alignItems: 'center', flexDirection: 'row', gap: 8, marginTop: 14 },
+  waitingText: { flexShrink: 1 },
   wellButton: { marginBottom: 6, marginRight: 6 }
 })

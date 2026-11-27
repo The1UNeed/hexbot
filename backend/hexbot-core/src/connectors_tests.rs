@@ -31,6 +31,132 @@ async fn rpc(home: &Path, method: &str, p: Value) -> Value {
     call(home, "alice", method, p).await.unwrap()
 }
 
+/// A list asks about every bot for every connector. It reads the roster
+/// once and holds it; the next list, and anything outside one, reads it again.
+#[test]
+fn a_list_holds_the_roster_and_lets_it_go() {
+    let home = setup();
+    let add = |name: &str| {
+        db::open(home.path())
+            .unwrap()
+            .execute("INSERT INTO bots(name,owner_id) VALUES (?,'alice')", [name])
+            .unwrap();
+    };
+    {
+        let _outer = connectors::Listed::hold(home.path()).unwrap();
+        add("ant");
+        // Held for the length of the list, whatever happens to the table.
+        assert_eq!(connectors::names(home.path()).unwrap(), ["fox", "owl"]);
+        {
+            let _inner = connectors::Listed::hold(home.path()).unwrap();
+            assert_eq!(connectors::names(home.path()).unwrap(), ["fox", "owl"]);
+        }
+        // A list inside a list leaves the outer one's roster in place.
+        assert_eq!(connectors::names(home.path()).unwrap(), ["fox", "owl"]);
+    }
+    assert_eq!(
+        connectors::names(home.path()).unwrap(),
+        ["ant", "fox", "owl"]
+    );
+    // A bot the roster knows is listed with the rest; one it does not is refused.
+    assert!(connectors::ready_for(home.path(), "owl", "web_search").is_ok());
+    assert_eq!(
+        connectors::ready_for(home.path(), "nobody", "web_search")
+            .unwrap_err()
+            .code,
+        4205
+    );
+}
+
+/// Computer Use is on for a bot once Settings, Plugins gave it, whether or
+/// not a screen is in its reach yet: the list says what `enabled` says.
+#[tokio::test]
+async fn a_list_shows_computer_use_for_a_bot_without_a_screen_yet() {
+    let home = setup();
+    let h = home.path();
+    common::update_config(h, |c| {
+        c["computers"] = json!({"computer_use": ["owl"]});
+        Ok(())
+    })
+    .unwrap();
+    assert!(connectors::enabled(h, "owl", "computer_use").unwrap());
+    let list = rpc(h, "hexbot.connectors.list", json!({})).await;
+    let row = list["connectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == "computer_use")
+        .unwrap();
+    assert_eq!(row["enabled_bots"], json!(["owl"]));
+}
+
+#[tokio::test]
+async fn testing_computer_use_says_which_screens_bots_reach_and_never_marks_it_broken() {
+    let home = setup();
+    let h = home.path();
+    // No Cua and no shared screen here.
+    common::update_config(h, |c| {
+        c["computer_use"]["command"] = json!("/nonexistent/cua");
+        Ok(())
+    })
+    .unwrap();
+    let test = rpc(h, "hexbot.connectors.test", json!({"id":"computer_use"})).await;
+    assert_eq!(test["ok"], false);
+    assert!(
+        test["message"]
+            .as_str()
+            .unwrap()
+            .contains("No screen here yet")
+    );
+    // Switched off without Cua: both, Cua first.
+    common::update_config(h, |c| {
+        c["computers"]["vm"]["off"] = json!(true);
+        Ok(())
+    })
+    .unwrap();
+    let test = rpc(h, "hexbot.connectors.test", json!({"id":"computer_use"})).await;
+    let message = test["message"].as_str().unwrap();
+    assert!(
+        message.contains("is off and needs Cua (uv tool install cua)"),
+        "{message}"
+    );
+    // Switched off with Cua set up: only turning it on is missing.
+    let cua = h.join("cua");
+    fs::write(&cua, "#!/bin/sh\n").unwrap();
+    #[cfg(unix)]
+    fs::set_permissions(&cua, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    common::update_config(h, |c| {
+        c["computer_use"]["command"] = json!(cua.to_string_lossy());
+        Ok(())
+    })
+    .unwrap();
+    let test = rpc(h, "hexbot.connectors.test", json!({"id":"computer_use"})).await;
+    let message = test["message"].as_str().unwrap();
+    assert!(
+        message.contains("is off; turn it on in Settings, Computers"),
+        "{message}"
+    );
+    assert!(!message.contains("uv tool install"), "{message}");
+    // The result is not kept: the connector stays ready.
+    let list = rpc(h, "hexbot.connectors.list", json!({})).await;
+    let row = list["connectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == "computer_use")
+        .unwrap()
+        .clone();
+    assert_eq!(row["state"], "ready");
+    // This computer's screen shared: reachable.
+    common::update_config(h, |c| {
+        c["computers"]["host"]["desktop_on"] = json!(true);
+        Ok(())
+    })
+    .unwrap();
+    let test = rpc(h, "hexbot.connectors.test", json!({"id":"computer_use"})).await;
+    assert_eq!(test["ok"], true, "{test}");
+}
+
 #[tokio::test]
 async fn catalog_shapes_and_errors_match_clients() {
     let home = setup();
@@ -41,35 +167,105 @@ async fn catalog_shapes_and_errors_match_clients() {
             .map(|r| r["id"].as_str().unwrap())
             .collect::<Vec<_>>(),
         [
+            "computer_use",
             "web_search",
-            "image_gen",
-            "video_gen",
-            "premium_voice",
+            "gmail",
+            "google_calendar",
+            "google_drive",
+            "google_docs",
+            "google_sheets",
+            "google_slides",
+            "google_tasks",
+            "outlook",
+            "outlook_calendar",
+            "onedrive",
+            "word",
+            "excel",
+            "powerpoint",
+            "microsoft_todo",
+            "imap",
             "notion",
-            "airtable",
-            "x_search",
-            "home_assistant"
+            "github",
+            "x_search"
+        ]
+    );
+    let web = rows.iter().find(|r| r["id"] == "web_search").unwrap();
+    let providers = web["providers"].as_array().unwrap();
+    assert_eq!(
+        providers
+            .iter()
+            .map(|p| p["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "searxng",
+            "tavily",
+            "wikipedia",
+            "marginalia",
+            "exa",
+            "brave",
+            "firecrawl",
+            "parallel",
+            "keenable"
         ]
     );
     assert_eq!(
-        rows[0]["providers"][2],
-        json!({"id":"brave","label":"Brave Search","configured":false})
+        providers[5],
+        json!({"id":"brave","label":"Brave Search","description":null,"sign_in":null,"configured":false})
     );
+    assert!(
+        providers[0]["description"]
+            .as_str()
+            .unwrap()
+            .contains("Docker")
+    );
+    let fields = web["fields"].as_array().unwrap();
     assert_eq!(
-        rows[0]["fields"][0],
-        json!({"key":"EXA_API_KEY","provider":"exa","label":"Exa API key","help":"Exa API key for AI-native web search and contents","url":"https://exa.ai/","secret":true,"advanced":false,"set":false,"hint":null})
+        fields.iter().find(|f| f["key"] == "EXA_API_KEY").unwrap(),
+        &json!({"key":"EXA_API_KEY","provider":"exa","label":"Exa API key","help":"Exa API key for AI-native web search and contents","url":"https://exa.ai/","secret":true,"advanced":false,"set":false,"hint":null})
     );
+    // The free providers' settings are optional; the paid ones' keys are not.
+    for field in fields {
+        let free =
+            ["searxng", "tavily", "marginalia"].contains(&field["provider"].as_str().unwrap());
+        assert_eq!(field["optional"] == true, free, "{field}");
+    }
     for row in rows {
         assert_eq!(row["scope"], "daemon");
-        assert_eq!(row["state"], "not_set_up");
         assert!(row["enabled_for_bot"].is_boolean());
         assert!(row["last_error"].is_null());
+        if row["id"] == "web_search" {
+            // Free by default: SearXNG, which this test home cannot run.
+            assert_eq!(row["state"], "ready");
+            assert_eq!(row["provider"], "searxng");
+            assert_eq!(row["state_text"], "Ready · SearXNG (needs Docker)");
+            assert_eq!(row["enabled_for_bot"], true);
+        } else if row["id"] == "computer_use" {
+            // Needs no key: it reaches the screens of the bot's computers.
+            assert_eq!(row["state"], "ready");
+            assert_eq!(row["group"], "computer");
+        } else {
+            assert_eq!(row["state"], "not_set_up");
+        }
     }
+    let test = rpc(
+        home.path(),
+        "hexbot.connectors.test",
+        json!({"id":"web_search"}),
+    )
+    .await;
+    assert_eq!(test["ok"], true);
+    assert!(
+        test["message"]
+            .as_str()
+            .unwrap()
+            .ends_with("Until it runs, bots search with Tavily and Wikipedia."),
+        "{test}"
+    );
     assert_eq!(
         rpc(
             home.path(),
             "hexbot.connectors.test",
-            json!({"id":"web_search"})
+            json!({"id":"x_search"})
         )
         .await,
         json!({"ok":false,"message":"Choose a provider first."})
@@ -208,22 +404,32 @@ async fn toggles_preserve_other_toolsets_and_shared_credentials() {
         &json!({"tools":{"enabled_toolsets":["file","search"]}}),
     )
     .unwrap();
+    // Nothing answers here, so the test fails but the token is saved.
+    fs::write(
+        home.path().join(".env"),
+        "XAI_API_KEY=model-key\nHEXBOT_X_API_BASE_URL=http://127.0.0.1:9\n",
+    )
+    .unwrap();
     rpc(
         home.path(),
         "hexbot.connectors.setup",
-        json!({"id":"image_gen","provider":"fal","values":{"FAL_KEY":"shared-fal-key"}}),
-    )
-    .await;
-    rpc(
-        home.path(),
-        "hexbot.connectors.clear",
-        json!({"id":"image_gen"}),
+        json!({"id":"x_search","provider":"x_api","values":{"X_BEARER_TOKEN":"x-token"}}),
     )
     .await;
     assert_eq!(
-        connectors::credentials(home.path(), "owl").unwrap()["FAL_KEY"],
-        "shared-fal-key"
+        connectors::credentials(home.path(), "owl").unwrap()["X_BEARER_TOKEN"],
+        "x-token"
     );
+    rpc(
+        home.path(),
+        "hexbot.connectors.clear",
+        json!({"id":"x_search"}),
+    )
+    .await;
+    let kept = connectors::credentials(home.path(), "owl").unwrap();
+    assert!(!kept.contains_key("X_BEARER_TOKEN"));
+    // The xAI key also runs xAI models, so clearing X search keeps it.
+    assert_eq!(kept["XAI_API_KEY"], "model-key");
     rpc(
         home.path(),
         "hexbot.connectors.set_for_bot",
@@ -232,18 +438,19 @@ async fn toggles_preserve_other_toolsets_and_shared_credentials() {
     .await;
     assert_eq!(
         connectors::toolsets(home.path(), "owl").unwrap(),
-        // Every bot has Computer use, whatever was saved.
+        // On a daemon from before computers every bot has Computer use,
+        // whatever was saved.
         vec!["computer_use", "file"]
     );
     rpc(
         home.path(),
         "hexbot.connectors.set_for_bot",
-        json!({"id":"video_gen","bot":"owl","enabled":true}),
+        json!({"id":"x_search","bot":"owl","enabled":true}),
     )
     .await;
     assert_eq!(
         connectors::toolsets(home.path(), "owl").unwrap(),
-        vec!["computer_use", "file", "video_gen"]
+        vec!["computer_use", "file", "x_search"]
     );
     let c = common::read_config(&home.path().join("profiles/owl")).unwrap();
     assert_eq!(
@@ -255,24 +462,32 @@ async fn toggles_preserve_other_toolsets_and_shared_credentials() {
 #[tokio::test]
 async fn skill_listing_reads_metadata_and_disabled_state() {
     let home = setup();
-    let root = home.path().join("profiles/owl/skills/work/notion");
-    fs::create_dir_all(&root).unwrap();
-    fs::write(
-        root.join("SKILL.md"),
-        "---\nname: notion\ndescription: Read workspace pages.\n---\n# Body\n",
-    )
-    .unwrap();
-    let listed = rpc(home.path(), "hexbot.skills.list", json!({"bot":"owl"})).await;
-    let notion = listed["skills"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|s| s["name"] == "notion")
+    for name in ["notes", "notion"] {
+        let root = home.path().join("profiles/owl/skills/work").join(name);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: Read workspace pages.\n---\n# Body\n"),
+        )
         .unwrap();
-    assert_eq!(notion["description"], "Read workspace pages.");
-    assert_eq!(notion["category"], "work");
-    assert_eq!(notion["source"], "bot");
-    assert_eq!(notion["enabled"], true);
+    }
+    let listed = rpc(home.path(), "hexbot.skills.list", json!({"bot":"owl"})).await;
+    let named = |name: &str| {
+        listed["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["name"] == name)
+            .unwrap()
+            .clone()
+    };
+    let notes = named("notes");
+    assert_eq!(notes["description"], "Read workspace pages.");
+    assert_eq!(notes["category"], "work");
+    assert_eq!(notes["source"], "bot");
+    assert_eq!(notes["enabled"], true);
+    // A bot's copy never replaces a bundled skill.
+    assert_eq!(named("notion")["source"], "bundled");
     rpc(
         home.path(),
         "hexbot.connectors.set_for_bot",
@@ -288,6 +503,26 @@ async fn skill_listing_reads_metadata_and_disabled_state() {
             .unwrap()["enabled"],
         false
     );
+    // Off can always be undone, but on waits for the connector's key.
+    if std::env::var_os("NOTION_API_KEY").is_none() {
+        assert_eq!(
+            call(
+                home.path(),
+                "alice",
+                "hexbot.connectors.set_for_bot",
+                json!({"bot":"owl","id":"notion","enabled":true}),
+            )
+            .await
+            .unwrap_err()
+            .code,
+            4209
+        );
+    }
+    fs::write(
+        home.path().join("profiles/owl/.env"),
+        "NOTION_API_KEY=secret\n",
+    )
+    .unwrap();
     rpc(
         home.path(),
         "hexbot.connectors.set_for_bot",
@@ -305,7 +540,7 @@ async fn skill_listing_reads_metadata_and_disabled_state() {
     );
 }
 
-async fn ha_probe(State(status): State<StatusCode>, headers: HeaderMap) -> impl IntoResponse {
+async fn x_probe(State(status): State<StatusCode>, headers: HeaderMap) -> impl IntoResponse {
     assert_eq!(headers["authorization"], "Bearer local-test-token");
     (status, "{}")
 }
@@ -316,29 +551,31 @@ async fn probes_really_authenticate_and_report_denial() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let app = Router::new()
-            .route("/api/", get(ha_probe))
+            .route("/2/usage/tweets", get(x_probe))
             .with_state(status);
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let result=rpc(home.path(),"hexbot.connectors.setup",json!({"id":"home_assistant","values":{"HASS_URL":url,"HASS_TOKEN":"local-test-token"}})).await;
+        fs::write(
+            home.path().join(".env"),
+            format!("HEXBOT_X_API_BASE_URL={url}\n"),
+        )
+        .unwrap();
+        let result=rpc(home.path(),"hexbot.connectors.setup",json!({"id":"x_search","provider":"x_api","values":{"X_BEARER_TOKEN":"local-test-token"}})).await;
         assert_eq!(result["test"]["ok"], expected);
         assert_eq!(
             result["connector"]["state"],
             if expected { "ready" } else { "error" }
         );
         if expected {
-            assert_eq!(result["connector"]["state_text"], "Connected")
+            assert_eq!(result["connector"]["state_text"], "Connected · X API")
         } else {
-            assert_eq!(
-                result["test"]["message"],
-                "Home Assistant refused the token (401)."
-            )
+            assert_eq!(result["test"]["message"], "X refused the token (401).")
         }
         server.abort();
     }
     let result = rpc(
         home.path(),
         "hexbot.connectors.test",
-        json!({"id":"home_assistant"}),
+        json!({"id":"x_search"}),
     )
     .await;
     assert_eq!(result["ok"], false);
@@ -659,21 +896,24 @@ async fn mcp_refuses_existing_and_new_malicious_shell_entries() {
 #[tokio::test]
 async fn tool_readiness_requires_credentials_and_explicit_enablement() {
     let home = setup();
-    assert!(!connectors::tool_available(home.path(), "owl", "image_generate").unwrap());
-    rpc(
-        home.path(),
-        "hexbot.connectors.setup",
-        json!({"id":"image_gen","provider":"fal","values":{"FAL_KEY":"test-key"}}),
-    )
-    .await;
-    assert!(connectors::tool_available(home.path(), "owl", "image_generate").unwrap());
+    assert!(!connectors::tool_available(home.path(), "owl", "x_search").unwrap());
+    fs::write(home.path().join(".env"), "X_BEARER_TOKEN=test-key\n").unwrap();
+    // Set up, but not on for the bot until it is turned on.
+    assert!(!connectors::tool_available(home.path(), "owl", "x_search").unwrap());
     rpc(
         home.path(),
         "hexbot.connectors.set_for_bot",
-        json!({"id":"image_gen","bot":"owl","enabled":false}),
+        json!({"id":"x_search","bot":"owl","enabled":true}),
     )
     .await;
-    assert!(!connectors::tool_available(home.path(), "owl", "image_generate").unwrap());
+    assert!(connectors::tool_available(home.path(), "owl", "x_search").unwrap());
+    rpc(
+        home.path(),
+        "hexbot.connectors.set_for_bot",
+        json!({"id":"x_search","bot":"owl","enabled":false}),
+    )
+    .await;
+    assert!(!connectors::tool_available(home.path(), "owl", "x_search").unwrap());
     assert!(connectors::tool_available(home.path(), "owl", "read_file").unwrap());
 }
 
@@ -1014,4 +1254,580 @@ fn an_invalid_connected_server_does_not_disable_healthy_entries() {
     assert!(entries[0]["error"].as_str().unwrap().contains("bad"));
     assert_eq!(entries[1]["config"]["command"], "node");
     assert_ne!(entries[1]["config"]["cwd"], "/tmp/untrusted");
+}
+
+#[tokio::test]
+async fn web_search_is_free_out_of_the_box_and_stays_on_without_keys() {
+    let home = setup();
+    // Every bot with the web toolset, which bots have by default, gets it.
+    assert!(connectors::tool_available(home.path(), "owl", "web_search").unwrap());
+    let row = connectors::get(home.path(), None, "web_search").unwrap();
+    assert_eq!(row["enabled_bots"], json!(["fox", "owl"]));
+    let names = |tools: Vec<Value>| {
+        tools
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(str::to_owned))
+            .collect::<Vec<_>>()
+    };
+    assert!(
+        names(crate::native_tools::descriptors(home.path(), "owl").unwrap())
+            .contains(&"web_search".to_owned())
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let app = Router::new()
+        .route(
+            "/w/api.php",
+            get(|| async {
+                axum::Json(json!({"query":{"search":[{"title":"Rust","snippet":"Fast"}]}}))
+            }),
+        )
+        .route(
+            "/search",
+            post(|| async {
+                axum::Json(
+                    json!({"results":[{"title":"T","url":"https://t.example/","content":"c"}]}),
+                )
+            }),
+        );
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    fs::write(
+        home.path().join(".env"),
+        format!("WIKIPEDIA_URL=\"{origin}\"\nTAVILY_BASE_URL=\"{origin}\"\n"),
+    )
+    .unwrap();
+
+    // A provider that needs no key sets up with no values; its test searches.
+    let set = rpc(
+        home.path(),
+        "hexbot.connectors.setup",
+        json!({"id":"web_search","provider":"wikipedia"}),
+    )
+    .await;
+    assert_eq!(set["test"], json!({"ok":true,"message":"Connected."}));
+    assert_eq!(set["connector"]["state_text"], "Connected · Wikipedia");
+    assert_eq!(
+        common::read_config(home.path()).unwrap()["web"]["backend"],
+        "wikipedia"
+    );
+    // An optional key sent alone picks the provider it belongs to.
+    rpc(
+        home.path(),
+        "hexbot.connectors.setup",
+        json!({"id":"web_search","values":{"TAVILY_API_KEY":"tvly-key"}}),
+    )
+    .await;
+    assert_eq!(
+        common::read_config(home.path()).unwrap()["web"]["backend"],
+        "tavily"
+    );
+    // Removing the keys goes back to SearXNG and leaves every bot its search.
+    rpc(
+        home.path(),
+        "hexbot.connectors.clear",
+        json!({"id":"web_search"}),
+    )
+    .await;
+    let row = connectors::get(home.path(), None, "web_search").unwrap();
+    assert_eq!(row["provider"], "searxng");
+    assert_eq!(row["state"], "ready");
+    assert_eq!(row["enabled_bots"], json!(["fox", "owl"]));
+    // A paid provider without its key is not set up, and the tools go
+    // until it is.
+    let exa = rpc(
+        home.path(),
+        "hexbot.connectors.setup",
+        json!({"id":"web_search","provider":"exa"}),
+    )
+    .await;
+    assert_eq!(exa["test"]["ok"], false);
+    assert_eq!(exa["connector"]["state"], "not_set_up");
+    assert!(!connectors::tool_available(home.path(), "owl", "web_search").unwrap());
+    let tools = names(crate::native_tools::descriptors(home.path(), "owl").unwrap());
+    assert!(!tools.contains(&"web_search".to_owned()), "{tools:?}");
+    assert!(!tools.contains(&"web_extract".to_owned()), "{tools:?}");
+    server.abort();
+}
+
+#[tokio::test]
+async fn settings_name_the_web_search_the_bots_use() {
+    let home = setup();
+    // Nothing chosen, a SearXNG URL and an Exa key saved: search picks Exa.
+    fs::write(
+        home.path().join(".env"),
+        "SEARXNG_URL=\"http://127.0.0.1:1\"\nEXA_API_KEY=\"exa-key\"\n",
+    )
+    .unwrap();
+    let env = common::env_values(home.path()).unwrap();
+    let cfg = common::read_config(home.path()).unwrap();
+    assert_eq!(crate::native_tools::web_backend(&cfg, &env, false), "exa");
+    let row = connectors::get(home.path(), None, "web_search").unwrap();
+    assert_eq!(row["provider"], "exa");
+}
+
+/// Google and Microsoft are set up by signing in: until then no bot can be
+/// given them, and once signed in the row names the account.
+#[tokio::test]
+async fn account_connectors_are_ready_once_signed_in() {
+    let home = setup();
+    let h = home.path();
+    let row = |list: &Value, id: &str| {
+        list["connectors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == id)
+            .unwrap()
+            .clone()
+    };
+    let list = rpc(h, "hexbot.connectors.list", json!({"bot":"owl"})).await;
+    let gmail = row(&list, "gmail");
+    assert_eq!(gmail["state"], "not_set_up");
+    assert_eq!(gmail["state_text"], "Not connected");
+    assert_eq!(gmail["family"], "google");
+    // A sign-in names the connector; the account it belongs to is beside it.
+    assert_eq!(
+        gmail["account"],
+        json!({"service":"gmail","provider":"google","email":null,"signed_in":false})
+    );
+    assert_eq!(gmail["enabled_for_bot"], false);
+    assert!(gmail["abilities"].as_array().is_some_and(|a| !a.is_empty()));
+    let refused = call(
+        h,
+        "alice",
+        "hexbot.connectors.set_for_bot",
+        json!({"bot":"owl","id":"gmail","enabled":true}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(refused.code, 4209);
+    fs::create_dir_all(h.join("accounts")).unwrap();
+    fs::write(
+        h.join("accounts/gmail.json"),
+        json!({"email":"ana@example.com","client_id":"c","access_token":"t","refresh_token":"r","expires_at":0}).to_string(),
+    )
+    .unwrap();
+    rpc(
+        h,
+        "hexbot.connectors.set_for_bot",
+        json!({"bot":"owl","id":"gmail","enabled":true}),
+    )
+    .await;
+    let list = rpc(h, "hexbot.connectors.list", json!({"bot":"owl"})).await;
+    let gmail = row(&list, "gmail");
+    assert_eq!(gmail["state"], "ready");
+    assert_eq!(gmail["state_text"], "ana@example.com");
+    assert_eq!(gmail["account"]["email"], "ana@example.com");
+    assert_eq!(gmail["enabled_for_bot"], true);
+    assert!(!gmail.to_string().contains("refresh"));
+    // Signing in to Gmail connects Gmail alone: the same account's other
+    // connectors, and Microsoft's, each wait for their own.
+    for other in ["google_calendar", "google_drive", "outlook"] {
+        let other = row(&list, other);
+        assert_eq!(other["state"], "not_set_up", "{other}");
+        assert_eq!(other["enabled_for_bot"], false);
+    }
+    // A revoked grant shows as needing a sign-in, and the bot keeps waiting for it.
+    fs::write(
+        h.join("accounts/gmail.json"),
+        json!({"email":"ana@example.com","client_id":"c","refresh_token":"r","expired":true})
+            .to_string(),
+    )
+    .unwrap();
+    let gmail = row(
+        &rpc(h, "hexbot.connectors.list", json!({"bot":"owl"})).await,
+        "gmail",
+    );
+    assert_eq!(gmail["state"], "error");
+    assert_eq!(gmail["state_text"], "Sign in again");
+    assert_eq!(gmail["waiting_bots"], json!(["owl"]));
+}
+
+/// A bot that had Google Workspace or Microsoft 365, which did mail alone,
+/// has Gmail or Outlook: its saved toolset is read by its new name.
+#[tokio::test]
+async fn the_connectors_that_covered_a_whole_account_become_gmail_and_outlook() {
+    let home = setup();
+    let h = home.path();
+    fs::write(
+        h.join("profiles/owl/config.yaml"),
+        "tools:\n  enabled_toolsets: [file, google_workspace, microsoft_365]\n",
+    )
+    .unwrap();
+    let sets = connectors::toolsets(h, "owl").unwrap();
+    assert!(sets.iter().any(|s| s == "gmail") && sets.iter().any(|s| s == "outlook"));
+    assert!(
+        !sets
+            .iter()
+            .any(|s| s == "google_workspace" || s == "microsoft_365")
+    );
+    assert!(connectors::enabled(h, "owl", "gmail").unwrap());
+    assert!(connectors::enabled(h, "owl", "outlook").unwrap());
+    assert!(!connectors::enabled(h, "owl", "google_calendar").unwrap());
+    // The grants move with them, once, and a newer one is never replaced.
+    fs::create_dir_all(h.join("accounts")).unwrap();
+    fs::write(
+        h.join("accounts/google.json"),
+        r#"{"email":"old@example.com"}"#,
+    )
+    .unwrap();
+    fs::write(
+        h.join("accounts/microsoft.json"),
+        r#"{"email":"old@contoso.com"}"#,
+    )
+    .unwrap();
+    fs::write(
+        h.join("accounts/outlook.json"),
+        r#"{"email":"new@contoso.com"}"#,
+    )
+    .unwrap();
+    crate::accounts::migrate(h).unwrap();
+    assert!(!h.join("accounts/google.json").exists());
+    assert_eq!(
+        crate::accounts::summary(h, "gmail").unwrap().unwrap()["email"],
+        "old@example.com"
+    );
+    assert_eq!(
+        crate::accounts::summary(h, "outlook").unwrap().unwrap()["email"],
+        "new@contoso.com"
+    );
+    // A tool two connectors share is there once either is.
+    fs::write(
+        h.join("accounts/outlook.json"),
+        json!({"email":"new@contoso.com","refresh_token":"r"}).to_string(),
+    )
+    .unwrap();
+    fs::remove_file(h.join("accounts/gmail.json")).unwrap();
+    assert!(connectors::tool_available(h, "owl", "hexbot_mail").unwrap());
+    assert!(!connectors::tool_available(h, "owl", "hexbot_calendar").unwrap());
+}
+
+#[tokio::test]
+async fn x_search_offers_a_subscription_sign_in() {
+    let home = setup();
+    let row = rpc(home.path(), "hexbot.connectors.list", json!({"bot":"owl"})).await["connectors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == "x_search")
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        row["providers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| (p["id"].as_str().unwrap(), p["sign_in"].clone()))
+            .collect::<Vec<_>>(),
+        [
+            ("supergrok", json!("xai-oauth")),
+            ("xai", Value::Null),
+            ("x_api", Value::Null)
+        ]
+    );
+    let result = rpc(
+        home.path(),
+        "hexbot.connectors.setup",
+        json!({"id":"x_search","provider":"supergrok"}),
+    )
+    .await;
+    assert_eq!(
+        result["test"],
+        json!({"ok":false,"message":"Sign in with SuperGrok or X Premium+ first."})
+    );
+    assert_eq!(result["connector"]["state"], "not_set_up");
+    // A sign-in saved for the daemon sets it up for every bot, once xAI
+    // answers with it.
+    fs::write(
+        home.path().join("auth.json"),
+        json!({"providers":{"xai-oauth":{"access_token":"daemon-token","refresh_token":"r","expires_at":common::now()+3600.0}}}).to_string(),
+    )
+    .unwrap();
+    let (url, server) = xai_stand_in(StatusCode::OK).await;
+    fs::write(
+        home.path().join(".env"),
+        format!("HEXBOT_XAI_BASE_URL={url}/v1\n"),
+    )
+    .unwrap();
+    let result = rpc(
+        home.path(),
+        "hexbot.connectors.setup",
+        json!({"id":"x_search","provider":"supergrok","bot":"owl"}),
+    )
+    .await;
+    server.abort();
+    assert_eq!(result["test"], json!({"ok":true,"message":"Connected."}));
+    assert_eq!(result["connector"]["state"], "ready");
+    assert_eq!(
+        result["connector"]["state_text"],
+        "Connected · SuperGrok or X Premium+"
+    );
+    assert_eq!(result["connector"]["enabled_for_bot"], true);
+    assert!(connectors::tool_available(home.path(), "owl", "x_search").unwrap());
+    assert!(!connectors::tool_available(home.path(), "fox", "x_search").unwrap());
+    assert_eq!(result["connector"]["ready_bots"], json!(["fox", "owl"]));
+}
+
+async fn xai_models(State(status): State<StatusCode>, headers: HeaderMap) -> impl IntoResponse {
+    assert_eq!(headers["authorization"], "Bearer daemon-token");
+    (status, "{}")
+}
+/// A stand-in for xAI's API: `/v1/models` answers `status`.
+async fn xai_stand_in(status: StatusCode) -> (String, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let app = Router::new()
+        .route("/v1/models", get(xai_models))
+        .with_state(status);
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (url, server)
+}
+
+#[tokio::test]
+async fn a_sign_in_xai_refuses_is_not_connected() {
+    // A sign-in revoked at xAI, or one without API access, still has a token
+    // that has not expired here.
+    let home = setup();
+    fs::write(
+        home.path().join("auth.json"),
+        json!({"providers":{"xai-oauth":{"access_token":"daemon-token","refresh_token":"r","expires_at":common::now()+3600.0}}}).to_string(),
+    )
+    .unwrap();
+    let (url, server) = xai_stand_in(StatusCode::FORBIDDEN).await;
+    fs::write(
+        home.path().join(".env"),
+        format!("HEXBOT_XAI_BASE_URL={url}/v1\n"),
+    )
+    .unwrap();
+    let result = rpc(
+        home.path(),
+        "hexbot.connectors.setup",
+        json!({"id":"x_search","provider":"supergrok","bot":"owl"}),
+    )
+    .await;
+    server.abort();
+    assert_eq!(
+        result["test"],
+        json!({"ok":false,"message":"xAI refused this sign-in (403). Sign in again, or use an xAI key or the X API."})
+    );
+    assert_eq!(result["connector"]["state"], "error");
+    assert_eq!(result["connector"]["enabled_for_bot"], false);
+}
+
+async fn refused_refresh() -> impl IntoResponse {
+    (StatusCode::BAD_REQUEST, r#"{"error":"invalid_grant"}"#)
+}
+#[tokio::test]
+async fn a_sign_in_whose_refresh_xai_refuses_has_ended() {
+    // The access token has expired and xAI turns down the refresh token, as
+    // after signing out at xAI or a lapsed subscription.
+    let home = setup();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let issuer = format!("http://{}", listener.local_addr().unwrap());
+    let app = Router::new().route("/oauth2/token", post(refused_refresh));
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    common::write_config(
+        home.path(),
+        &json!({"provider_auth":{"xai-oauth":{"issuer":issuer}}}),
+    )
+    .unwrap();
+    fs::write(
+        home.path().join("auth.json"),
+        json!({"providers":{"xai-oauth":{"access_token":"old","refresh_token":"revoked","expires_at":common::now()-60.0}}}).to_string(),
+    )
+    .unwrap();
+    let result = rpc(
+        home.path(),
+        "hexbot.connectors.setup",
+        json!({"id":"x_search","provider":"supergrok","bot":"owl"}),
+    )
+    .await;
+    server.abort();
+    assert_eq!(
+        result["test"],
+        json!({"ok":false,"message":"Your SuperGrok or X Premium+ sign-in has ended. Sign in again."})
+    );
+    assert_eq!(result["connector"]["enabled_for_bot"], false);
+}
+
+#[tokio::test]
+async fn a_value_for_one_bot_keeps_the_other_bots_on_their_provider() {
+    let home = setup();
+    fs::write(
+        home.path().join("auth.json"),
+        json!({"providers":{"xai-oauth":{"access_token":"daemon-token","refresh_token":"r","expires_at":common::now()+3600.0}}}).to_string(),
+    )
+    .unwrap();
+    let (url, server) = xai_stand_in(StatusCode::OK).await;
+    fs::write(
+        home.path().join(".env"),
+        format!("HEXBOT_XAI_BASE_URL={url}/v1\n"),
+    )
+    .unwrap();
+    rpc(
+        home.path(),
+        "hexbot.connectors.setup",
+        json!({"id":"x_search","provider":"supergrok"}),
+    )
+    .await;
+    server.abort();
+    let refused = call(
+        home.path(),
+        "alice",
+        "hexbot.connectors.setup",
+        json!({"id":"x_search","provider":"x_api","bot":"owl","bot_only":true,"values":{"X_BEARER_TOKEN":"owl-token"}}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(refused.code, 4202);
+    assert!(
+        refused
+            .message
+            .starts_with("Other bots use SuperGrok or X Premium+.")
+    );
+    assert!(
+        !fs::read_to_string(home.path().join("profiles/owl/.env"))
+            .unwrap_or_default()
+            .contains("owl-token")
+    );
+    for bot in ["owl", "fox"] {
+        assert_eq!(
+            connectors::get(home.path(), Some(bot), "x_search").unwrap()["provider"],
+            "supergrok"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_xai_key_turned_off_with_its_provider_leaves_x_search_to_the_sign_in() {
+    // An xAI key in `.env`, the xAI model provider turned off, and a
+    // SuperGrok sign-in: searches would refuse the key, so X search uses
+    // the sign-in.
+    let home = setup();
+    fs::write(home.path().join(".env"), "XAI_API_KEY=turned-off\n").unwrap();
+    fs::write(
+        home.path().join("providers-disabled.json"),
+        json!({"xai":true}).to_string(),
+    )
+    .unwrap();
+    fs::write(
+        home.path().join("auth.json"),
+        json!({"providers":{"xai-oauth":{"access_token":"daemon-token","refresh_token":"r","expires_at":common::now()+3600.0}}}).to_string(),
+    )
+    .unwrap();
+    let row = connectors::get(home.path(), Some("owl"), "x_search").unwrap();
+    assert_eq!(row["provider"], "supergrok");
+    assert_eq!(row["ready"], true);
+    // Without the sign-in, the turned-off key does not set X search up.
+    fs::remove_file(home.path().join("auth.json")).unwrap();
+    let row = connectors::get(home.path(), Some("owl"), "x_search").unwrap();
+    assert_eq!(row["ready"], false);
+}
+
+#[tokio::test]
+async fn a_key_for_one_bot_says_xai_is_disconnected() {
+    // X search chose the xAI API, then the xAI model provider was
+    // disconnected: a key saved for one bot alone does not connect it.
+    let home = setup();
+    fs::write(
+        home.path().join("config.yaml"),
+        "x_search:\n  provider: xai\n",
+    )
+    .unwrap();
+    fs::write(
+        home.path().join("providers-disabled.json"),
+        json!({"xai":true}).to_string(),
+    )
+    .unwrap();
+    for setup in [
+        json!({"id":"x_search","provider":"xai","bot":"owl","bot_only":true,"values":{"XAI_API_KEY":"owl-key"}}),
+        json!({"id":"x_search","bot":"owl","bot_only":true,"values":{"XAI_API_KEY":"owl-key"}}),
+    ] {
+        let result = rpc(home.path(), "hexbot.connectors.setup", setup).await;
+        assert_eq!(
+            result["test"],
+            json!({"ok":false,"message":"xAI is disconnected in Settings, Providers. Save the xAI key for every bot to connect it again."})
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_xai_key_kept_in_the_credential_pool_sets_up_x_search() {
+    let home = setup();
+    if std::env::var_os("XAI_API_KEY").is_some() {
+        return;
+    }
+    fs::write(
+        home.path().join("auth.json"),
+        json!({"credential_pool":{"xai":[{"auth_type":"api_key","access_token":"pooled-xai-key","priority":0}]}}).to_string(),
+    )
+    .unwrap();
+    let row = connectors::get(home.path(), Some("owl"), "x_search").unwrap();
+    assert_eq!(row["ready"], true);
+    assert_eq!(row["provider"], "xai");
+    connectors::set_enabled(home.path(), "owl", "x_search", true).unwrap();
+    assert!(connectors::tool_available(home.path(), "owl", "x_search").unwrap());
+}
+
+/// A connector's key is its own, never one a model provider reads: sharing
+/// one would connect, or on Disconnect delete, one with the other. xAI's key
+/// is shared on purpose and says so ("Also used if a bot runs on xAI models").
+#[test]
+fn connector_keys_are_never_a_model_providers() {
+    let providers: Value = serde_json::from_str(include_str!("providers.json")).unwrap();
+    let theirs: std::collections::BTreeSet<&str> = providers["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|p| p["env_vars"].as_array().into_iter().flatten())
+        .filter_map(Value::as_str)
+        .collect();
+    for connector in connectors::catalog() {
+        // Every place a connector names a key: its own, each provider's, each field's.
+        let keys = connector["keys"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .chain(
+                connector["providers"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .flat_map(|p| p["keys"].as_array().into_iter().flatten()),
+            )
+            .chain(
+                connector["fields"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|f| &f["key"]),
+            )
+            .filter_map(Value::as_str);
+        for key in keys {
+            assert!(
+                key == "XAI_API_KEY" || !theirs.contains(key),
+                "{} uses {key}, a model provider's key",
+                connector["id"]
+            );
+        }
+    }
+}
+
+#[test]
+fn disconnecting_copilot_keeps_the_github_connectors_token() {
+    let home = tempfile::tempdir().unwrap();
+    db::migrate(home.path()).unwrap();
+    std::fs::write(
+        home.path().join(".env"),
+        "HEXBOT_GITHUB_TOKEN=github_pat_connector\nGITHUB_TOKEN=gho_copilot\n",
+    )
+    .unwrap();
+    crate::providers::clear_key(home.path(), "copilot").unwrap();
+    let env = std::fs::read_to_string(home.path().join(".env")).unwrap();
+    assert!(
+        env.contains("HEXBOT_GITHUB_TOKEN=github_pat_connector"),
+        "{env}"
+    );
+    assert!(!env.contains("GITHUB_TOKEN=gho_copilot"), "{env}");
 }

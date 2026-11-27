@@ -2,7 +2,7 @@ import { useNavigate } from '@tanstack/react-router'
 import { ChevronRight } from 'lucide-react'
 import { type CSSProperties, lazy, Suspense, useEffect, useState } from 'react'
 
-import { type BotMemory, botMemoryGet, botMemorySet } from '../../lib/api'
+import { type BotMemory, botMemoryGet, botMemorySet, MEMORY_RESTORED } from '../../lib/api'
 import type { Bot } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 
@@ -17,7 +17,8 @@ const DocumentEditor = lazy(() =>
 
 /**
  * The bot's memory, read when the panel needs it and again after the bot
- * writes it (`writes` counts its finished memory steps in the chat).
+ * writes it (`writes` counts its finished memory steps in the chat) or a
+ * dream is restored in its settings.
  */
 export function useBotMemory(
   bot: string,
@@ -25,6 +26,16 @@ export function useBotMemory(
   writes: number
 ): [BotMemory | null, (memory: BotMemory) => void] {
   const [memory, setMemory] = useState<{ bot: string; value: BotMemory } | null>(null)
+  const [restores, setRestores] = useState(0)
+
+  useEffect(() => {
+    const reread = (event: Event) =>
+      (event as CustomEvent<string>).detail === bot && setRestores(count => count + 1)
+
+    window.addEventListener(MEMORY_RESTORED, reread)
+
+    return () => window.removeEventListener(MEMORY_RESTORED, reread)
+  }, [bot])
 
   useEffect(() => {
     if (!enabled) {
@@ -40,7 +51,7 @@ export function useBotMemory(
     return () => {
       live = false
     }
-  }, [bot, enabled, writes])
+  }, [bot, enabled, writes, restores])
 
   return [memory?.bot === bot ? memory.value : null, value => setMemory({ bot, value })]
 }
@@ -160,7 +171,7 @@ export function FingerprintEditor({
     <Suspense fallback={null}>
       <DocumentEditor
         about={about(file, bot.display_name)}
-        cap={file === 'memory' ? memory?.cap : undefined}
+        cap={file === 'memory' ? (bot.memory_cap ?? memory?.cap) : bot.soul_cap}
         fileName={card.fileName}
         onClose={onClose}
         onSave={async text => {

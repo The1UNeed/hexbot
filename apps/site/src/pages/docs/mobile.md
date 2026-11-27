@@ -1,7 +1,7 @@
 ---
 layout: ../../layouts/Docs.astro
 title: Mobile app
-description: Build the Hexbot Expo app for iPhone and Android and connect to your daemons.
+description: Get Hexbot for iPhone on TestFlight, build it for Android, and connect to your daemons.
 ---
 
 The Expo app in `apps/mobile` runs on iOS and Android. Its controls cover bots,
@@ -9,12 +9,14 @@ their chats, rooms, approvals, models, memory, scheduled jobs and paired
 devices.
 Bots run on your daemon's computer while your phone is asleep.
 
-## Get the iPhone beta
+## Get Hexbot for iPhone
 
-Hexbot for iPhone is in beta on TestFlight. On your iPhone or iPad, open
-[the TestFlight invite](https://testflight.apple.com/join/byKAKWMW), install
-TestFlight if asked, then install Hexbot and pair it with your daemon as
-described in [Connect locally](#connect-locally).
+Hexbot for iPhone is open to everyone on TestFlight, Apple's app for beta
+apps; you need no invite. On your iPhone or iPad, open
+[the public TestFlight link](https://testflight.apple.com/join/byKAKWMW),
+install TestFlight if asked, then install Hexbot and pair it with your daemon
+as described in [Connect locally](#connect-locally). Every nightly reaches
+TestFlight once Apple has reviewed it, and TestFlight installs it for you.
 
 iOS 26 uses native Liquid Glass for floating controls. Older iOS uses system
 blur. Android and Reduce Transparency use solid controls. The app follows
@@ -29,7 +31,8 @@ works in portrait and landscape.
 
 ## Build from source
 
-There is no App Store or Play Store release yet. From the repository root:
+There is no App Store or Play Store release yet, so Android is built from
+source. From the repository root:
 
 ```sh
 pnpm install --frozen-lockfile
@@ -43,22 +46,22 @@ provides development, internal preview and production build profiles.
 
 ## TestFlight builds
 
-The iOS beta is distributed through TestFlight. Maintainers use Expo EAS
-Workflows to check the app, create a production build and upload it. Apple
-processes the binary afterward. The GitHub Release action starts Expo for
-nightly releases after checks pass, using the exact release commit. Stable
-releases currently skip iOS. Ordinary pushes to `main` do not release iOS.
-The Expo project must be linked to the repository with `apps/mobile` as its
-base directory, and GitHub needs the `EXPO_TOKEN` repository secret.
-Enable automatic
-distribution on an internal TestFlight group to deliver new builds to its
-testers.
+The iOS app is distributed through TestFlight. For nightly releases, after
+checks pass, the GitHub Release action builds the exact release commit on a
+macOS runner with `eas build --local` and uploads it through Expo with
+`eas submit`. The upload then goes to the internal group, through automatic
+distribution, and to the external group `Website0`, which holds the public
+link, after Apple's Beta App Review. Stable releases currently skip iOS.
+Ordinary pushes to `main` do not release iOS. GitHub needs the `EXPO_TOKEN`
+repository secret.
 
-From the repository root, `pnpm mobile:testflight` starts the same workflow
-and waits for its result. If uploading fails after a successful build,
+From the repository root, `pnpm mobile:testflight` builds in Expo's cloud
+instead, using one of the 15 iOS builds a month on Expo's free plan, and
+waits for its result. If uploading fails after a successful build,
 `pnpm mobile:testflight:upload --input build_id=YOUR_EAS_BUILD_ID` retries
 the upload without rebuilding. Both workflows show their stages and logs in
-Expo. Apple review remains separate. Maintainer setup is in
+Expo. Apple decides when a reviewed build reaches public testers. Maintainer
+setup is in
 `apps/mobile/README.md` and `docs/release.md`.
 
 ## Connect locally
@@ -86,10 +89,12 @@ the phone from Devices returns it to pairing.
 ## Control a daemon
 
 Bots lists each bot with its role and description. Tap a bot to open your chat
-with it; each bot has one, which keeps going. Long-press a bot, or use the
-button at the top right of the chat, for its settings, where you pick its model
-and thinking level from the providers you have connected. A new model applies
-from the chat's next message.
+with it; each bot has one, which keeps going. Long-press a chat in the list to
+pin it, mark it as read, rename it, or open its settings. Pinned chats sit above
+the list as large faces; the primary bot starts pinned. The button at the top
+right of a chat also opens its settings, where you pick its model and thinking
+level from the providers you have connected, and turn on fast mode where the
+model offers it. A new model applies from the chat's next message.
 
 Rooms shows one room at a time, with a switcher when you have several. Daemon shows what your bots are doing now and
 opens settings, models, plugins (connectors, MCP servers, skills and built-in tools), jobs, About you, usage, bot
@@ -102,15 +107,26 @@ replaces Send until its bot finishes. Removing a room's last bot deletes the
 room, and the app asks first.
 
 Job details show the last status, error and up to 12,000 characters of output
-saved on the daemon. Attachments can be sent without text. The app asks the bot
-to review the files and keeps attachment chips until the send succeeds. A
+saved on the daemon. The + next to the message field attaches photos and
+videos from your phone, a photo or video you take with the camera, or any
+file. Each file uploads as soon as you pick it and shows how far it is; Send
+waits until every file is up, and a tap on one previews it. Attachments can be
+sent without text. The app asks the bot to review the files and keeps
+attachment chips until the send succeeds. A
 message carries only the files picked for it, and files picked for a chat you
 leave without sending are removed from the daemon. Older
 daemons show an update notice for unavailable attachment or job controls.
 
-When a bot's [heartbeat](/docs/bots-and-sections#heartbeat) writes to you,
-the phone gets a notification, if you allowed notifications and the daemon is
-on Hex Connect. The notification only says one of your bots has a message;
+When a bot's [heartbeat](/docs/bots-and-sections#heartbeat) writes to you, a
+bot finishes a reply you have not read within 30 seconds on any device, or a
+bot has waited 30 seconds for your approval or answer, the phone gets a
+notification, if you allowed notifications, the bot's Notify me is on and the
+daemon is on Hex Connect. A reply counts as read only once you look at it: a
+computer whose Hexbot window sits behind another app does not count. Settings,
+Notifications shows whether this phone takes them, sends a test, and has each
+bot's Notify me; while they are off, a banner over the chat list offers to
+turn them on. The notification only says one of your
+bots has a message;
 the message stays on your daemon until you open it. Tap it to open that bot's
 chat, on the right daemon if you have several. Each bot's checklist is under
 Heartbeat in its profile. The app does not

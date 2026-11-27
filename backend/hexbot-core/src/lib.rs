@@ -3,7 +3,9 @@
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 compile_error!("The Hexbot daemon supports macOS and Linux only");
 
+pub mod accounts;
 mod admission;
+pub mod approval_rules;
 pub mod auth;
 pub mod catalog;
 pub mod cli;
@@ -14,11 +16,18 @@ pub mod credentials;
 pub mod daemon_status;
 pub mod db;
 pub mod diagnostics;
+pub mod discord;
 pub mod dpop;
 pub mod dreaming;
+pub mod engines;
 pub mod events;
+pub mod faces;
 pub mod http;
+mod imap;
 mod install_ownership;
+pub mod log_files;
+pub mod machines;
+pub mod mail;
 pub mod memory;
 pub mod native_external_tools;
 pub mod native_product_tools;
@@ -31,10 +40,12 @@ pub mod pi;
 pub mod plugins;
 pub mod provider_acp;
 pub mod providers;
+pub mod reactions;
 pub mod rooms;
 pub mod rpc;
 pub mod runtime;
 pub mod runtime_store;
+pub mod searxng;
 pub mod server;
 pub mod services;
 pub mod settings;
@@ -57,7 +68,22 @@ pub use system_service as windows_service;
 pub mod team;
 mod update_path;
 pub mod update_signature;
+pub mod update_trial;
 pub mod usage;
+
+// The services and file formats of the Google and Microsoft connectors.
+mod calendar;
+mod docs;
+mod drive;
+mod excel;
+mod markdown;
+mod ooxml;
+mod powerpoint;
+mod sheets;
+mod slides;
+mod tasks;
+mod word;
+mod zip;
 
 pub fn version() -> String {
     serde_json::from_str::<serde_json::Value>(include_str!("../../../apps/desktop/package.json"))

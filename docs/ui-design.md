@@ -36,55 +36,67 @@ own visual identity. Read `CLAUDE.md` for the words.
 - Chart series, for bot visuals only: light #4F46E5, #0D9488, #D97706,
   #DB2777, #2F7CF6, #65A30D; dark #8B85FF, #2DD4BF, #FBBF24, #F472B6,
   #4C9AFF, #A3E635. The first is the accent; the rest step apart in hue.
-- Bot faces: Hexbot's eight outlines with the icon's two capsule eyes, white except
-  ink on Chalk. `lib/face-geometry.ts` is the source, copied to
+- Bot faces: Hexbot's nineteen outlines in twenty-one colours, with the icon's
+  two capsule eyes, white except ink on Chalk, Peach, Lemon and Lilac. `lib/face-geometry.ts` is the source, copied to
   mobile by `apps/web/scripts/face-rest.mjs`. The [provenance note](face-provenance.md)
   records where the outlines, eyes, and poses come from.
   Faces picked in an app are stored as shape and colour, with a static PNG
   for other clients. The web app reads saved capsule-eye and
   flat-eye PNGs back into live faces; mobile shows legacy pictures as pictures. Other
-  uploads replace the face. Bots without a saved face derive one from their
-  names. Each mood moves the whole face and its eyes on springs
+  uploads replace the face until the photo is removed. Every bot without a
+  photo has a face of its own, random for new bots and HexBot, and renaming
+  it never changes it. Each mood moves the whole face and its eyes on springs
   (`lib/face-motion.ts`): idle sways, glances and blinks; listening tilts
   from side to side; searching peers one eye wide, then the other; working
   bobs while its eyes narrow on a steady beat; happy hops and squints; sleeping droops and breathes.
   Searching, working and happy faces now and then turn all the way round,
   with a sweep in tints of their colour. Thinking folds the face into three
   bobbing dots, writing into a pencil that scribbles, and loading
-  into a whirl round a dot; the face unfolds when the mood ends. A face
+  into a whirl round a dot; the face unfolds when the mood ends. On the
+  bots' computer the face shrinks and rides beside a pointer in its colour,
+  as on the Computer tab: the two glide from spot to spot, the face a beat
+  behind, and the pointer dips as if it clicked. A face
   leaving sleeping opens wide and throws sparks. The
   in-app mark sleeps on the connection-lost screen and loads while an update
   installs. A live turn starts thinking, searches while a
-  search tool runs, writes while text streams, and works during other steps.
+  search tool runs, writes while text streams, rides the pointer while a
+  computer step runs, and works during other steps.
   Roster and header
   faces, including every face in a room's cluster, match their status dots;
   while a reply streams, the roster and header wear the chat's live face, so
-  a thinking bot thinks in all three places;
+  a thinking bot thinks in all three places; the big face on the bot's
+  profile, in the side panel and Bot settings, wears its roster row's face;
   a cluster without a dot, as in room settings, stays idle. Faces in asks
   turn and look toward each other.
   Faces also show emotions (`lib/emotions.ts`), read from what happens in
   the open chat or room, never asked of the model: as a turn starts the
-  bot is shy at thanks, surprised at alarm or shouting, and otherwise
-  curious; a failed step confuses it, three frustrate it; a reply that
+  bot is shy at thanks, sheepish at a correction, determined when asked
+  to try again, surprised at alarm or shouting, amused at a laugh, excited
+  at good news, cheerful at a greeting, and otherwise curious, the first
+  that fits; a failed step confuses it, three frustrate it; a reply that
   fails or apologises is sad, one that reports passing tests, a merge or a
-  deploy celebrates, a long or many-step one is proud, and one that ends in
-  a question is curious. A quiet open chat gets bored after 3 minutes and
+  deploy celebrates, one that got there after a failed step is relieved, a
+  long or many-step one is proud, and one that ends in a question is
+  curious. A quiet open chat gets bored after 3 minutes and
   drowsy after 8, and anything happening wakes it. Each emotion shows for
-  a second or a few over what the bot is doing, on its header, live and
-  roster faces and its latest room message; drowsy stays until something
-  happens. Moving between moods is one gesture: a blink and a dip, a jump
-  for surprise, a slump for sadness, a jolt awake, and a hop, a turn and
-  sparks to celebrate. Mobile shows the same emotions, still, on a bot
-  chat's header and waiting faces.
+  a second or a few over what the bot is doing, on its header, live,
+  roster and profile faces and its latest room message; drowsy stays
+  until something happens. Moving between moods is one gesture: a blink
+  and a dip, a jump for surprise, a slump for sadness, a jolt awake, and a
+  hop, a turn and sparks to celebrate. Mobile shows the same emotions,
+  still, on a bot chat's header and waiting faces; its profile face
+  follows the bot's status, as its face in Library does.
   One frame loop moves every visible face and stops when none moves.
   Every face of one bot in one mood and look shares one motion, so the
   sidebar, header and chat copies sway, blink and glance in step however
   late each appeared.
   Reduced motion draws each mood's rest pose, morph included, and offscreen
-  or hidden-page faces stop. Mobile draws the same settled expressions.
-  Click a face or the in-app mark for one of the existing 21 acts; a bot's
-  act plays on every face of that bot. Acts hold the face at rest and clean
-  up with their React subtree.
+  or hidden-page faces stop. Mobile draws the same settled expressions,
+  and the same face riding a moving pointer on a chat's waiting line while
+  the bot uses the computer.
+  Clicking a face does nothing. Acts play only when the app gives a face
+  one, such as typing while the bot works; they hold the face at rest and
+  clean up with their React subtree.
   The site's faces, logo, favicon, and package icons use the same capsule
   eyes.
 - Shadows only on floating layers (menus, dialogs, the glass chrome) and the
@@ -111,8 +123,9 @@ own visual identity. Read `CLAUDE.md` for the words.
   that unfolds or folds in the column; 320 ms (`enter`) for a whole screen.
   `ease-out` settles, `ease-in-out` is for things leaving, `ease-spring` is
   for small controls that snap into place (the switch knob). Only what
-  arrives while the chat is open animates: history is drawn still. The one
-  continuous motion is bot faces. Respect prefers-reduced-motion.
+  arrives while the chat is open animates: history is drawn still. Continuous
+  motion is kept to bot faces and a calm opacity breathe on an active
+  bot-to-bot messaging pill. Respect prefers-reduced-motion.
 - Focus: the accent ring, 2 px outside the shape (`hex-focus`), on every
   rounded control, including the glass pills.
 
@@ -141,7 +154,8 @@ with Viewport Segments place both poses on the exact halves.
 
 - Header: a window-drag strip (padded for the macOS traffic lights) with one
   row: the search pill and a round glass "+" menu (New bot, New room). No app name. The selected row is a white card on the canvas.
-- List: bots and rooms in one list, ordered by last activity. A bot row is
+- List: bots and rooms in one list, newest message first, the primary bot
+  pinned on top. A bot moves up when you or it writes in its chat. A bot row is
   its face (40px), name, the latest message in its chat (yours or the bot's,
   as one plain line; the bot's label until the chat has one), and a status dot
   on the face (see "Status colours"). No times. A pencil replaces the
@@ -186,14 +200,47 @@ with Viewport Segments place both poses on the exact halves.
   finished. Rooms and the mobile app separate the same way.
 - Live status: from the moment a turn starts until the whole turn is done,
   a line sits at its foot, under the messages the bot has finished: the
-  bot's face, in the mood of its work, and "General is working" in muted
-  words, with no bubble behind it. It never names the step, the tool, the
-  thinking, or the provider's wait notice, and it does not open. It stays
-  while a step the user approved still runs. The face thinks, searches,
-  works or writes with the turn; no spinner, no ring, no shimmer. What the
-  bot is still writing stays hidden; the message appears whole when it is
-  done and springs in. When the turn ends the line is gone at once and
-  nothing takes its place.
+  bot's face, in the mood of its work, and what it is doing in two tones,
+  with no bubble behind it. The verb is in muted words and the thing it acts
+  on is stronger: "Opening Taobao", "Searching the web for CER dates",
+  "Reading notes.md". Between steps it reads "Thinking…" before anything
+  happens, "Typing…" while the reply is written, "Working…" otherwise. The
+  words come from the running step and its arguments (`lib/work-label.ts`),
+  never from the model: a page is named by its site, a file by its own name,
+  and a command, a script, the thinking and the provider's wait notice are
+  never shown. While Auto mode checks a step the line only says "Working…";
+  the step has not run. The line does not open. It stays while a step the
+  user approved still runs. The face follows the step: it thinks, searches,
+  reads down the page, writes, listens for an answer, works, or rides the
+  moving pointer on the bots' computer; no spinner, no ring, no shimmer.
+  What the bot is still writing stays hidden; the message appears whole when
+  it is done and springs in. When the turn ends the line is gone at once and
+  nothing takes its place. The mobile app shows the same words; it draws the
+  reply as it is written, so it has no "Typing…".
+- Tags: a link in a message that names something Hexbot knows is drawn as an
+  icon and underlined words, in the text colour (`conversation/tags.tsx`,
+  `lib/tags.ts`). A web page leads with its site's own icon, a globe when it
+  has none; a bot with its face and its name in its colour, mixed toward the
+  text so it reads on every bubble; a file, a room, scheduled jobs, a
+  Settings page, a plugin and a skill with a line glyph. The underline is a
+  quiet tint that strengthens on hover. A tag for something that is not
+  there reads as its plain words; a scheduled jobs tag keeps its glyph and
+  opens nothing, since this app has no page for jobs. The row that marks one bot
+  messaging another ("Messaging Biology", "Message from Biology", "Messaged
+  Biology") sits in the middle of the column, like the time separators, with
+  the target bot in a rounded pill chip that opens their conversation full-view
+  in the main pane (floating `Bot A ⇄ Bot B` header and `Close Chat` pill at the
+  foot) rather than in the right sidebar; on mobile, the pill chip sits in the
+  same centered row and taps into the thread screen. While a bot answers another
+  bot in a private thread, its roster row stays quiet behind the scenes like
+  dreaming or heartbeat unless it needs the user.
+- Reactions: a face button appears beside a bot's bubble on hover (always on
+  a touch screen) and opens a row of six emoji; the one already left is
+  marked. A reaction is a small chip tucked under the bubble's corner, left
+  for the bot's bubbles and right for yours. Your chip is a button that
+  takes the reaction back; the bot's only names who left it. A bot's chat
+  only. On mobile a long press on a bot's message opens the same row over
+  Copy and Select text.
 - "Waiting on you" is a purple glass pill pinned under the header pill
   while a bot has asked the human something (in a room it names the bot).
   Nothing is written into the transcript for it. A red banner names the bot
@@ -210,11 +257,89 @@ with Viewport Segments place both poses on the exact halves.
   raised by the daemon (code runs, browser scripts, cron) show Approve and
   Deny only. The card stays in the transcript after the decision, marked
   with the outcome.
-- While a turn runs the composer's send button becomes Stop. Text does not
+- A bot's chat has no Stop: once a message is sent, Recall takes it back.
+  In a room, while bots work, the composer's send button becomes Stop until
+  you type. The field takes typing as soon as a chat shows, while it still
+  opens; a message sent then goes once it has opened. Text does not
   type itself out; each message appears whole and springs in. In a room the
   bot's words arrive as its room message when its turn ends.
-- Attachments: images render inline with a lightbox; files render as chips
-  with name, size, and type icon.
+- Attachments sit above the message's bubble. A picture shows whole and
+  opens over the chat in a lightbox; a video or audio file plays where it
+  is, from the page's copy while it is open and the daemon's after. Every other
+  file is a card: a page icon banded in its type's colour (PDF red,
+  documents blue, spreadsheets green, presentations orange, code violet),
+  its name cut in the middle so the extension stays ("esp32-c6-mini-1_mini-1u_d…
+  .pdf"), and its size ("951kB"). A card opens the file beside the chat.
+  Each file the bot shared in a message (`hexbot_share_file`) is the same
+  card under its reply, with its kind in place of the size; files it only
+  wrote or edited along the way, such as scripts and tests, do not show.
+  A shared picture, video or audio file shows or plays there instead, and so
+  do the voice replies, pictures and clips its media tools make. Select an audio or
+  video filename to load its player. The daemon streams media over HTTP so the
+  chat connection stays available during playback and seeking. If the file changes
+  during playback, Reload opens its current version. The composer shows pictures as
+  thumbnails and other files as cards, each with a remove button. A file
+  uploads the moment it is dropped on the chat, picked or pasted, one at a
+  time, in parts: a picture dims under its percentage, a card says
+  "Uploading 42%" over a thin bar (or "Waiting to upload" behind another
+  file). The percentage is what the daemon has confirmed, and it reaches 100%
+  only when the daemon has the file staged. A daemon from before part
+  uploads cannot take a file back, so there a file stays on this device
+  until Send, as before, and only a picture, PDF, video or audio file
+  previews from the local copy. Send waits until every file is up. A file that is up opens to preview as it will in the
+  message (a picture over the chat, any other file beside it); one that did
+  not upload says why ("Not uploaded: attachment exceeds 45 MiB") and tries
+  again when clicked. Dragging files over the chat shows "Drop files to
+  attach". On the phone each file shows its percentage while it uploads, the
+  composer says "Uploading files" and Send waits, and a tap previews it. A room's
+  cards only name the file. On the phone, the same card opens the file on
+  its own card: a CSV or TSV as a table, Markdown formatted, other text as
+  it is, a picture, video, audio file or PDF shown or played (Android has no
+  PDF preview), and on iPhone Share saves or sends it. A visual's card there
+  takes its bot's colour, like the bot's bubbles.
+- Files beside the chat open as tabs in the side panel, next to any
+  visuals, each shown and edited the way its kind wants. Text opens in the
+  editor (Markdown and plain text formatted, code and data as plain text);
+  CSV and TSV as a table (Table or Text), with cells edited in place, rows
+  and columns added or removed, copy and paste as tab-separated text; HTML
+  and SVG rendered in a frame that runs no scripts (Preview or Source).
+  Word files open as a page whose paragraphs are edited in place, Enter
+  splitting one and Backspace joining it back; Excel files as their sheets,
+  cells and formulas edited in place with their styles kept; PowerPoint
+  files as their slides, with the text in boxes, shapes and tables edited in
+  place. Only the parts changed are written back, so styles, charts and
+  comments the panel does not show stay. Each saves 0.8 s after the last
+  edit. A picture opens in a markup editor: select and move, pen,
+  highlighter, arrow, line, rectangle, ellipse, text, numbered steps,
+  pixelate and crop, seven colours, three sizes and undo for each step.
+  Save writes PNG, JPEG and WebP back over the file; Add to message puts it,
+  as marked up, in the composer; a picture opened from the viewer's Mark up
+  is not saved, only added or downloaded.
+- The panel has no field of its own: the chat's composer is the one place to
+  write to the bot. Selecting text, a range of cells or an area of a picture
+  offers Comment; a comment waits above the composer, numbered, naming its
+  file and what it is about, and goes with the next message, the file named
+  as a tag, so the bot finds the place and edits that file. Each edit the
+  bot finishes shows in the tab as it lands, with "Updated by {bot}" for a
+  moment; the editor follows unless it holds an edit not saved yet; when the
+  bot adds something the formatted view would drop (a table), it switches to
+  source. A save after the bot changed the file is refused rather than
+  overwriting it; the edit stays, with "Load {bot}'s version" to drop it for
+  the file as it is now. Sending a message saves every open file's edit
+  first, and holds the message when one does not save; closing a tab or the
+  panel saves first and keeps a file whose edit did not save. A PDF opens in
+  the viewer; any other file offers a download. The phone has no side
+  panel: a file opens on its card in front of the chat, where text and
+  Markdown (Formatted or Edit) are edited in a field, CSV and TSV as a table
+  whose picked cell the field under it edits (Add row adds one), and
+  pictures are marked up with the same tools, colours and sizes, drawn by
+  the desktop's renderer in a web view. Save, or closing the card, writes
+  the edit back; a save after the bot changed the file is refused with
+  "Load {bot}'s version". Selecting words, a cell (a long press picks the
+  range up to another) or an area of a picture offers Comment; the note is
+  written at the bottom of the card, and the comment waits above the
+  composer, numbered, and goes with the next message. Word, Excel and
+  PowerPoint files stay without a preview there.
 - Questions: when a bot asks through the clarify tool, a card with the
   question, the choices as rows A, B, C… (the first marked Recommended)
   and a field for the user's own answer. One click answers a single-choice
@@ -224,19 +349,21 @@ with Viewport Segments place both poses on the exact halves.
   and answered cards come back from the section's history, each under the
   message that asked it.
 - Sending (web and desktop): the field clears at once and your bubble greys
-  with a small spinner beside it until the daemon takes it. After 15 s with
-  no answer, or when the send is refused or the bot's turn fails on it, the
-  bubble gets a red ! beside it and "Not sent · Retry" under it, the reason
-  on hover; the ! retries too. An unknown outcome retries under the same
-  input key, so a copy that did arrive is never taken twice, and stays Not
-  sent until the stored row shows it. A turn that failed on your latest
+  with a small spinner beside it until the daemon takes it. After 15 s without confirmation, the
+  bubble shows "Delivery unconfirmed · Retry". A refusal shows "Not sent · Retry".
+  Hover for the reason. Retry uses the same input key when delivery is uncertain,
+  so the daemon can recognize a message it already received. A turn that failed on your latest
   message in a bot's chat retries in place: Recall takes the message and the
   failed turn back and the same bubble sends again, so one copy stays. Until
   the bot takes a message its saved draft keeps it, so a reload never loses
   one that did not send. Rooms show the same bubble for sends. The phone
   keeps its error banner.
-- Errors: a failure that is not about your message, such as a dream's, is a
-  small Stopped card with a red dot and a retry action; one card per
+- Errors: a turn the bot could not finish, on your message or not (a
+  provider error, a dream), is a Stopped card: "{bot} stopped", the time,
+  the reason in plain words, and Retry or Fix {connector}. A request of
+  this app's that failed with no message of its own, such as a Recall, has
+  the same card headed "Didn't go through"; an upload that fails stays on
+  its file in the composer. One card per
   failure, even when the gateway and the daemon both report it. Retry requires
   durable input ownership. Older daemons offer no Retry for failed sends or
   answers; failed sends retain their draft for manual resend.
@@ -305,12 +432,13 @@ notice. Working and idle draw the plain pill.
   `lib/search.ts`, which the mobile app shares.
 - Four tabs in a segmented control:
   - Details: the description, a card with Model (opens Bot settings, Model)
-    and the "Notify me" switch (native notifications when this bot stops or
-    needs you), a card of doors into Bot settings (Soul, Memory, Tools,
+    and the "Notify me" switch (notifications on the app, browser and phone
+    when this bot replies, stops or needs you; in a browser that has not
+    allowed notifications, an "Allow in this browser" row under it), a card of doors into Bot settings (Soul, Memory, Tools,
     Connectors, Skills), and "Bot settings" for the tab last used.
   - Library: the visuals the bot drew (each opens beside the chat), then
     images (a three-column grid) and files shared in the section, newest
-    first.
+    first; a file opens beside the chat.
   - Fingerprint: the bot's soul and memory as two cards, red and blue,
     each with the day the file last changed (`persona_updated_at` on the
     bot, `updated_at` from `hexbot.memory.bot.get`), and a door to Notes
@@ -323,24 +451,28 @@ notice. Working and idle draw the plain pill.
     dialog). An untouched editor follows the bot's own changes.
   - Computer: the bots' shared computer on top, when the bot has Computer
     use: its live screen, watch-only, with a still blue ring while a bot
-    acts there or the user has it, and one line under it saying what is
-    happening ("Scout is clicking on the computer", "You have control. Your
-    bots wait until you give it back."). Each bot that acted lately has a
+    acts there or the bots are paused, and one line under it saying what is
+    happening ("Scout is clicking on the computer", "Your bots are paused
+    until you resume them."). Each bot that acted lately has a
     cursor on the screen: an arrow in its face colour with its face beside
     it. The cursor glides to where the bot acts, presses and rings on a
     click, and the face taps while the bot types; it fades after 45 seconds
-    idle. "Take control" opens the screen large over the app, where the user
-    can click and type; "Give back" or closing the window hands it back.
-    The small screen keeps playing under the window, and a screen switching
-    between watching and control keeps its picture until the new one is up,
-    so neither goes black. A
+    idle. Clicking the screen, or Open larger, opens it large over the app,
+    where the user clicks and types while the bots keep working, each with
+    its own cursor. "Pause bots", beside the line and in the window, gives
+    the user the computer alone: the bots stop after the action they are on
+    and wait until "Resume bots". Closing the window leaves a pause as it
+    is. The small screen keeps playing under the window, and a screen
+    switching links keeps its picture until the new one is up, so neither
+    goes black. Cua's viewer draws no cursors of its own; the daemon keeps
+    it out of presence. A
     menu has Open larger, Restart, Turn off and Reset… (asks first:
     everything on it is erased, for every bot), then "Quality on this
     device" with Auto (the default), 1080p · 60 fps, 1080p · 30 fps,
     720p · 60 fps and 720p · 30 fps, a check on the chosen one. An off
     computer shows "Turn on"; a daemon without Cua shows how to install it.
     Reached at a plain http:// address on the network, where the screen
-    cannot play, it says so in place of the screen, without Take control.
+    cannot play, it says so in place of the screen; Pause bots stays.
     Under it, the bot's other tool calls in the section, housekeeping
     included, newest first, each with its glyph, time and result mark,
     closed until clicked open to its arguments and output. Computer actions are not listed here; the
@@ -349,11 +481,12 @@ notice. Working and idle draw the plain pill.
     blue dot.
     The mobile app shows the same computer on a front card from a computer
     button in the chat's header, which carries a dot while a bot acts there
-    or you have it: the screen with the same face cursors, the line under
-    it, Take control or Give back, Restart, Turn off and Reset… as rows,
-    and a "Quality on this device" group with the same five choices.
-    Its screen, too, keeps its picture through Take control and Give back.
-    Closing the card while you have control gives it back.
+    or the bots are paused: the screen with the same face cursors, which
+    takes your touches while the bots keep working, the line under it,
+    Pause bots or Resume bots, Restart, Turn off and Reset… as rows, and a
+    "Quality on this device" group with the same five choices. Its screen,
+    too, keeps its picture through a new link. Closing the card leaves a
+    pause as it is.
 
     ![The Computer tab's menu with the quality choices](screens/computer-quality.png)
 - Opening and closing is one 240 ms move: the panel's column widens or
@@ -389,14 +522,22 @@ nested inside a card and no row carries more than one line of explanation.
   Closing returns to the chat that was open. `?connector=<id>` opens
   that connector's set-up sheet, which is how a "Fix Notion" action in the
   chat lands here.
-- Tabs in three groups: Profile, Soul, Model; Abilities (Memory, Tools,
+- Tabs in three groups: Profile, Face, Soul, Model; Abilities (Memory, Tools,
   Connectors, Skills); Manage (Approvals, Heartbeat, Advanced).
-- Tabs: Profile (face, name, label, description), Soul
-  (full-height editor, template menu with a confirm, word count), Model
+- Tabs: Profile (the face as one Change face button that opens Face, name,
+  label, description), Face (the bot as it will look, on a stage washed
+  with its colour over a sample of its bubble, with Shuffle and Use a
+  photo; beside it every shape in the chosen colour and every colour, the
+  name of each pick beside its heading; a pick is saved at once; behind a
+  photo the choices fade and still work, and Back to a face takes the
+  photo off), Soul
+  (full-height editor, template menu with a confirm, character count
+  against the soul limit, the bot's own limit below), Model
   (configured providers only, the provider's model list with the
   curated models on top, reasoning levels the model supports, context and
-  price when known), Memory (this bot's memory, its notes by day with one
-  editor for the chosen day, and dreaming; About you is
+  price when known), Memory (this bot's memory limit, its notes by day with
+  one editor for the chosen day, and dreaming; the memory itself is edited
+  from the side panel's Fingerprint tab; About you is
   shared and links to Settings, Memory), Tools (switches grouped as
   Computer, Senses, Working with others, plus the working directory),
   Connectors (below), Skills (installed skills with switches, grouped by
@@ -404,10 +545,11 @@ nested inside a card and no row carries more than one line of explanation.
   Advanced (Delete bot with the
   type-the-name confirmation).
 - Connectors: a search pill, filter chips (All, On for this bot, Needs
-  setup), and rows grouped as Search and browsing, Images and voice,
-  Notes and work, Social and home, MCP servers. Each row: a 28 px icon
-  (Simple Icons brand glyph in white on the brand colour, or a neutral
-  glyph for rows that front several providers), name, state in words,
+  setup), and rows grouped as Search and browsing, Notes and work,
+  Social, MCP servers. Each row: a 28 px icon
+  (Simple Icons brand glyph in white on the brand colour, Google's or
+  Microsoft's own logo on white, or a neutral glyph for rows that front
+  several providers), name, state in words,
   one-line description, and one control: "Set up" when the daemon has no
   credentials, a switch when it does, "Fix" in the primary style when the
   last use failed. Clicking the row expands it to the saved fields, the

@@ -6,6 +6,8 @@
 
 import type { PairingReply } from '@hermes/shared'
 
+import type { ComputerRequest } from './types'
+
 export interface DaemonProgress {
   message: string
   /** 0..100 within the stage, sent only while it downloads something. */
@@ -34,7 +36,37 @@ export interface BridgeHttpResponse {
   text: string
 }
 
+/**
+ * What this computer lets bots use (apps/desktop/src/main/computer.ts). The
+ * main process owns it: turning on asks natively, and it runs every request.
+ */
+export interface ComputerShare {
+  desktop: boolean
+  /** Cua is installed and this computer's desktop is set up for it. */
+  desktopReady: boolean
+  /** Why the desktop can't be shared yet, when it can't. */
+  desktopNote?: null | string
+  name: string
+  os: string
+  terminal: boolean
+}
+
 export interface HexbotBridge {
+  /** This computer as one of the user's computers; apps from before computers leave it out. */
+  computer?: {
+    /** Turn the terminal or desktop on (asks first) or off. */
+    allow(change: { desktop?: boolean; terminal?: boolean }): Promise<ComputerShare>
+    onState?(callback: (share: ComputerShare) => void): () => void
+    /** The connection ended: stop what bots started here; the switch stays. */
+    release?(): Promise<void>
+    /** The daemon stopped one request: end its command. */
+    cancel?(requestId: string): Promise<void>
+    /** Run one request from the daemon; refused unless allowed here. */
+    run(request: ComputerRequest): Promise<unknown>
+    /** Set up Cua so bots can use this computer's desktop. */
+    setupDesktop(): Promise<ComputerShare>
+    state(): Promise<ComputerShare>
+  }
   daemon: {
     localToken(): Promise<null | string>
     onProgress(callback: (progress: DaemonProgress) => void): () => void
@@ -49,7 +81,21 @@ export interface HexbotBridge {
   isPackaged: boolean
   notify(input: { backgroundOnly?: boolean; body: string; sectionId?: string; title: string }): void
   openExternal(url: string): Promise<void> | void
+  /**
+   * Google's return to 127.0.0.1 on this computer, for a daemon elsewhere:
+   * `open` gives the port to send Google back to, `wait` the address the
+   * browser came back to (null once closed). Apps from before it leave it out.
+   */
+  oauthReturn?: {
+    close(port: number): Promise<void>
+    open(): Promise<number>
+    wait(port: number): Promise<null | string>
+  }
+  /** Opens the system's page for Hexbot's notifications; apps from before it leave it out. */
+  openNotificationSettings?(): Promise<void>
   onNavigate?(callback: (url: string) => void): () => void
+  /** Whether the app's window is open and not minimized; apps from before it leave it out. */
+  onWindowShown?(callback: (shown: boolean) => void): () => void
   pairWithGrant?(input: {
     host: string
     grant: string

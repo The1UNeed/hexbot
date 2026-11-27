@@ -9,7 +9,7 @@ main() {
         Darwin/arm64|Darwin/aarch64) target=macos-aarch64 ;;
         Darwin/x86_64) target=macos-x86_64 ;;
         Linux/x86_64|Linux/amd64) target=linux-x86_64 ;;
-        *) fail 'Hexbot supports macOS on Apple silicon or Intel, and Linux on x86_64. This computer is not supported.' ;;
+        *) fail 'This shell installer is for macOS on Apple silicon or Intel, and Linux on x86_64. On Windows, download the x64 installer from https://hexbot.app/download/.' ;;
     esac
 
     base=${HEXBOT_UPDATE_URL:-https://updates.hexbot.app}

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { type ComponentRef, useMemo, useRef, useState } from 'react'
 import {
   FlatList,
   Modal,
@@ -15,11 +15,16 @@ import {
   Banner,
   BotFace,
   Button,
+  ContextMenu,
   EmptyState,
+  Field,
   formatListTime,
   Glass,
   HIT,
   IconButton,
+  type MenuFrame,
+  type MenuItem,
+  ModalSheet,
   PersonFace,
   RoomFace,
   Screen,
@@ -37,8 +42,15 @@ export interface HomeScreenProps {
   /** Bot chats, rooms and Check-ins, in any order; the list sorts them. */
   conversations: ConversationSummary[]
   onOpen: (conversation: ConversationSummary) => void
-  /** Long press, such as opening the bot's profile or the room's settings. */
-  onLongPress?: (conversation: ConversationSummary) => void
+  /**
+   * Long press opens the row's menu: Pin, Mark as read, Rename and Settings.
+   * Each is offered when its handler is set. Settings opens the bot's profile
+   * or the room's settings.
+   */
+  onSettings?: (conversation: ConversationSummary) => void
+  onPin?: (conversation: ConversationSummary, pinned: boolean) => void
+  onMarkRead?: (conversation: ConversationSummary) => void
+  onRename?: (conversation: ConversationSummary, name: string) => Promise<unknown>
   /** Bots waiting on you in a conversation between bots, which has no row of its own. */
   waiting?: BotSummary[]
   onOpenPulse?: (id: string) => void
@@ -50,6 +62,8 @@ export interface HomeScreenProps {
    * creates HexBot; without it, the user promotes a bot from its profile.
    */
   primaryChoice?: { onAdd?: () => void } | null
+  /** Set while this phone does not show Hexbot's notifications. */
+  notificationsPrompt?: { onEnable: () => void; onClose: () => void } | null
 
   daemon: DaemonOverview | null
   /** Signed-in person on this daemon; their initials open Settings. */
@@ -85,12 +99,18 @@ const STATE: Record<ConnectionState, string> = {
   unauthorized: 'Signed out'
 }
 
-/** The conversations a search keeps, the primary bot first and then newest first. */
+/**
+ * The conversations a search keeps: pinned ones first, in the order they were
+ * pinned, and then newest first.
+ */
 export const listConversations = (conversations: ConversationSummary[], query: string) =>
   conversations
     .filter(c => matches(query, c))
     .sort(
-      (a, b) => Number(!!b.primary) - Number(!!a.primary) || (b.updatedAt ?? 0) - (a.updatedAt ?? 0)
+      (a, b) =>
+        Number(!!b.pinned) - Number(!!a.pinned) ||
+        (a.pinnedAt ?? 0) - (b.pinnedAt ?? 0) ||
+        (b.updatedAt ?? 0) - (a.updatedAt ?? 0)
     )
 
 /**
@@ -138,7 +158,15 @@ export function HomeScreen(props: HomeScreenProps) {
   const [query, setQuery] = useState('')
   const [creating, setCreating] = useState(false)
   const system = !!props.systemHeader
+  const [menu, setMenu] = useState<Pressed | null>(null)
+  const [renaming, setRenaming] = useState<ConversationSummary | null>(null)
+  // A name the daemon refused comes back to the sheet, with why.
+  const [refused, setRefused] = useState<{ error: string; name: string } | null>(null)
   const shown = useMemo(() => listConversations(conversations, query), [conversations, query])
+  // Pinned chats sit above the list as faces; a search lists everything as rows.
+  const pinned = query ? [] : shown.filter(c => c.pinned)
+  const rows = query ? shown : shown.filter(c => !c.pinned)
+  const hasMenu = !!(props.onSettings || props.onPin || props.onMarkRead || props.onRename)
   const canCreate = !!(props.onNewBot || props.onNewRoom)
 
   return (
@@ -216,12 +244,30 @@ export function HomeScreen(props: HomeScreenProps) {
                 />
               </View>
             ) : null}
+            {props.notificationsPrompt && !query ? (
+              <View style={styles.banner}>
+                <Banner
+                  actionLabel="Enable"
+                  message="Know when a bot replies or needs you."
+                  onAction={props.notificationsPrompt.onEnable}
+                  onDismiss={props.notificationsPrompt.onClose}
+                  testID="home-notifications"
+                  title="Turn on notifications"
+                  tone="info"
+                />
+              </View>
+            ) : null}
+            <PinnedFaces
+              conversations={pinned}
+              onLongPress={hasMenu ? setMenu : undefined}
+              onPress={props.onOpen}
+            />
             {query ? null : <WaitingStrip bots={props.waiting ?? []} onOpen={props.onOpenPulse} />}
           </>
         }
         contentContainerStyle={styles.list}
         contentInsetAdjustmentBehavior={system ? 'automatic' : undefined}
-        data={shown}
+        data={rows}
         keyExtractor={c => `${c.kind}-${c.id}`}
         keyboardDismissMode="on-drag"
         keyboardShouldPersistTaps="handled"
@@ -231,7 +277,7 @@ export function HomeScreen(props: HomeScreenProps) {
         renderItem={({ item }) => (
           <ConversationRow
             conversation={item}
-            onLongPress={props.onLongPress}
+            onLongPress={hasMenu ? setMenu : undefined}
             onPress={props.onOpen}
             selected={props.selected === `${item.kind}-${item.id}`}
           />
@@ -290,7 +336,279 @@ export function HomeScreen(props: HomeScreenProps) {
           visible={creating}
         />
       )}
+      <RowMenu
+        onClose={() => setMenu(null)}
+        onMarkRead={props.onMarkRead}
+        onOpen={props.onOpen}
+        onPin={props.onPin}
+        onRename={props.onRename ? setRenaming : undefined}
+        onSettings={props.onSettings}
+        pressed={menu}
+      />
+      <RenameSheet
+        conversation={renaming}
+        onClose={() => {
+          setRenaming(null)
+          setRefused(null)
+        }}
+        onRefused={(c, name, error) => {
+          setRefused({ error, name })
+          setRenaming(c)
+        }}
+        refused={refused}
+        onRename={props.onRename}
+      />
     </Screen>
+  )
+}
+
+/** A long-pressed face or row, and where it sits on screen. */
+interface Pressed {
+  conversation: ConversationSummary
+  frame: MenuFrame
+  from: 'pinned' | 'row'
+}
+
+/** Measures what was long-pressed so its menu can open beside it. */
+function useLongPress(
+  conversation: ConversationSummary,
+  from: Pressed['from'],
+  onLongPress?: (pressed: Pressed) => void
+) {
+  const ref = useRef<ComponentRef<typeof View>>(null)
+  const longPress = onLongPress
+    ? () =>
+        ref.current?.measureInWindow((x, y, w, h) =>
+          onLongPress({ conversation, frame: { h, w, x, y }, from })
+        )
+    : undefined
+
+  return { longPress, ref }
+}
+
+/** Pinned chats: each a large face and its name, three to a row. */
+function PinnedFaces({
+  conversations,
+  onLongPress,
+  onPress
+}: {
+  conversations: ConversationSummary[]
+  onPress: (c: ConversationSummary) => void
+  onLongPress?: (pressed: Pressed) => void
+}) {
+  if (!conversations.length) {
+    return null
+  }
+
+  return (
+    <View style={styles.pinnedFaces} testID="home-pinned">
+      {conversations.map(c => (
+        <PinnedFace
+          conversation={c}
+          key={`${c.kind}-${c.id}`}
+          onLongPress={onLongPress}
+          onPress={onPress}
+        />
+      ))}
+    </View>
+  )
+}
+
+function PinnedFace({
+  conversation: c,
+  onLongPress,
+  onPress
+}: {
+  conversation: ConversationSummary
+  onPress: (c: ConversationSummary) => void
+  onLongPress?: (pressed: Pressed) => void
+}) {
+  const theme = useTheme()
+  const { longPress, ref } = useLongPress(c, 'pinned', onLongPress)
+
+  return (
+    <Pressable
+      accessibilityHint={c.kind === 'room' ? 'Opens the room' : 'Opens the conversation'}
+      accessibilityLabel={`${c.name}, pinned`}
+      accessibilityRole="button"
+      delayLongPress={350}
+      onLongPress={longPress}
+      onPress={() => onPress(c)}
+      ref={ref}
+      style={({ pressed }) => [
+        styles.pinnedFace,
+        { backgroundColor: pressed ? theme.pressed : 'transparent' }
+      ]}
+      testID={`pinned-${c.kind}-${c.id}`}
+    >
+      <PinnedFaceBody conversation={c} />
+    </Pressable>
+  )
+}
+
+function PinnedFaceBody({ conversation: c }: { conversation: ConversationSummary }) {
+  return (
+    <>
+      {c.kind === 'room' ? (
+        <RoomFace
+          discord={c.discord}
+          members={c.members ?? []}
+          name={c.name}
+          size={64}
+          status={c.status}
+        />
+      ) : (
+        <BotFace {...(c.face ?? { name: c.name })} size={64} status={c.status} />
+      )}
+      <Text numberOfLines={1} style={styles.pinnedName} variant="footnote">
+        {c.name}
+      </Text>
+    </>
+  )
+}
+
+/**
+ * What a long press offers, beside the lifted face or row: Pin, Mark as read,
+ * Rename and Settings. Check-ins only open the primary bot's profile.
+ */
+function RowMenu({
+  onClose,
+  onMarkRead,
+  onOpen,
+  onPin,
+  onRename,
+  onSettings,
+  pressed
+}: {
+  pressed: Pressed | null
+  onClose: () => void
+  onOpen: (c: ConversationSummary) => void
+  onMarkRead?: (c: ConversationSummary) => void
+  onPin?: (c: ConversationSummary, pinned: boolean) => void
+  onRename?: (c: ConversationSummary) => void
+  onSettings?: (c: ConversationSummary) => void
+}) {
+  const c = pressed?.conversation
+  const own = c?.kind !== 'checkins'
+  const items: MenuItem[] = c
+    ? [
+        onPin && own
+          ? {
+              icon: 'pin-outline' as const,
+              key: 'pin',
+              label: c.pinned ? 'Unpin' : 'Pin',
+              run: () => onPin(c, !c.pinned)
+            }
+          : null,
+        onMarkRead && own && c.unread
+          ? {
+              icon: 'chatbubble-outline' as const,
+              key: 'read',
+              label: 'Mark as read',
+              run: () => onMarkRead(c)
+            }
+          : null,
+        onRename && own
+          ? { icon: 'pencil' as const, key: 'rename', label: 'Rename', run: () => onRename(c) }
+          : null,
+        onSettings
+          ? {
+              group: true,
+              icon: 'settings-outline' as const,
+              key: 'settings',
+              label: 'Settings',
+              run: () => onSettings(c)
+            }
+          : null
+      ].filter(item => item !== null)
+    : []
+
+  return (
+    <ContextMenu
+      frame={pressed?.frame ?? null}
+      items={items}
+      onClose={onClose}
+      onPreviewPress={c ? () => onOpen(c) : undefined}
+      preview={
+        !c ? null : pressed?.from === 'pinned' ? (
+          <View style={[styles.pinnedFace, styles.fullWidth]}>
+            <PinnedFaceBody conversation={c} />
+          </View>
+        ) : (
+          <View style={[styles.row, styles.liftedRow]}>
+            <RowBody conversation={c} />
+          </View>
+        )
+      }
+      previewLabel={c ? `Open ${c.name}` : undefined}
+      testID="row-menu"
+    />
+  )
+}
+
+/**
+ * Renames a bot (its name in the app; the handle stays) or a room. The new
+ * name shows as the sheet closes; a name the daemon refuses comes back here.
+ */
+function RenameSheet({
+  conversation: c,
+  onClose,
+  onRefused,
+  onRename,
+  refused
+}: {
+  conversation: ConversationSummary | null
+  onClose: () => void
+  onRefused: (c: ConversationSummary, name: string, error: string) => void
+  onRename?: (c: ConversationSummary, name: string) => Promise<unknown>
+  refused: { error: string; name: string } | null
+}) {
+  const [name, setName] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [shownFor, setShownFor] = useState<ConversationSummary | null>(null)
+  const [shownRefusal, setShownRefusal] = useState(refused)
+
+  // Each open starts from the current name, or from the one refused.
+  if (c !== shownFor || refused !== shownRefusal) {
+    setShownFor(c)
+    setShownRefusal(refused)
+    setName(refused?.name ?? c?.name ?? '')
+    setError(refused?.error ?? null)
+  }
+
+  const trimmed = name.trim()
+  const save = () => {
+    if (!c || !onRename || !trimmed) return
+    const saved = onRename(c, trimmed)
+    onClose()
+    saved.catch((e: unknown) => onRefused(c, trimmed, e instanceof Error ? e.message : String(e)))
+  }
+
+  return (
+    <ModalSheet
+      action={{
+        disabled: !trimmed || trimmed === c?.name,
+        label: 'Rename',
+        onPress: save
+      }}
+      closeLabel="Cancel"
+      onClose={onClose}
+      testID="rename-sheet"
+      title={c?.kind === 'room' ? 'Rename room' : 'Rename bot'}
+      visible={!!c}
+    >
+      <Field
+        autoFocus
+        error={error}
+        label="Name"
+        onChangeText={setName}
+        onSubmitEditing={save}
+        returnKeyType="done"
+        selectTextOnFocus
+        testID="rename-name"
+        value={name}
+      />
+    </ModalSheet>
   )
 }
 
@@ -467,7 +785,45 @@ function ConversationRow({
 }: {
   conversation: ConversationSummary
   onPress: (c: ConversationSummary) => void
-  onLongPress?: (c: ConversationSummary) => void
+  onLongPress?: (pressed: Pressed) => void
+  selected?: boolean
+}) {
+  const theme = useTheme()
+  const { longPress, ref } = useLongPress(c, 'row', onLongPress)
+
+  return (
+    <Pressable
+      accessibilityHint={c.kind === 'room' ? 'Opens the room' : 'Opens the conversation'}
+      accessibilityLabel={[
+        c.name,
+        c.pinned ? 'pinned' : null,
+        conversationLine(c, theme).text,
+        formatListTime(c.updatedAt)
+      ]
+        .filter(Boolean)
+        .join(', ')}
+      accessibilityRole="button"
+      accessibilityState={selected ? { selected } : undefined}
+      delayLongPress={350}
+      onLongPress={longPress}
+      onPress={() => onPress(c)}
+      ref={ref}
+      style={({ pressed }) => [
+        styles.row,
+        { backgroundColor: pressed ? theme.pressed : selected ? theme.fill : 'transparent' }
+      ]}
+      testID={`${c.kind === 'bot' ? 'bot' : c.kind}-row-${c.id}`}
+    >
+      <RowBody conversation={c} selected={selected} />
+    </Pressable>
+  )
+}
+
+function RowBody({
+  conversation: c,
+  selected
+}: {
+  conversation: ConversationSummary
   selected?: boolean
 }) {
   const theme = useTheme()
@@ -475,22 +831,16 @@ function ConversationRow({
   const time = formatListTime(c.updatedAt)
 
   return (
-    <Pressable
-      accessibilityHint={c.kind === 'room' ? 'Opens the room' : 'Opens the conversation'}
-      accessibilityLabel={[c.name, line, time].filter(Boolean).join(', ')}
-      accessibilityRole="button"
-      accessibilityState={selected ? { selected } : undefined}
-      delayLongPress={350}
-      onLongPress={onLongPress ? () => onLongPress(c) : undefined}
-      onPress={() => onPress(c)}
-      style={({ pressed }) => [
-        styles.row,
-        { backgroundColor: pressed ? theme.pressed : selected ? theme.fill : 'transparent' }
-      ]}
-      testID={`${c.kind === 'bot' ? 'bot' : c.kind}-row-${c.id}`}
-    >
+    <>
       {c.kind === 'room' ? (
-        <RoomFace members={c.members ?? []} name={c.name} size={54} status={c.status} />
+        <RoomFace
+          discord={c.discord}
+          members={c.members ?? []}
+          name={c.name}
+          outline={selected ? theme.fill : undefined}
+          size={54}
+          status={c.status}
+        />
       ) : (
         <BotFace {...(c.face ?? { name: c.name })} size={54} status={c.status} />
       )}
@@ -499,6 +849,15 @@ function ConversationRow({
           <Text numberOfLines={1} style={styles.rowName} variant="body">
             {c.name}
           </Text>
+          {c.pinned ? (
+            <Ionicons
+              accessibilityLabel="Pinned"
+              color={theme.faint}
+              name="pin"
+              size={13}
+              testID={`pinned-${c.id}`}
+            />
+          ) : null}
           {time ? (
             <Text style={{ color: theme.faint }} variant="footnote">
               {time}
@@ -511,7 +870,7 @@ function ConversationRow({
           </Text>
         ) : null}
       </View>
-    </Pressable>
+    </>
   )
 }
 
@@ -635,6 +994,7 @@ const styles = StyleSheet.create({
     paddingTop: 8
   },
   fill: { flex: 1 },
+  fullWidth: { width: '100%' },
   header: {
     alignItems: 'center',
     flexDirection: 'row',
@@ -644,6 +1004,8 @@ const styles = StyleSheet.create({
   },
   headerCenter: { alignItems: 'center', flex: 1, minWidth: 0 },
   headerSpacer: { width: HIT },
+  // The menu lifts a row as a card inset 8 from each edge; this keeps its content in place.
+  liftedRow: { paddingHorizontal: 8 },
   list: { flexGrow: 1, paddingBottom: 12, paddingTop: 6 },
   menu: {
     borderRadius: 18,
@@ -658,6 +1020,22 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.18,
     shadowRadius: 28
   },
+  pinnedFace: {
+    alignItems: 'center',
+    borderRadius: 18,
+    gap: 6,
+    paddingBottom: 10,
+    paddingTop: 12,
+    width: '33.333%'
+  },
+  pinnedFaces: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    paddingBottom: 4,
+    paddingHorizontal: 8
+  },
+  pinnedName: { maxWidth: '100%', paddingHorizontal: 6 },
   menuItem: {
     alignItems: 'center',
     flexDirection: 'row',

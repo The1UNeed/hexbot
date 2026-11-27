@@ -1,16 +1,24 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { vi } from 'vitest'
 
+import { sectionShown } from '../../lib/page-visible'
+import { setActiveRpc } from '../../lib/rpc'
 import type { Bot, Room, Section } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useMe } from '../../stores/me'
 import { useRooms } from '../../stores/rooms'
-import { useSections } from '../../stores/sections'
+import { liveSectionsOf, useSections } from '../../stores/sections'
 import { useSettings } from '../../stores/settings'
+import { useUi } from '../../stores/ui'
+import { botRowState } from '../bot-mood'
 
 import { RosterColumn } from './index'
 
 const navigate = vi.hoisted(() => vi.fn())
+
+const routeParams = vi.hoisted(() => ({
+  current: {} as { bot?: string; room?: string; section?: string }
+}))
 
 const router = vi.hoisted(() => ({
   history: { location: {}, subscribe: () => () => undefined },
@@ -20,7 +28,7 @@ const router = vi.hoisted(() => ({
 vi.mock('@tanstack/react-router', () => ({
   useRouter: () => router,
   useNavigate: () => navigate,
-  useParams: () => ({})
+  useParams: () => routeParams.current
 }))
 
 const room = {
@@ -217,5 +225,108 @@ describe('one chat per bot', () => {
     expect(await screen.findByRole('menuitem', { name: 'New bot' })).toBeVisible()
     expect(screen.getByRole('menuitem', { name: 'New room' })).toBeVisible()
     expect(screen.queryByRole('menuitem', { name: 'New section' })).toBeNull()
+  })
+
+  it('keeps a covered chat unread while a peer thread is open, and opens waiting threads in ThreadView', async () => {
+    const focus = vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    const call = vi.fn(() => Promise.resolve({}))
+    setActiveRpc({ call } as never)
+    routeParams.current = { bot: 'scout', section: 'chat' }
+    useUi.setState({ thread: { bot: 'writer', peer: 'scout', sectionId: 'th1' } })
+
+    const waitingWriter = {
+      avatar: null,
+      description: 'Writes',
+      display_name: 'Writer',
+      name: 'writer',
+      sections_recent: [],
+      status: 'needs_you',
+      status_detail: {
+        action: null,
+        peer_bot: 'scout',
+        room_id: null,
+        section_id: 'th-wait',
+        session_id: 'live-wait',
+        since: 1,
+        text: 'Waiting for you'
+      },
+      title: ''
+    } as unknown as Bot
+
+    useBots.setState({
+      byName: { scout, writer: waitingWriter },
+      loaded: true,
+      order: ['scout', 'writer']
+    })
+    useSections.setState({
+      byId: { chat: { ...chat, done_at: 99 } },
+      idsByBot: { scout: ['chat'] }
+    })
+
+    try {
+      render(<RosterColumn />)
+      // Covered chat is neither marked read nor considered shown for notifications.
+      expect(call).not.toHaveBeenCalledWith('hexbot.sections.mark_read', expect.anything())
+      expect(sectionShown('chat')).toBe(false)
+      expect(sectionShown('th1')).toBe(true)
+      expect(screen.getByLabelText('Done')).toBeInTheDocument()
+
+      // Clicking Review opens the waiting thread in ThreadView rather than bypassing via route navigation.
+      fireEvent.click(screen.getByRole('button', { name: /Writer is waiting for you/ }))
+      expect(useUi.getState().thread).toEqual({
+        bot: 'writer',
+        peer: 'scout',
+        sectionId: 'th-wait'
+      })
+      expect(navigate).not.toHaveBeenCalled()
+
+      // Closing the thread brings the covered chat into view and marks it read.
+      act(() => useUi.getState().closeThread())
+      await waitFor(() =>
+        expect(call).toHaveBeenCalledWith('hexbot.sections.mark_read', { id: 'chat' })
+      )
+      expect(sectionShown('chat')).toBe(true)
+    } finally {
+      focus.mockRestore()
+      routeParams.current = {}
+      useUi.setState({ thread: null })
+    }
+  })
+
+  it('keeps a bot row idle while only a peer thread streams in live transcripts', () => {
+    const live = liveSectionsOf({
+      'live-peer': {
+        approvals: [],
+        clarifies: [],
+        sectionId: 'th1',
+        streamingMessageId: 'm1'
+      }
+    })
+
+    const state = botRowState(scout, [chat], live, {}, false, undefined)
+    expect(state.status).toBe('idle')
+    expect(state.dot).toBe('idle')
+  })
+
+  it('keeps the receiving bot unread dot visible when viewing a direct peer thread URL', () => {
+    routeParams.current = { bot: 'scout', section: 'th1' }
+    useUi.setState({ peerRoute: 'th1', thread: null })
+    useBots.setState({
+      byName: { scout },
+      loaded: true,
+      order: ['scout']
+    })
+    useSections.setState({
+      byId: { chat: { ...chat, done_at: 99 } },
+      idsByBot: { scout: ['chat'] }
+    })
+
+    try {
+      render(<RosterColumn />)
+      expect(screen.getByLabelText('Done')).toBeInTheDocument()
+    } finally {
+      routeParams.current = {}
+      useUi.setState({ peerRoute: null, thread: null })
+    }
   })
 })

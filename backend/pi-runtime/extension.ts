@@ -9,6 +9,13 @@ import { registerAcp } from './acp.ts';
 import { lazyStream } from '@earendil-works/pi-ai';
 import { builtinProviders } from '@earendil-works/pi-ai/providers/all';
 
+/** A request in fast mode: Anthropic's `speed`, ChatGPT's priority tier (its Fast). Other APIs are unchanged. */
+export function fastPayload(api: string | undefined, payload: any): any {
+  if (api === 'anthropic-messages') return {...payload, speed: 'fast'};
+  if (api === 'openai-codex-responses') return {...payload, service_tier: 'priority'};
+  return payload;
+}
+
 export const FILE_TRANSPORT_LIMIT = 1024 * 1024;
 const FILE_SIZE_ERROR = 'Restricted write/edit exceeds the 1 MiB transport limit (about 767 KiB of file data). Use a command for larger files.';
 export function fileRequestTitle(args: any): string {
@@ -19,7 +26,7 @@ export function fileRequestTitle(args: any): string {
   return title;
 }
 function fileOperations(ctx: any, callId: string, tool: string, target: string, snapshot: any) {
-  let opened: {bytes: Buffer, parent: string[]} | undefined;
+  let opened: {bytes: Buffer, parent: string[], version: string} | undefined;
   const checked = (path: string) => { if (path !== target) throw new Error('The file changed after it was checked. Try again.'); };
   const request = async (operation: string, extra: any = {}) => {
     const title = fileRequestTitle({operation, path:target, callId, snapshot, ...extra});
@@ -38,10 +45,10 @@ function fileOperations(ctx: any, callId: string, tool: string, target: string, 
     access: async (path: string) => {
       checked(path);
       const result = await request('edit_open');
-      if (typeof result.content !== 'string' || !Array.isArray(result.parent) || result.parent.length !== 2 || !result.parent.every((value: any) => typeof value === 'string' && /^\d+$/.test(value))) throw new Error('Invalid private file reply');
+      if (typeof result.content !== 'string' || typeof result.version !== 'string' || !/^[0-9a-f]{64}$/.test(result.version) || !Array.isArray(result.parent) || result.parent.length !== 2 || !result.parent.every((value: any) => typeof value === 'string' && /^\d+$/.test(value))) throw new Error('Invalid private file reply');
       const bytes = Buffer.from(result.content,'base64');
       if (bytes.toString('base64') !== result.content) throw new Error('Invalid private file reply');
-      opened = {bytes, parent:result.parent};
+      opened = {bytes, parent:result.parent, version:result.version};
     },
     readFile: async (path: string) => {
       checked(path);
@@ -51,12 +58,22 @@ function fileOperations(ctx: any, callId: string, tool: string, target: string, 
     writeFile: async (path: string, content: string) => {
       checked(path);
       if (tool === 'edit' && !opened) throw new Error('The private file bridge is unavailable.');
-      const parent = opened?.parent;
+      const parent = opened?.parent, version = opened?.version;
       opened = undefined;
-      const result = await request(tool === 'edit' ? 'edit_commit' : 'write', {content:Buffer.from(content,'utf8').toString('base64'), ...(parent ? {parent} : {})});
+      // The daemon refuses the edit if the file changed since it was opened.
+      const result = await request(tool === 'edit' ? 'edit_commit' : 'write', {content:Buffer.from(content,'utf8').toString('base64'), ...(parent ? {parent, opened:version} : {})});
       if (result.success !== true) throw new Error('Invalid private file reply');
     },
   };
+}
+
+/** A call that shows the user a card in the chat: a question, a draft, a sign-in or a plugin. */
+function showsCard(tool: string, input: any): boolean {
+  const action = input?.action;
+  return tool === 'clarify'
+    || (tool === 'hexbot_mail' && action === 'draft')
+    || (tool === 'hexbot_passwords' && action === 'ask')
+    || (tool === 'hexbot_plugins' && ['install', 'enable', 'setup'].includes(action));
 }
 
 export default function hexbot(pi: any) {
@@ -129,11 +146,14 @@ export default function hexbot(pi: any) {
   };
   let live = config;
   let primary: any;
-  // Pi 1.0.1 holds its forced prompt for the whole run. Only adopt a rebuilt
+  // Pi 1.5.2 holds its forced prompt for the whole run. Only adopt a rebuilt
   // prompt if the first request after compaction starts a new run. A resumed
   // request caches the old prompt again, so discard the replacement then.
   let prompt = config.prompt;
   let pendingPrompt: string | undefined;
+  // Whether this run has made a provider request yet; compaction before that is
+  // compaction before the run's first message.
+  let requested = false;
   const refresh = async (ctx: any) => { live = {...config, ...await bridge(ctx, 'hexbot_session_settings')}; };
   // Resolve credentials in memory on the first prompt. RPC cannot answer a
   // bridge request during session_start, before its stdin reader is attached.
@@ -192,7 +212,7 @@ export default function hexbot(pi: any) {
     return workspaceRoots().some(root => under(target, canonicalPath(root, process.cwd())));
   };
   type Level = 'none' | 'base' | 'confined';
-  type AllowedCall = {mode: string, cwd: string, level: Level, target?: string, overwrites?: boolean};
+  type AllowedCall = {mode: string, cwd: string, level: Level, target?: string, overwrites?: boolean, computer?: string};
   const levelFor = (input: any): Level => live.approvalMode === 'off' ? 'none' : input?.full_access === true ? 'base' : 'confined';
   // What the gate allowed for each call: the mode it decided under, how bash
   // runs, and the file it checked. Pi may gate several calls before running
@@ -200,18 +220,67 @@ export default function hexbot(pi: any) {
   const allowedCalls = new Map<string, AllowedCall>();
   const wrapped = new Set<string>();
   const sessionAllowed = new Set<string>();
+  const computerOf = (input: any) => terminalComputer(input, config.computers);
   const gate = async (event: any, ctx: any) => {
-    const allowed: AllowedCall = {mode: live.approvalMode, cwd: live.cwd ?? config.cwd, level: levelFor(event.input)};
+    // A card the user answers in the chat comes from the bot's own call, never
+    // from code: only its own call keeps the answered card in the chat's history.
+    if (event.parentToolCallId && showsCard(event.toolName, event.input)) {
+      return {block: true, reason: `Call ${event.toolName} yourself, not from code: the user answers it on a card in the chat.`};
+    }
+    const allowed: AllowedCall = {mode: live.approvalMode, cwd: live.cwd ?? config.cwd, level: levelFor(event.input),
+      ...(event.toolName === 'bash' ? {computer: computerOf(event.input)} : {})};
     const denial = await check(event, ctx, call => Object.assign(allowed, call));
     if (!denial && event.toolCallId && wrapped.has(event.toolName)) allowedCalls.set(event.toolCallId, allowed);
     return denial;
   };
   const check = async (event: any, ctx: any, checked: (call: Partial<AllowedCall>) => void = () => {}) => {
+    const askUser = async (event: any, ctx: any, ask: {key: string, command: string, reason: string, once?: boolean}) => {
+      const mcp = event.toolName.startsWith('mcp__');
+      const cwd = live.cwd ?? config.cwd;
+      if (live.canAsk === false) return {block: true, reason: 'This action needs approval. Run it in a visible section.'};
+      const mode = live.approvalMode;
+      // In Auto the daemon's reviewer answers routine steps outside the sandbox
+      // one at a time, so a grant remembered in another mode does not cover them.
+      // Host configuration uses user approvals; incomplete scans ask every time.
+      const review = mode === 'smart' && !ask.once && (REVIEWED.includes(ask.key) || ask.key.startsWith('mcp:') || ask.key.startsWith('connector:') || ask.key.endsWith(':review'));
+      if (sessionAllowed.has(ask.key) && !ask.once && !review) return;
+      // The reviewer reads the whole input the tool will run with, not the card's preview,
+      // and uses the model Pi runs now, which is the fallback after the primary failed.
+      const overwrites = review && event.toolName === 'write' ? existsSync(ask.command) : undefined;
+      if (overwrites !== undefined) checked({overwrites});
+      const model = ctx.model ? {model: {provider: ctx.model.provider, model: ctx.model.id}} : {};
+      // A command on another computer is reviewed where it runs: that
+      // computer, from its home folder, not the daemon's workspace.
+      const elsewhere = event.toolName === 'bash' ? computerOf(event.input) : 'host';
+      const reviewInput = elsewhere === 'host' ? event.input : {...event.input, computer: elsewhere};
+      const reviewCwd = elsewhere === 'host' ? cwd : `${live.computersNow?.find((item: any) => item?.id === elsewhere)?.name ?? elsewhere} (computer ${elsewhere}), from its home folder`;
+      const reviewed = review ? {review: true, input: reviewInput, cwd: reviewCwd, ...model, ...overwrites !== undefined ? {overwrites} : {}} : {};
+      const choice = await ctx.ui.select('__HEXBOT_APPROVAL__' + JSON.stringify({tool: event.toolName, command: ask.command, reason: ask.reason, ...reviewed}),
+        ask.once ? ['once', 'deny'] : ['once', 'session', 'deny']);
+      if (mcp || review) {
+        // Pi emits execution_start before tool_call. Its public API has no MCP
+        // execute wrapper; the last blocking hook is this gate. Recheck after UI,
+        // and after a review: the user may change the mode or working directory.
+        await refresh(ctx);
+        if (mode !== live.approvalMode) return {block: true, reason: 'The approval mode changed before this ran. Try again.'};
+        if (cwd !== (live.cwd ?? config.cwd)) return {block: true, reason: 'The working directory changed before this ran. Try again.'};
+        const reason = mcp && mcpDenial(event.toolName);
+        if (reason) return {block: true, reason};
+      }
+      if (choice === 'session' && !ask.once && !review) sessionAllowed.add(ask.key);
+      else if (choice !== 'once' && choice !== 'session' && choice !== 'always') return {block: true, reason: 'The user denied this action.'};
+    };
     const browser = event.toolName === 'browser_console' && typeof event.input.expression === 'string';
     const mcp = event.toolName.startsWith('mcp__');
     const resource = ['list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource'].includes(event.toolName);
     const script = event.toolName === 'codemode' && typeof event.input?.code === 'string' && config.mcpServers?.length;
-    if (!['bash', 'read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName) && !browser && !mcp && !resource && !script) return;
+    // Notion and GitHub changes the daemon sends with the bot's key.
+    const connector = event.toolName === 'hexbot_connector_write';
+    // A change to the user's calendar, tasks, files or documents: every
+    // action of these tools that is not one of its reads.
+    const reads = ACCOUNT_READS[event.toolName];
+    const account = reads !== undefined && !reads.includes(event.input?.action);
+    if (!['bash', 'read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName) && !browser && !mcp && !resource && !script && !connector && !account) return;
     try {
       await refresh(ctx);
       // Retain what this check saw, even if another gate refreshes live settings.
@@ -234,7 +303,39 @@ export default function hexbot(pi: any) {
         const reason = mcpDenial(event.toolName);
         if (reason) return {block: true, reason};
       }
+      // Which computer a command runs on, and whether the bot may use its
+      // terminal now: a grant taken away applies at once.
+      // It must be one this section started with and one the bot has now.
+      const computer = event.toolName === 'bash' ? computerOf(event.input) : undefined;
+      if (computer !== undefined && (!frozenTerminal(computer, config.computers) || (Array.isArray(live.computersNow)
+        && !live.computersNow.some((item: any) => item?.id === computer && item?.terminal === true)))) {
+        // No terminal this conversation can reach, such as the bots' computer
+        // when it can't run: say so rather than naming a computer.
+        const none = Array.isArray(config.computers) && !config.computers.some((item: any) => item?.terminal === true);
+        return {block: true, reason: none
+          ? "No computer with a terminal is available in this conversation (the bots' computer is off or can't run here). Tell the user; they change it in Settings, Computers."
+          : `You can't use the terminal of ${computer}. Your Computers list says what you may use; the user changes it in Settings, Computers.`};
+      }
+      const remote = computer !== undefined && computer !== 'host';
       if (live.approvalMode === 'off') return;
+      if (remote) {
+        if (event.input?.full_access === true) return {block: true, reason: `full_access is only for this computer's sandbox. Run the command on ${computer} without it.`};
+        const name = live.computersNow?.find((item: any) => item?.id === computer)?.name ?? computer;
+        let remoteAsk: {key: string, command: string, reason: string, once?: boolean} | undefined;
+        if (computer === 'vm') {
+          const risky = riskyCommand(event.input.command ?? '');
+          if (live.approvalMode === 'manual') remoteAsk = {key: 'computer:vm', command: event.input.command, reason: "Manual mode asks before commands on the bots' computer; Allow for now lets the rest of this conversation's run."};
+          else if (risky) remoteAsk = {key: 'computer:vm:review', command: event.input.command, reason: `On the bots' computer, commands that ${risky} are checked first.`};
+        } else {
+          // The user's own computer has no sandbox: each command asks, and
+          // Allow for now never covers the next one.
+          remoteAsk = live.approvalMode === 'manual'
+            ? {key: `computer:${computer}`, command: event.input.command, reason: `Manual mode asks before every command on ${name}.`, once: true}
+            : {key: `computer:${computer}:review`, command: event.input.command, reason: `This runs on ${name}, one of your own computers, outside any sandbox.`};
+        }
+        if (!remoteAsk) return;
+        return await askUser(event, ctx, remoteAsk);
+      }
       if (process.platform === 'win32' && ['bash', 'read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName)) {
         // No approvals or remembered grants can bypass an unavailable boundary.
         return {block: true, reason: WINDOWS_ISOLATION_UNAVAILABLE};
@@ -244,14 +345,24 @@ export default function hexbot(pi: any) {
       let ask: {key: string, command: string, reason: string, once?: boolean} | undefined;
       if (mcp) {
         const tool = pi.getAllTools().find((candidate: any) => candidate.name === event.toolName);
-        if (live.approvalMode === 'manual' || tool?.annotations?.readOnlyHint !== true) {
+        if (live.approvalMode === 'manual' || !mcpReadOnly(event.toolName, tool)) {
           const namespace = tool?.namespace?.name ?? event.toolName;
           const server = mcpServer(event.toolName) ?? namespace;
           const label = `${server}/${event.toolName.slice(namespace.length + 2) || event.toolName}`;
           const args = JSON.stringify(event.input ?? {});
           ask = {key: `mcp:${server}`, command: args === '{}' ? label : `${label} ${args.length > 300 ? args.slice(0, 300) + '…' : args}`,
-            reason: live.approvalMode === 'manual' ? 'Manual mode asks before a connected tool runs.' : 'Auto mode asks before a connected tool changes anything.'};
+            reason: live.approvalMode === 'manual' ? 'Manual mode asks before a connected tool runs.' : 'This connected tool can change something.'};
         }
+      }
+      if (connector) {
+        const {connector: id, method, path, body} = event.input ?? {};
+        const data = body === undefined ? '' : JSON.stringify(body);
+        ask = {key: `connector:${id}`, command: `${id} ${method} ${path}${data ? ' ' + (data.length > 300 ? data.slice(0, 300) + '…' : data) : ''}`,
+          reason: live.approvalMode === 'manual' ? 'Manual mode asks before a connector changes anything.' : 'This changes something in a connected service.'};
+      }
+      if (account) {
+        ask = {key: `connector:${event.toolName}`, command: accountChange(event.toolName, event.input),
+          reason: live.approvalMode === 'manual' ? 'Manual mode asks before a connector changes anything.' : 'This changes something in a connected service.'};
       }
       if (['read', 'grep', 'find', 'ls', 'write', 'edit'].includes(event.toolName)) {
         const input = event.input.path ?? '.';
@@ -292,33 +403,7 @@ export default function hexbot(pi: any) {
       }
       if (browser) ask = {key: 'browser_console', command: event.input.expression, reason: 'This runs code in a web page.'};
       if (!ask) return;
-      if (live.canAsk === false) return {block: true, reason: 'This action needs approval. Run it in a visible section.'};
-      const mode = live.approvalMode;
-      // In Auto the daemon's reviewer answers routine steps outside the sandbox
-      // one at a time, so a grant remembered in another mode does not cover them.
-      // Host configuration uses user approvals; incomplete scans ask every time.
-      const review = mode === 'smart' && !ask.once && (REVIEWED.includes(ask.key) || ask.key.startsWith('mcp:'));
-      if (sessionAllowed.has(ask.key) && !ask.once && !review) return;
-      // The reviewer reads the whole input the tool will run with, not the card's preview,
-      // and uses the model Pi runs now, which is the fallback after the primary failed.
-      const overwrites = review && event.toolName === 'write' ? existsSync(ask.command) : undefined;
-      if (overwrites !== undefined) checked({overwrites});
-      const model = ctx.model ? {model: {provider: ctx.model.provider, model: ctx.model.id}} : {};
-      const reviewed = review ? {review: true, input: event.input, cwd, ...model, ...overwrites !== undefined ? {overwrites} : {}} : {};
-      const choice = await ctx.ui.select('__HEXBOT_APPROVAL__' + JSON.stringify({tool: event.toolName, command: ask.command, reason: ask.reason, ...reviewed}),
-        ask.once ? ['once', 'deny'] : ['once', 'session', 'deny']);
-      if (mcp || review) {
-        // Pi emits execution_start before tool_call. Its public API has no MCP
-        // execute wrapper; the last blocking hook is this gate. Recheck after UI,
-        // and after a review: the user may change the mode or working directory.
-        await refresh(ctx);
-        if (mode !== live.approvalMode) return {block: true, reason: 'The approval mode changed before this ran. Try again.'};
-        if (cwd !== (live.cwd ?? config.cwd)) return {block: true, reason: 'The working directory changed before this ran. Try again.'};
-        const reason = mcp && mcpDenial(event.toolName);
-        if (reason) return {block: true, reason};
-      }
-      if (choice === 'session' && !ask.once && !review) sessionAllowed.add(ask.key);
-      else if (choice !== 'once' && choice !== 'session') return {block: true, reason: 'The user denied this action.'};
+      return await askUser(event, ctx, ask);
     } catch {
       return {block: true, reason: 'The approval settings could not be checked. Try again.'};
     }
@@ -343,17 +428,18 @@ export default function hexbot(pi: any) {
     if (!enabled(name)) continue;
     wrapped.add(name);
     const bypass = () => live.approvalMode === 'off';
-    const options = (level: Level = 'confined', denied?: string[]) => name === 'bash' ? {spawnHook: (c: any) => level === 'none' ? c : {...c, command: spawnFor(level, c.command), env: shellEnvironment(c.env)}} :
-      name === 'grep' && !bypass() ? {operations: {isDirectory: (path: string) => statSync(path).isDirectory(), readFile: (path: string) => credentialPath(path, live.home, denied) ? '' : readFileSync(path, 'utf8')}} : {};
+    const options = (level: Level = 'confined') => name === 'bash' ? {spawnHook: (c: any) => level === 'none' ? c : {...c, command: spawnFor(level, c.command), env: shellEnvironment(c.env)}} : {};
     const tool = factory(config.cwd, options());
     const definition = name === 'bash' ? {
       description: tool.description + (process.platform === 'win32'
-        ? ' Windows is unsupported: Auto and Manual refuse local tools, including full_access. In Bypass this is Pi\'s Bash shell, such as Git Bash, with no sandbox. Use Bash syntax, not cmd.exe or PowerShell syntax.'
-        : ' Commands may run in a sandbox that blocks internet access and writes outside the workspace. When a command needs either, set full_access and give a reason.'),
+        ? ' On this computer (host), Windows is unsupported: Auto and Manual refuse local tools, including full_access. In Bypass this is Pi\'s Bash shell, such as Git Bash, with no sandbox; there, use Bash syntax, not cmd.exe or PowerShell syntax. Other computers use their own shell, as your Computers list says.'
+        : ' On this computer (host), commands run in a sandbox that blocks internet access and writes outside the workspace; when a command needs either, set full_access and give a short reason on the first try.') +
+        ' Name another computer from your Computers list in computer to run the command there instead.',
       parameters: {type: 'object', properties: {
         command: {type: 'string', description: 'Shell command to execute'},
-        timeout: {type: 'number', description: 'Timeout in seconds (optional, no default timeout)'},
-        full_access: {type: 'boolean', description: 'Run outside the sandbox, with internet access and writes outside the workspace. The user may be asked first.'},
+        timeout: {type: 'number', description: 'Timeout in seconds. On this computer there is no default; on other computers it is 120 by default and at most 1800, so start longer jobs in the background.'},
+        computer: {type: 'string', description: 'Which computer to run on, by its id in your Computers list. Leave it out for the first one listed with a terminal.'},
+        full_access: {type: 'boolean', description: "On this computer (host): run outside the sandbox, with internet access and writes outside the workspace. The user may be asked first."},
         reason: {type: 'string', description: 'With full_access: one short sentence, shown to the user, saying why the command needs it.'}
       }, required: ['command']}
     } : {};
@@ -361,10 +447,26 @@ export default function hexbot(pi: any) {
       const allowed = allowedCalls.get(id);
       allowedCalls.delete(id);
       if (ctx) await refresh(ctx);
-      if (!bypass()) requireSupportedExecution();
+      const elsewhere = name === 'bash' && terminalComputer(args, config.computers) !== 'host';
+      if (!bypass() && !elsewhere) requireSupportedExecution();
       if (!allowed || allowed.mode !== live.approvalMode) throw new Error('The approval mode changed before this ran. Try again.');
       if (allowed.cwd !== (live.cwd ?? config.cwd)) throw new Error('The working directory changed before this ran. Try again.');
       const cwd = live.cwd ?? config.cwd;
+      if (name === 'bash') {
+        const computer = terminalComputer(args, config.computers);
+        if (computer !== allowed.computer) throw new Error('The computer changed before this ran. Try again.');
+        if (!frozenTerminal(computer, config.computers) || (Array.isArray(live.computersNow) && !live.computersNow.some((item: any) => item?.id === computer && item?.terminal === true)))
+          throw new Error(`You can't use the terminal of ${computer} any more.`);
+        if (computer !== 'host') {
+          // The daemon runs it on the bots' computer or the user's computer.
+          // The mode the gate decided under goes with it: the daemon refuses
+          // the command if the mode changed before it could run.
+          const result = await bridge(ctx, 'hexbot_terminal', {computer, command: args.command, mode: allowed.mode, ...(typeof args.timeout === 'number' ? {timeout: args.timeout} : {})});
+          const text = String(result?.output ?? '') || '(no output)';
+          if (result?.exit_code !== 0) throw new Error(text);
+          return {content: [{type: 'text', text}], details: {computer}};
+        }
+      }
       // Recheck at execution too, before a factory can touch files or launch.
       if (!bypass()) requireSupportedExecution();
       if (name === 'bash') {
@@ -396,7 +498,7 @@ export default function hexbot(pi: any) {
       // Avoid streaming unfiltered search output.
       const operations = ['write','edit'].includes(name) ? {operations:fileOperations(ctx, id, name, path, {
         approvalMode:live.approvalMode, cwd, outputDirs:live.outputDirs ?? [], fileWorkdir:live.fileWorkdir, fileEpoch:live.fileEpoch,
-      })} : options('confined', denied);
+      })} : options();
       const result = await factory(cwd, operations).execute(id, args, signal, ['grep', 'find', 'ls'].includes(name) ? undefined : update);
       if (['grep', 'find', 'ls'].includes(name)) {
         const base = statSync(path).isDirectory() ? path : dirname(path);
@@ -406,7 +508,8 @@ export default function hexbot(pi: any) {
     }});
   }
   pi.on('user_bash', async (event: any, ctx: any) => {
-    const denial = await gate({toolName: 'bash', input: {command: event.command}}, ctx);
+    // A user's own ! command always runs here, so it is gated as this computer's.
+    const denial = await gate({toolName: 'bash', input: {command: event.command, computer: 'host'}}, ctx);
     if (denial) return {result: {output: denial.reason, exitCode: 1, cancelled: false, truncated: false}};
     const level = levelFor({});
     const approvedCwd = live.cwd ?? config.cwd;
@@ -420,11 +523,36 @@ export default function hexbot(pi: any) {
     }}};
   });
 
+  // Anthropic prices fast mode at twice its standard rate and Pi bills the
+  // standard one, so a reply that ran fast is billed again here. Pi already
+  // prices ChatGPT's Fast tier from the reply.
+  let ranFast = false;
+  // The model this run asks to run fast, fixed as the run starts: tool gates
+  // refresh the settings mid-run, and a new speed waits for the next message.
+  let fastModel: string | undefined;
+  pi.on('provider_stream_event', (event: any) => {
+    if (event.api !== 'anthropic-messages') return;
+    const speed = event.data?.usage?.speed ?? event.data?.message?.usage?.speed;
+    if (speed) ranFast = speed === 'fast';
+  });
+  pi.on('message_end', (event: any) => {
+    const message = event.message;
+    if (message?.role !== 'assistant' || !ranFast) return;
+    ranFast = false;
+    const cost = message.usage?.cost;
+    if (!cost) return;
+    const doubled = {input: cost.input * 2, output: cost.output * 2, cacheRead: cost.cacheRead * 2, cacheWrite: cost.cacheWrite * 2};
+    return {message: {...message, usage: {...message.usage, cost: {...cost, ...doubled, total: doubled.input + doubled.output + doubled.cacheRead + doubled.cacheWrite}}}};
+  });
   pi.on('before_provider_request', async (event: any, ctx: any) => {
     pendingPrompt = undefined;
+    requested = true;
+    ranFast = false;
     const provider = ctx.model?.provider ?? config.provider;
-    if (!['qwen-oauth', 'nous', 'openrouter', 'kimi-coding', 'kimi-coding-cn', 'moonshotai', 'moonshotai-cn', 'deepseek', 'zai', 'minimax', 'minimax-cn', 'minimax-oauth', 'custom', 'ollama'].includes(provider)) return;
-    const raw = await ctx.ui.input('__HEXBOT_TOOL__' + JSON.stringify({name: 'hexbot_provider_request', args: {provider, model: ctx.model?.id, thinking: pi.getThinkingLevel(), payload: event.payload}}));
+    // The daemon says when this section runs fast; a fallback model never does.
+    const payload = fastModel !== undefined && ctx.model?.id === fastModel ? fastPayload(ctx.model?.api, event.payload) : event.payload;
+    if (!['qwen-oauth', 'nous', 'openrouter', 'kimi-coding', 'kimi-coding-cn', 'moonshotai', 'moonshotai-cn', 'deepseek', 'zai', 'minimax', 'minimax-cn', 'minimax-oauth', 'custom', 'ollama'].includes(provider)) return payload === event.payload ? undefined : payload;
+    const raw = await ctx.ui.input('__HEXBOT_TOOL__' + JSON.stringify({name: 'hexbot_provider_request', args: {provider, model: ctx.model?.id, thinking: pi.getThinkingLevel(), payload}}));
     if (!raw) throw new Error('Provider request interrupted');
     const reply = JSON.parse(raw);
     if (reply.error) throw new Error(reply.error);
@@ -440,11 +568,12 @@ export default function hexbot(pi: any) {
     Object.assign(event.headers, reply.result?.headers ?? {});
   });
   pi.on('before_agent_start', async (_event: any, ctx: any) => {
-    // Pi 1.0.1 drops the result of a handler that throws and runs on its
+    // Pi 1.5.2 drops the result of a handler that throws and runs on its
     // launch prompt, which is stale once a section adopts a refreshed one.
     // Whatever fails here, still return the prompt Pi is running.
     try {
       await refresh(ctx);
+      fastModel = live.fast === true ? live.model : undefined;
       await registerMcp(ctx);
       primary ??= ctx.model;
       const model = ctx.modelRegistry.find(live.provider, live.model) ?? primary;
@@ -488,7 +617,9 @@ export default function hexbot(pi: any) {
     // never stops the other.
     try {
       const todo = await bridge(ctx, 'hexbot_todo_context');
-      if (todo?.text) pi.sendMessage({customType: 'hexbot_todo', content: todo.text, display: false});
+      // Pi 1.5.2 counts a starting run as streaming, so a plain message steers in
+      // after the user's. Held, it goes before them; during a run it still steers.
+      if (todo?.text) pi.sendMessage({customType: 'hexbot_todo', content: todo.text, display: false}, requested ? undefined : {triggerTurn: false});
     } catch {}
     // Compare with the live prompt: an earlier offer may have been lost, or a
     // mid-run request discarded it.
@@ -513,6 +644,7 @@ export default function hexbot(pi: any) {
       pi.appendEntry('hexbot_recall', {entryId: id});
     },
   });
+  pi.on('agent_settled', () => { requested = false; });
   pi.on('agent_before_settle', async (event: any, ctx: any) => {
     if (limitReached || event.outcome !== 'error' || fallbackUsed) return;
     await refresh(ctx);
@@ -531,14 +663,15 @@ export default function hexbot(pi: any) {
       label: tool.label ?? tool.name,
       description: tool.description,
       parameters: tool.parameters ?? tool.inputSchema ?? { type: 'object', properties: {} },
-      async execute(_id: string, args: any, signal: AbortSignal | undefined, _update: any, ctx: any) {
+      async execute(id: string, args: any, signal: AbortSignal | undefined, _update: any, ctx: any) {
         if (signal?.aborted) throw new Error('Tool interrupted');
         if (tool.name === 'clarify') {
           if (!args.question && !args.questions?.length) throw new Error('A question is required');
           const answer = await ctx.ui.input('__HEXBOT_CLARIFY__' + JSON.stringify(args));
           return { content: [{ type: 'text', text: answer ?? 'The question was cancelled.' }], details: {} };
         }
-        const reply = await ctx.ui.input('__HEXBOT_TOOL__' + JSON.stringify({ name: tool.name, args }), undefined, { signal });
+        // The call's id goes along, so a card the tool shows names the call it belongs to.
+        const reply = await ctx.ui.input('__HEXBOT_TOOL__' + JSON.stringify({ name: tool.name, args, id }), undefined, { signal });
         if (reply === undefined) throw new Error('Tool interrupted');
         const result = JSON.parse(reply);
         if (result.error) throw new Error(result.error);
@@ -604,6 +737,9 @@ function credentialName(path: string, home: string, denied: string[]): boolean {
     const secret = join(user, local);
     return under(path, secret) || under(path, canonicalPath(secret, process.cwd()));
   }))) return true;
+  // Cua's folder when CUA_HOME moved it: its host token is a shell on this computer.
+  const cua = process.env.HEXBOT_CUA_HOME;
+  if (cua && (under(path, cua) || under(path, canonicalPath(cua, process.cwd())))) return true;
   // Credential stores such as ~/.aws and ~/.netrc are private to reads too.
   if ((credentialPolicy.write.deny as string[]).flatMap(policyRoots).some(store => {
     return under(path, store) || under(path, canonicalPath(store, process.cwd()));
@@ -619,8 +755,152 @@ function credentialName(path: string, home: string, denied: string[]): boolean {
   const local = relative(fold(root), fold(path)).split(sep).join('/');
   return !local.startsWith('../') && (policyRegex(credentialPolicy.basename).test(name) || policyRegex(credentialPolicy.home).test(local));
 }
-// Steps outside the sandbox that Auto's reviewer may let through; connected tools too.
+// Steps outside the sandbox that Auto's reviewer may let through; connected tools and connector changes too.
 const REVIEWED = ['shell:full-access', 'file:outside', 'browser_console'];
+
+/** Whether a section's frozen computers let it use a computer's terminal. A
+ * section frozen before computers had this computer's terminal only. */
+export function frozenTerminal(computer: string, computers: any[] | undefined): boolean {
+  if (!Array.isArray(computers)) return computer === 'host';
+  return computers.some(item => item?.id === computer && item?.terminal === true);
+}
+
+/** The computer a bash call runs on: the one it names, or the first of the
+ * section's frozen computers with a terminal. A section frozen before
+ * computers runs on this computer, as it always did. */
+export function terminalComputer(input: any, computers: any[] | undefined): string {
+  const named = typeof input?.computer === 'string' ? input.computer.trim() : '';
+  if (named) return named;
+  if (!Array.isArray(computers)) return 'host';
+  return computers.find(computer => computer?.terminal === true)?.id ?? 'host';
+}
+
+// Whether an MCP tool is read-only in Auto mode. Explicit MCP annotations always
+// win; when a server omits annotations, obvious read-only tool names run freely
+// while anything ambiguous or mutating goes through Auto Review.
+const MCP_READ_PREFIX = /^(get|list|search|read|find|fetch|describe|show|view|lookup|count|inspect|whoami|status|info)($|[_-]|[A-Z])/;
+const MCP_WRITE_TOKEN = /(?:^|[_-])(and|or|create|add|new|insert|write|edit|update|patch|put|post|set|delete|remove|rm|drop|destroy|clear|purge|send|reply|publish|deploy|merge|rebase|commit|push|force|reset|revert|checkout|fork|close|reopen|resolve|archive|unarchive|trash|move|rename|copy|share|invite|grant|revoke|run|exec|execute|eval|call|trigger|start|stop|restart|kill|terminate|pay|buy|purchase|transfer|charge|approve|reject|sign|login|logout|sync|import|export|upload|submit|mutate|modify|change|toggle|enable|disable|install|uninstall|mark|label|unlabel|tag|untag|assign|unassign|ack|acknowledge|star|unstar|pin|unpin|comment|react|mute|unmute|flag|unflag|subscribe|unsubscribe|follow|unfollow|bookmark|lock|unlock|replace|upsert|save|store|append|prepend|apply|cancel|abort|schedule|complete|dismiss|notify|notification|generate|restore|undo|redo)(?:$|[_-])/;
+export function mcpReadOnly(toolName: string, tool?: any): boolean {
+  if (tool?.annotations?.readOnlyHint === true) return true;
+  if (tool?.annotations?.readOnlyHint === false || tool?.annotations?.destructiveHint === true) return false;
+  const match = /^mcp__[^_]+(?:_[^_]+)*__(.+)$/.exec(toolName) ?? /^mcp__.*?__(.+)$/.exec(toolName);
+  const local = match?.[1] ?? toolName;
+  if (!MCP_READ_PREFIX.test(local)) return false;
+  const normalized = local.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
+  return !MCP_WRITE_TOKEN.test(normalized);
+}
+
+// Commands on the bots' computer that Auto checks first: root escalation,
+// pushing to external hosts/repos, uploading data out, piping remote code into
+// a shell, or deleting broadly. Routine dev work (package installs, git
+// clone/fetch/pull, read-only curl/wget GETs) runs freely inside the disposable VM.
+const RISKY_COMMANDS: [RegExp, string][] = [
+  [/(^|[\s;&|(])(sudo|su)\s/, 'run as root'],
+  [/(^|[\s;&|(])(ssh|scp|sftp|rsync|nc|ncat|telnet|ftp)\s/, 'connect to another host'],
+  [/(^|[\s;&|(])git\s+push\b/, 'push to a remote repository'],
+  [/(^|[\s;&|(])curl\b[^;&|\n]*(\s(-[A-Za-z]*[dFT]|--data[^\s]*|--form|--upload-file|--json)\b|\s(-X|--request)\s*(?:[Pp][Oo][Ss][Tt]|[Pp][Uu][Tt]|[Pp][Aa][Tt][Cc][Hh]|[Dd][Ee][Ll][Ee][Tt][Ee])\b)/, 'send data over the network'],
+  [/(^|[\s;&|(])wget\b[^;&|\n]*\s(--post-data|--post-file|--body-data|--body-file|--method=(POST|PUT|PATCH|DELETE))\b/i, 'send data over the network'],
+  [/(^|[\s;&|(])(mkfs|dd\s+if=|shutdown|reboot|:\(\)\s*\{)/, 'delete broadly or stop the computer'],
+  [/\|\s*(sh|bash|zsh|python3?)\b/, 'run downloaded code'],
+];
+// Words that come before a command without being it: shell keywords and
+// grouping, and commands that run another (sudo, xargs, nice…), whose own
+// options and their numbers (nice -n 5, timeout 5) come before it too.
+const KEYWORDS = new Set(['then', 'do', 'else', 'elif', 'if', 'while', 'until', '{', '}', '!']);
+const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash']);
+// Wrapper options followed by a value (env -u NAME, timeout -s KILL, sudo -u ann).
+const VALUE_OPTIONS = new Set(['-u', '-g', '-n', '-s', '-k', '-c', '-C', '-S']);
+const WRAPPERS = new Set(['sudo', 'doas', 'xargs', 'nice', 'nohup', 'time', 'timeout', 'command', 'exec', 'env', 'builtin', 'stdbuf', 'ionice']);
+// A path that reaches past the folder it runs in: under / or a home folder,
+// a wildcard in the folder itself (*, *.log), or a parent folder anywhere in
+// it, a leading ./ aside (./* and ./../data are both broad; build/* is not).
+function broadPath(path: string): boolean {
+  const bare = path.replace(/^(\.\/)+/, '');
+  return /^(\/|~|\$\{?HOME\b|\*)/.test(bare) || bare.split('/').includes('..');
+}
+// A recursive rm, its options in any order and any of its paths broad, or a
+// find of a broad path that deletes (-delete, -exec rm), also inside sh -c;
+// a relative path inside the folder (rm -rf build) is routine.
+function broadDelete(command: string): boolean {
+  return command.split(/[;&|\n()]+/).some(part => {
+    const words = part.trim().split(/\s+/);
+    // rm as the command, not an argument (echo rm -rf /).
+    let at = 0;
+    let wrapped = false;
+    while (at < words.length) {
+      const word = words[at];
+      if (KEYWORDS.has(word) || /^[A-Za-z_]\w*=/.test(word)) {
+        at++;
+      } else if (WRAPPERS.has(word)) {
+        wrapped = true;
+        at++;
+      } else if (wrapped && (word.startsWith('-') || /^\d+[a-z]?$/.test(word))) {
+        at += VALUE_OPTIONS.has(word) ? 2 : 1;
+      } else {
+        break;
+      }
+    }
+    const name = words[at]?.replace(/^["']+/, '').split('/').pop();
+    // sh -c "…" (or -lc, -ec): the command it runs.
+    if (name && SHELLS.has(name) && /^-[a-z]*c$/.test(words[at + 1] ?? '')) {
+      return broadDelete(words.slice(at + 2).join(' ').replace(/["']/g, ''));
+    }
+    if (name === 'find') {
+      const rest = words.slice(at + 1);
+      const start = rest.findIndex(word => word.startsWith('-') || word === '!');
+      const paths = start < 0 ? rest : rest.slice(0, start);
+      const deletes = rest.some((word, i) => word === '-delete' || (/^-exec(dir)?$/.test(word) && rest[i + 1]?.split('/').pop() === 'rm'));
+      return deletes && paths.some(path => broadPath(path.replace(/^["']+|["']+$/g, '')));
+    }
+    if (name !== 'rm') return false;
+    let recursive = false;
+    const paths: string[] = [];
+    let optionsDone = false;
+    for (const word of words.slice(at + 1)) {
+      if (!optionsDone && word === '--') optionsDone = true;
+      else if (!optionsDone && word.startsWith('--')) recursive ||= word === '--recursive';
+      else if (!optionsDone && word.startsWith('-') && word.length > 1) recursive ||= /[rR]/.test(word);
+      else paths.push(word.replace(/^["']+|["';}]+$/g, ''));
+    }
+    return recursive && paths.some(broadPath);
+  });
+}
+export function riskyCommand(command: string): string | undefined {
+  if (broadDelete(command)) return 'delete broadly or stop the computer';
+  // A program named by its path through a bin folder (/usr/bin/curl,
+  // ./node_modules/.bin/npm, | /bin/sh) is checked by its name, and one
+  // in quotes (sh -c "curl …") as if they weren't there.
+  const named = command.replace(/["']/g, ' ').replace(/(^|[\s;&|(])[^\s;&|()]*\bs?bin\//g, '$1');
+  return RISKY_COMMANDS.find(([pattern]) => pattern.test(named))?.[1];
+}
+// The actions of each Google and Microsoft tool that only read; the gate
+// treats every other action as a change. Kept in step with `TOOLS` in
+// runtime_workspace.rs, where a test holds the two together.
+export const ACCOUNT_READS: Record<string, string[]> = {
+  hexbot_calendar: ['list', 'calendars'],
+  hexbot_tasks: ['lists', 'list'],
+  hexbot_drive: ['search', 'read', 'download'],
+  hexbot_documents: ['search', 'read'],
+  hexbot_spreadsheets: ['search', 'read'],
+  hexbot_presentations: ['search', 'read'],
+};
+const ACCOUNT_NAMES: Record<string, string> = {
+  hexbot_calendar: 'Calendar', hexbot_tasks: 'Tasks', hexbot_drive: 'Files',
+  hexbot_documents: 'Documents', hexbot_spreadsheets: 'Spreadsheets', hexbot_presentations: 'Presentations',
+};
+// What a change does, as its approval card words it: the tool, the action,
+// then what it was given, with long text cut short.
+export const accountChange = (tool: string, input: any) => {
+  const {action, account, ...rest} = input ?? {};
+  const short = (value: any): any => typeof value === 'string' && value.length > 120 ? value.slice(0, 120) + '…'
+    : Array.isArray(value) ? value.length > 6 ? [...value.slice(0, 6).map(short), `… ${value.length - 6} more`] : value.map(short)
+    : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, short(item)]))
+    : value;
+  const details = Object.entries(rest).filter(([, value]) => value !== undefined && value !== null && value !== '')
+    .map(([key, value]) => `${key}: ${typeof value === 'string' ? short(value) : JSON.stringify(short(value))}`).join(', ');
+  const text = `${ACCOUNT_NAMES[tool] ?? tool}${account ? ` (${account})` : ''}: ${action ?? 'change'}${details ? ` · ${details}` : ''}`;
+  return text.length > 600 ? text.slice(0, 600) + '…' : text;
+};
 const NEVER_WRITTEN = 'Credential and system configuration files are never written by tools.';
 // credential-policy.json "write": deny entries are credential stores that tools
 // never write; ask entries (shell profiles, login items) prompt in Manual and

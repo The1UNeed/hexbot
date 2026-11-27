@@ -13,7 +13,8 @@ const targets = [
   ['macOS, Apple Silicon', 'mac/arm64', 'nightly-mac.yml', /\.dmg$/],
   ['macOS, Intel', 'mac/x64', 'nightly-mac.yml', /\.dmg$/],
   ['Linux AppImage', 'linux/x64', 'nightly-linux.yml', /\.AppImage$/],
-  ['Linux deb', 'linux/x64', 'nightly-linux.yml', /\.deb$/]
+  ['Linux deb', 'linux/x64', 'nightly-linux.yml', /\.deb$/],
+  ['Windows, x64', 'win/x64', 'nightly.yml', /\.exe$/]
 ] as const
 
 export type FeedFile = { url: string; size?: number }
@@ -53,7 +54,16 @@ export async function nightlyDownloads(load = fetchText): Promise<Downloads | nu
       for (const [label, dir, feed, artifact] of targets) {
         const url = `${updates}/${name}/${dir}`
         if (!feeds.has(dir)) {
-          const parsed = parseFeed(await load(`${url}/${feed}`))
+          let text: string
+          try {
+            text = await load(`${url}/${feed}`)
+          } catch (error) {
+            // Nightlies published before Windows packages existed have no
+            // win/x64 feed. Skip the row there; a feed that exists must load.
+            if (dir === 'win/x64') continue
+            throw error
+          }
+          const parsed = parseFeed(text)
           if (!parsed) throw new Error(`${url}/${feed} is not an update feed`)
           versions.add(parsed.version)
           feeds.set(dir, parsed.files)
@@ -65,7 +75,8 @@ export async function nightlyDownloads(load = fetchText): Promise<Downloads | nu
       return rows
     }
     const [full, client] = [await edition('full'), await edition('client')]
-    // Six feed files, one version. Anything else is a half-uploaded nightly.
+    // Every feed that exists reports one version. Anything else is a
+    // half-uploaded nightly.
     if (versions.size !== 1) throw new Error(`Nightly feeds disagree: ${[...versions].join(', ')}`)
     return { version: [...versions][0], full, client }
   } catch (error) {

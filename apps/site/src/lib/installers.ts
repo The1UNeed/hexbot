@@ -6,7 +6,7 @@
 import { updates } from './nightly'
 
 export type Track = 'stable' | 'nightly'
-export type InstallerBuild = { key: 'mac-arm64' | 'mac-x64' | 'linux'; name: string; pill: string; url: string; size?: number }
+export type InstallerBuild = { key: 'mac-arm64' | 'mac-x64' | 'linux' | 'win-x64'; name: string; pill: string; url: string; size?: number }
 export type Installers = { track: Track; version: string; builds: InstallerBuild[] }
 
 // Manifest targets, in the order the page lists them, with the site's names for them.
@@ -14,6 +14,7 @@ const targets = [
   ['macos-aarch64', 'mac-arm64', 'Mac (Apple Silicon)', 'Apple Silicon (.dmg)'],
   ['macos-x86_64', 'mac-x64', 'Mac (Intel)', 'Intel (.dmg)'],
   ['linux-x86_64', 'linux', 'Linux', 'Linux (AppImage)'],
+  ['windows-x86_64', 'win-x64', 'Windows (x64)', 'Windows x64 (.exe, terminal)'],
 ] as const
 
 type Load = (url: string) => Promise<unknown | null>
@@ -26,14 +27,15 @@ async function fetchJson(url: string): Promise<unknown | null> {
   return response.json()
 }
 
-type Manifest = { schema?: unknown; channel?: unknown; version?: unknown; targets?: Record<string, { installerApp?: { url?: unknown; size?: unknown } }> }
+type Manifest = { schema?: unknown; channel?: unknown; version?: unknown; targets?: Record<string, { installerApp?: { url?: unknown; size?: unknown }; installer?: { url?: unknown; size?: unknown } }> }
 
 export function readManifest(manifest: unknown, track: Track): Installers | null {
   const m = manifest as Manifest | null
   if (!m || m.schema !== 1 || m.channel !== track || typeof m.version !== 'string') return null
   const builds: InstallerBuild[] = []
   for (const [target, key, name, pill] of targets) {
-    const app = m.targets?.[target]?.installerApp
+    const entry = m.targets?.[target]
+    const app = key === 'win-x64' ? entry?.installer : entry?.installerApp
     if (typeof app?.url !== 'string' || !app.url.trim()) continue
     let url: URL
     try { url = new URL(app.url, `${updates}/`) } catch { continue }

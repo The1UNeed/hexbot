@@ -15,12 +15,18 @@ import {
   pluginsRemove,
   pluginsSetBots
 } from '../lib/api'
-import { pluginRows } from '../lib/plugin-rows'
+import { pluginRows, withWaiting } from '../lib/plugin-rows'
 import type { Plugin, PluginKind } from '../lib/types'
 
 import { connectionRead } from './connection'
 
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error))
+
+/** What a tag in a message named: a connector or MCP server, or a skill. */
+export interface Sought {
+  kind: 'plugin' | 'skill'
+  name: string
+}
 
 export interface PluginsState {
   configure: (plugin: Plugin, change: PluginConfigureInput) => Promise<void>
@@ -34,11 +40,26 @@ export interface PluginsState {
   remove: (plugin: Plugin) => Promise<void>
   /** Forget everything: another daemon has other plugins and bots. */
   reset: () => void
-  setBots: (plugin: Plugin, bots: string[]) => Promise<void>
+  /** Asks the page to show one plugin or skill, as a tag in a message does. */
+  seek: (sought: Sought) => void
+  /** The plugin or skill a tag asked for; the page takes it once its list is in. */
+  sought: null | Sought
+  /** `keepWaiting`: also keep grants still waiting for setup, which the picker does not show. */
+  setBots: (plugin: Plugin, bots: string[], keepWaiting?: boolean) => Promise<void>
 }
 
 /** Only the latest refresh may change the list or end the loading state. */
 let latest = 0
+
+/**
+ * One read at a time. A change sends several events, and each asks for the
+ * list again; reading it costs the daemon more the more bots there are, so
+ * the asks made while one is on its way share a single read after it.
+ */
+let reading: null | Promise<void> = null
+let queued: null | Promise<void> = null
+/** Moves on at every reset, so a read queued for one daemon is not started on the next. */
+let era = 0
 
 export const usePlugins = create<PluginsState>((set, get) => {
   const replace = (key: string, plugin: Plugin) =>
@@ -51,42 +72,95 @@ export const usePlugins = create<PluginsState>((set, get) => {
     loaded: false,
     loading: false,
     plugins: [],
+    sought: null,
 
-    async refresh() {
-      const current = connectionRead()
-      const mine = ++latest
-      set({ error: null, loaded: true, loading: true })
+    seek(sought) {
+      set({ sought })
+    },
 
-      try {
-        const list = await pluginsList()
+    refresh() {
+      const read = async () => {
+        const current = connectionRead()
+        const mine = ++latest
+        set({ error: null, loading: true })
 
-        if (current() && mine === latest) {
-          set({ plugins: pluginRows(list) })
-        }
-      } catch (error) {
-        if (current() && mine === latest) {
-          set({ error: errorText(error) })
-        }
-      } finally {
-        if (mine === latest) {
-          set({ loading: false })
+        try {
+          const list = await pluginsList()
+
+          if (current() && mine === latest) {
+            set({ plugins: pluginRows(list) })
+          }
+        } catch (error) {
+          if (current() && mine === latest) {
+            set({ error: errorText(error) })
+          }
+        } finally {
+          if (mine === latest) {
+            set({ loading: false })
+          }
         }
       }
+
+      // Said when the list is asked for: a read that waited its turn starts
+      // after the page may have closed, and must not say it is open again.
+      set({ loaded: true })
+
+      const start = () => {
+        const mine: Promise<void> = read().finally(() => {
+          if (reading === mine) {
+            reading = null
+          }
+        })
+
+        reading = mine
+
+        return mine
+      }
+
+      if (!reading) {
+        return start()
+      }
+
+      // The read on its way may predate this ask: one more after it answers
+      // this one and every other made meanwhile.
+      const mine = era
+
+      queued ??= reading.then(() => {
+        if (mine !== era) {
+          return
+        }
+
+        queued = null
+
+        return start()
+      })
+
+      return queued
     },
 
     reset() {
       latest++
-      set({ error: null, loaded: false, loading: false, plugins: [] })
+      // Another daemon's list is not waited for.
+      reading = null
+      queued = null
+      era++
+      set({ error: null, loaded: false, loading: false, plugins: [], sought: null })
     },
 
-    async setBots(plugin, bots) {
+    async setBots(plugin, bots, keepWaiting = true) {
       const key = `${plugin.kind}:${plugin.id}`
 
       // Show the switch where the user put it while the daemon catches up.
-      replace(key, { ...plugin, bots })
+      // A change that holds every grant leaves none waiting, so a second
+      // change before the list is read again can't bring one back.
+      replace(key, keepWaiting ? { ...plugin, bots } : { ...plugin, bots, waiting_bots: [] })
 
       try {
-        await pluginsSetBots(plugin.kind as PluginKind, plugin.id, bots)
+        await pluginsSetBots(
+          plugin.kind as PluginKind,
+          plugin.id,
+          keepWaiting ? withWaiting(plugin, bots) : bots
+        )
       } catch (error) {
         replace(key, plugin)
 

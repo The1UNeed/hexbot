@@ -64,8 +64,10 @@ appended events.
    rendered as `@handle: text` and `User: text` lines (capped at 40 lines
    and 96 KiB, oldest lines summarised into one line when over the cap), a
    header naming the room, the members and their titles, and the rules:
-   reply once, say `(pass)` to stay silent, mention a member to bring them
-   in, mention `@user` to ask the human and wait. A newly added bot has
+   reply once, say `(pass)` to stay silent, add only what others have not
+   said and speak only for yourself, mention a member to bring them in,
+   mention `@user` to ask the human and wait, and keep private
+   conversations private. A newly added bot has
    `last_read_seq = 0` and therefore sees the whole transcript.
 4. **Execution**: `prompt.submit` in-process on the bot's room session.
    The engine broadcasts `hexbot.rooms.event {room_id, event}` for every
@@ -114,6 +116,90 @@ Rooms appear in the roster list next to bots, ordered by
 `last_activity_at`, and use the same section semantics: a room is one
 section today; room sections come with threads later.
 
+## Discord rooms
+
+A Discord channel can be a room (`discord.rs`, API in `docs/api.md`,
+Discord). Each bot connects its own Discord app with a token from the
+Discord Developer Portal, so several of the owner's bots can sit in one
+server and each keeps what it hears in its own room session and notes.
+
+- `discord_bots(bot, owner_id, application_id, user_id, username, status,
+  error, connected_at, updated_at)`: the bot's app. The token is
+  `accounts/discord/<bot>.json`.
+- `discord_channels(channel_id, guild_id, room_id, guild_name,
+  channel_name, posted_seq)`: the channel a room mirrors and the last room
+  event the outbox handled.
+- `discord_messages(message_id, room_id, seq, bot)`: which Discord message
+  is which room event; `bot` is the bot that posted it, NULL for people. A
+  message seen by several bots' connections lands once.
+- `discord_closed(channel_id, closed_at)`: when a channel's last Discord room
+  was deleted.
+- `discord_plugin(bot, owner_id, mode, enabled_at)`: the bots Discord is on
+  for in Plugins, and how each acts by default. Kept when a bot disconnects;
+  a bot connected before this table existed gets a row once.
+- `discord_guilds(bot, guild_id, name, mode, present)`: the servers a bot's
+  app is in, from its Gateway, and a server's own mode (NULL follows the
+  bot's).
+
+A bot's mode in a server (`discord::mode`) is `mentions`, `reads` (the
+default), `active` or `everyone`. `reads` and up read the whole channel and
+can read the rest of the server with `hexbot_discord`; `active` and
+`everyone` listen: they open a room for a channel the first time a person
+writes there, join it as of that message, and are picked for the room's
+newest person message they haven't read (`rooms::select_responders`, with
+`modes` and `latest_seq` from `discord::room_info`). `mentions` sees only
+the messages that address it, in its prompt and in the room: what is said to
+nobody is not kept when every bot in a room sees only mentions, and a room
+opened for such bots starts without history. A whole `@handle` addresses a
+bot (`rooms::typed_handles`): `@owl-admin` never addresses `owl`. A bot taken
+out of a server leaves its rooms there; a listening bot that left before its
+app was last connected or added to the server (`discord_guilds.joined_at`)
+joins again when a person writes. A listening bot opens or joins a room only
+where it can post (Send Messages, or Send Messages in Threads for a thread),
+asked once before it joins; a refusal is remembered for ten minutes and
+costs no Discord call meanwhile. A bot whose post Discord refuses (403)
+leaves the room until it is mentioned. A listening bot leaves a message that
+addresses another bot in the room to that bot, and answers the newest message
+said to none of them (`latest_seq`).
+
+The first mention of a bot in a channel, or the first message where a bot
+listens, creates the room, Manual, with the 20 messages before it marked
+`history`, except that a person's mention of a
+connected bot in the minute before, possibly still on its way through another
+bot's connection, and what followed it are ingested live (`IN_FLIGHT_MS`),
+each with its own retries, unless it was said before the channel's last room
+was deleted (`discord_closed`); a late copy of such a message is dropped. It has no main bot. A bot joins the
+room when it is mentioned there or replied to, also by another of the
+owner's bots, and comes back that way after the owner removed it or it was
+disconnected. Every mentioned bot joins in the transaction that saves the
+message, with `added_at` now, or the time of the bot reply that brought it
+in, and in a Discord room only messages from `added_at` on address it. The
+message is saved even while a member removal holds the room; the wake waits
+for the removal (`RoomEngine::notify_later`).
+Messages from other apps' Discord bots, and messages that arrive while the
+room is archived, start no turn; another app's bot also opens no room and
+brings no bot in. Only the first copy of a person's message brings bots in,
+and a bot reply never brings back a bot removed after it was written. A bot
+reply is matched to its room event by the message id recorded when it was
+posted, else its nonce, else, when it has no nonce, the author's oldest reply
+not yet posted; a post whose nonce names another room brings nobody in. People's messages are `message.user` events with `actor_kind:
+discord` and the author's name in the payload; the prompt names them as
+Discord shows them, after `speaker()` strips anything that could pose as a
+bot or a line. Each bot's reply goes out through its own app. One worker
+takes the Gateway's messages in order, trying a failed one twice more; one
+outbox worker posts, woken by `message.bot` events and on start, from
+`posted_seq`, part by part with a nonce, and tries again every 30 seconds
+while Discord is unreachable or answering 5xx or the database is busy. A
+bot's own post coming back on its Gateway marks its part sent.
+
+Bots in a Discord room have only notes, the web and reading their server
+(`discord::TOOLS`). Their
+prompt is the soul and the Discord rules, without memory, About you, files,
+teammates or skills, and every line a person wrote is prefixed with their
+name. Notes become memory proposals the dream treats as untrusted, and the
+dream leaves Discord rooms out. The app shows the room read-only with an
+Open in Discord link.
+
 ## Bot-to-bot messages
 
 The native daemon provides `message_bot {to, text, wait: bool}` for bots:
@@ -148,13 +234,16 @@ The native daemon provides `message_bot {to, text, wait: bool}` for bots:
   `[reply from <bot>]` message.
 - Threads are private one-to-one conversations. Section lists leave them
   out unless asked (`include_threads`); the app opens one on demand from the
-  row under the sender's reply (the two bots' faces turned toward each other,
-  "<sender> is asking <bot>" with the reply streaming in, then "<bot> helped"),
-  in a side panel. Dreaming reads them like
+  centered inline row under the sender's reply ("Messaging <bot>" while
+  running, settling in place to "Message from <bot>", "Messaged <bot>" when
+  no reply was waited for, or "Asked <bot>" on error), or from that bot's
+  name in a message, in the main conversation view (`<Bot A> ⇄ <Bot B>` with
+  a floating **Close Chat** button). Dreaming reads them like
   any other section, so both bots learn from the exchange. In a room, a
-  bot's `message.bot` event carries `asks: [{to, section_id}]` for the
-  teammates it asked during that turn (from `bot_messages.source_section`),
-  so the room keeps the "<bot> helped" row after the turn ends. Approval and
+  bot's `message.bot` event carries `asks: [{to, section_id, waited, failed}]`
+  for the teammates it asked during that turn (from `bot_messages.source_section`
+  plus pre-delivery rejected calls from the turn's transcript),
+  so the room keeps the inline ask row after the turn ends. Approval and
   question events carry `bot`, so a client honours that bot's Notify me
   for a thread it does not list.
 - A bot cannot message a bot that is waiting on its reply: the one that

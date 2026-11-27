@@ -24,6 +24,7 @@ vi.mock('../ui', async () => {
   return {
     Text: view, Screen: view, Glass: view, IconButton: () => null,
     BotFace: () => null, PersonFace: () => null, RoomFace: () => null,
+    ContextMenu: () => null, Field: () => null, ModalSheet: () => null,
     Banner: ({ message, testID }: { message: string; testID: string }) =>
       createElement('div', { 'data-testid': testID }, message),
     Button: ({ label, testID }: { label: string; testID: string }) =>

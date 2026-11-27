@@ -15,7 +15,7 @@ export const EXPO_RECEIPTS_URL = "https://exp.host/--/api/v2/push/getReceipts";
 export const RECEIPTS_MAX = 300;
 
 /**
- * Wakes the owner's phones about a bot's heartbeat message. The words are Connect's own: a
+ * Wakes the owner's phones about a bot's heartbeat message or an unread reply. The words are Connect's own: a
  * daemon chooses only which section to open and which saved daemon (by the
  * phone's device id) to open it on, so it can neither put chat on Connect nor
  * send its own text through Connect's Expo account. Returns the tokens Expo no

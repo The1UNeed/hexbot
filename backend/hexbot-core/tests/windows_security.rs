@@ -252,7 +252,7 @@ async fn windows_security_runtime_refuses_code_before_approval() {
                 if absent_output.exists() {
                     fs::remove_dir(&absent_output).unwrap();
                 }
-                fs::write(fixture.join("code.json"),json!({"tool":"hexbot_pi_file","args":{"operation":operation,"path":r"\\.\pipe\hexbot-private-file","callId":"private-file","snapshot":{"approvalMode":mode,"fileEpoch":0},"content":"eA==","parent":["0","0"]}}).to_string()).unwrap();
+                fs::write(fixture.join("code.json"),json!({"tool":"hexbot_pi_file","args":{"operation":operation,"path":r"\\.\pipe\hexbot-private-file","callId":"private-file","snapshot":{"approvalMode":mode,"fileEpoch":0},"content":"eA==","parent":["0","0"],"opened":"0".repeat(64)}}).to_string()).unwrap();
                 let mut events = hub.subscribe();
                 runtime
                     .call(

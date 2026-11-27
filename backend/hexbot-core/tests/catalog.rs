@@ -1,4 +1,4 @@
-use hexbot_core::{catalog, db, memory::MemoryStore, runtime_store, settings};
+use hexbot_core::{catalog, db, memory::MemoryStore, rooms, runtime_store, settings};
 use serde_json::{Value, json};
 use std::{fs, path::Path};
 fn setup() -> tempfile::TempDir {
@@ -8,7 +8,8 @@ fn setup() -> tempfile::TempDir {
     home
 }
 /// Points Computer use at `command`, so a test doesn't depend on whether
-/// this machine has Cua: every bot has Computer use where it is set up.
+/// this machine has Cua: on a daemon from before computers (this config has
+/// no `computers`) every bot has Computer use where it is set up.
 fn computer(home: &Path, command: &Path) {
     hexbot_core::common::write_config(home, &json!({"computer_use":{"command":command}})).unwrap();
 }
@@ -43,6 +44,188 @@ fn a_bot_can_be_created_with_a_reasoning_level() {
         json!({"name":"owl","model":"model-a","provider":"openai","reasoning_effort":"low"}),
     );
     assert_eq!(created["bot"]["reasoning_effort"], "low");
+}
+#[test]
+fn a_bot_says_whether_its_provider_is_connected() {
+    let home = setup();
+    let h = home.path();
+    // Clearing pins the provider off whatever the shell's environment holds.
+    hexbot_core::providers::clear_key(h, "openai").unwrap();
+    let created = create(h);
+    assert_eq!(created["bot"]["provider_connected"], false);
+    hexbot_core::providers::set_key(h, "openai", "sk-test").unwrap();
+    let bot = call(
+        h,
+        "alice",
+        "hexbot.bots.get",
+        json!({"name":"research-owl"}),
+    )["bot"]
+        .clone();
+    assert_eq!(bot["provider_connected"], true);
+    hexbot_core::providers::clear_key(h, "openai").unwrap();
+    let listed = call(h, "alice", "hexbot.bots.list", json!({}))["bots"].clone();
+    assert_eq!(listed[0]["provider_connected"], false);
+    let plain = call(h, "alice", "hexbot.bots.create", json!({"name":"plain"}));
+    assert!(plain["bot"]["provider_connected"].is_null());
+    // A provider by any of its names: connected is judged by what it resolves to.
+    let named = call(
+        h,
+        "alice",
+        "hexbot.bots.create",
+        json!({"name":"named","provider":"claude","model":"claude-opus-4"}),
+    );
+    assert_eq!(named["bot"]["provider_connected"], false);
+    hexbot_core::providers::set_key(h, "anthropic", "sk-ant").unwrap();
+    let bot = call(h, "alice", "hexbot.bots.get", json!({"name":"named"}))["bot"].clone();
+    assert_eq!(bot["provider_connected"], true);
+    // A bot's own endpoint, in its profile, counts for that bot.
+    let local = call(
+        h,
+        "alice",
+        "hexbot.bots.create",
+        json!({"name":"local","provider":"custom:lab","model":"lab-model"}),
+    );
+    assert_eq!(local["bot"]["provider_connected"], false);
+    let profile = catalog::profile(h, "local").unwrap();
+    let mut cfg = hexbot_core::common::read_config(&profile).unwrap();
+    cfg["providers"] = json!({"lab":{"api":"https://lab.test/v1","api_key":"lab-secret"}});
+    hexbot_core::common::write_config(&profile, &cfg).unwrap();
+    let bot = call(h, "alice", "hexbot.bots.get", json!({"name":"local"}))["bot"].clone();
+    assert_eq!(bot["provider_connected"], true);
+}
+
+#[test]
+fn bots_and_rooms_pin_and_unpin_and_keep_their_place_when_pinned_again() {
+    let home = setup();
+    let h = home.path();
+    create(h);
+    let pinned = call(
+        h,
+        "alice",
+        "hexbot.bots.pin",
+        json!({"name":"research-owl"}),
+    );
+    let at = pinned["bot"]["pinned_at"].as_f64().unwrap();
+    let again = call(
+        h,
+        "alice",
+        "hexbot.bots.pin",
+        json!({"name":"research-owl","pinned":true}),
+    );
+    assert_eq!(again["bot"]["pinned_at"].as_f64(), Some(at));
+    let listed = call(h, "alice", "hexbot.bots.list", json!({}));
+    assert_eq!(listed["bots"][0]["pinned_at"].as_f64(), Some(at));
+    let unpinned = call(
+        h,
+        "alice",
+        "hexbot.bots.pin",
+        json!({"name":"research-owl","pinned":false}),
+    );
+    assert!(unpinned["bot"]["pinned_at"].is_null());
+    assert!(
+        catalog::call(h, "bob", "hexbot.bots.pin", &json!({"name":"research-owl"}))
+            .unwrap()
+            .is_err()
+    );
+
+    let room = |method: &str, p: Value| rooms::call(h, "alice", method, &p).unwrap().unwrap();
+    let id = room(
+        "hexbot.rooms.create",
+        json!({"name":"Plans","members":["research-owl"]}),
+    )["room"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(room("hexbot.rooms.get", json!({"id":id}))["room"]["pinned_at"].is_null());
+    let at = room("hexbot.rooms.pin", json!({"id":id}))["room"]["pinned_at"]
+        .as_f64()
+        .unwrap();
+    assert_eq!(
+        room("hexbot.rooms.pin", json!({"id":id}))["room"]["pinned_at"].as_f64(),
+        Some(at)
+    );
+    assert_eq!(
+        room("hexbot.rooms.list", json!({}))["rooms"][0]["pinned_at"].as_f64(),
+        Some(at)
+    );
+    assert!(
+        rooms::call(h, "bob", "hexbot.rooms.pin", &json!({"id":id}))
+            .unwrap()
+            .is_err()
+    );
+    assert!(
+        room("hexbot.rooms.pin", json!({"id":id,"pinned":false}))["room"]["pinned_at"].is_null()
+    );
+    // A deleted room takes its pin with it.
+    room("hexbot.rooms.pin", json!({"id":id}));
+    db::open(h)
+        .unwrap()
+        .execute("DELETE FROM rooms WHERE id=?", [&id])
+        .unwrap();
+    let left: i64 = db::open(h)
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM room_pins", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(left, 0);
+}
+#[test]
+fn the_primary_bot_starts_pinned_and_stays_unpinned_once_unpinned() {
+    let home = setup();
+    let h = home.path();
+    let primary = call(
+        h,
+        "alice",
+        "hexbot.bots.create_primary",
+        json!({"model":"model-a","provider":"openai"}),
+    );
+    assert!(primary["bot"]["pinned_at"].is_number());
+    call(
+        h,
+        "alice",
+        "hexbot.bots.pin",
+        json!({"name":"hexbot","pinned":false}),
+    );
+    db::migrate(h).unwrap();
+    assert!(
+        call(h, "alice", "hexbot.bots.get", json!({"name":"hexbot"}))["bot"]["pinned_at"].is_null()
+    );
+
+    // A bot made primary later is pinned too.
+    create(h);
+    call(
+        h,
+        "bob",
+        "hexbot.bots.create",
+        json!({"name":"owl","model":"model-a","provider":"openai"}),
+    );
+    let promoted = call(h, "bob", "hexbot.bots.set_primary", json!({"name":"owl"}));
+    assert!(promoted["bot"]["pinned_at"].is_number());
+    assert!(
+        call(
+            h,
+            "alice",
+            "hexbot.bots.get",
+            json!({"name":"research-owl"})
+        )["bot"]["pinned_at"]
+            .is_null()
+    );
+}
+
+#[test]
+fn an_upgrade_pins_the_primary_bot_it_already_has() {
+    let home = setup();
+    let h = home.path();
+    let conn = db::open(h).unwrap();
+    conn.execute_batch("INSERT INTO bots(name,owner_id,is_primary,created_at) VALUES ('hexbot','alice',1,5),('owl','alice',0,6); ALTER TABLE bots DROP COLUMN pinned_at;").unwrap();
+    db::migrate(h).unwrap();
+    let pins = |name: &str| -> Option<f64> {
+        conn.query_row("SELECT pinned_at FROM bots WHERE name=?", [name], |r| {
+            r.get(0)
+        })
+        .unwrap()
+    };
+    assert_eq!(pins("hexbot"), Some(5.0));
+    assert_eq!(pins("owl"), None);
 }
 #[test]
 fn lifecycle_preserves_memory_and_reopens_archived_sections() {
@@ -90,14 +273,18 @@ fn lifecycle_preserves_memory_and_reopens_archived_sections() {
         catalog::section(h, "alice", id).unwrap()["title"],
         "Next task"
     );
-    assert!(
-        call(h, "alice", "hexbot.sections.touch", json!({"id":id}))["section"]["done_at"]
-            .is_number()
-    );
+    db::open(h)
+        .unwrap()
+        .execute("UPDATE sections SET done_at=5 WHERE id=?", [id])
+        .unwrap();
     assert!(
         call(h, "alice", "hexbot.sections.mark_read", json!({"id":id}))["section"]["done_at"]
             .is_null()
     );
+    // An app's touch as the reply lands, after the phone read it, keeps it read.
+    let touched = call(h, "alice", "hexbot.sections.touch", json!({"id":id}))["section"].clone();
+    assert!(touched["done_at"].is_null());
+    assert!(touched["updated_at"].as_f64().unwrap() > 5.0);
     let rejected = catalog::call(h, "alice", "hexbot.sections.delete", &json!({"id":id}))
         .unwrap()
         .unwrap_err();
@@ -432,7 +619,10 @@ fn a_picked_face_is_kept_with_its_picture_until_the_picture_changes() {
         "profiles.set_asset",
         json!({"name":"owl","asset":"avatar","clear":true}),
     );
-    assert!(catalog::bot(h, "alice", "owl").unwrap()["face"].is_null());
+    // Without its picture the bot draws the face it picked, live.
+    let cleared = catalog::bot(h, "alice", "owl").unwrap();
+    assert_eq!(cleared["face"], next);
+    assert!(cleared["avatar"].is_null());
 
     // A face alone would sit on a photo it does not describe.
     call(
@@ -486,6 +676,150 @@ fn a_picked_face_is_kept_with_its_picture_until_the_picture_changes() {
     // A file that is not a face reads as none.
     fs::write(h.join("profiles/owl/assets/face.json"), "not json").unwrap();
     assert!(catalog::bot(h, "alice", "owl").unwrap()["face"].is_null());
+}
+#[test]
+fn a_bot_keeps_its_own_random_face_whatever_it_is_called() {
+    let home = setup();
+    let h = home.path();
+    let mut faces = Vec::new();
+    for name in ["owl", "fox", "elk"] {
+        let created = call(
+            h,
+            "alice",
+            "hexbot.bots.create",
+            json!({"name":name,"display_name":"network","model":"model-a","provider":"openai"}),
+        );
+        let face = created["bot"]["face"].clone();
+        assert!(face["shape"].is_string() && face["color"].is_string());
+        assert!(created["bot"]["avatar"].is_null());
+        faces.push(face);
+    }
+    // Same name, three different faces: none comes from the name.
+    assert!(faces[0] != faces[1] && faces[1] != faces[2] && faces[0] != faces[2]);
+
+    let face = faces[0].clone();
+    call(
+        h,
+        "alice",
+        "hexbot.bots.update",
+        json!({"name":"owl","display_name":"Night owl"}),
+    );
+    assert_eq!(catalog::bot(h, "alice", "owl").unwrap()["face"], face);
+
+    // A photo puts the face aside; taking the photo away brings it back.
+    let image = "data:image/png;base64,iVBORw0KGgo=";
+    call(
+        h,
+        "alice",
+        "hexbot.bots.update",
+        json!({"name":"owl","avatar":image}),
+    );
+    let photo = catalog::bot(h, "alice", "owl").unwrap();
+    assert!(photo["face"].is_null() && !photo["avatar"].is_null());
+    assert_eq!(photo["kept_face"], face);
+    call(
+        h,
+        "alice",
+        "hexbot.bots.update",
+        json!({"name":"owl","avatar":null}),
+    );
+    let back = catalog::bot(h, "alice", "owl").unwrap();
+    assert_eq!(back["face"], face);
+    assert!(back["kept_face"].is_null());
+    call(
+        h,
+        "alice",
+        "hexbot.bots.update",
+        json!({"name":"owl","face":null}),
+    );
+    assert_eq!(catalog::bot(h, "alice", "owl").unwrap()["face"], face);
+
+    // A face the client chose is the one it keeps.
+    let chosen = json!({"shape":"cloud","color":"teal"});
+    let created = call(
+        h,
+        "alice",
+        "hexbot.bots.create",
+        json!({"name":"yak","model":"model-a","provider":"openai","face":chosen}),
+    );
+    assert_eq!(created["bot"]["face"], chosen);
+}
+#[test]
+fn bots_from_before_stored_faces_keep_the_face_their_name_gave() {
+    let home = setup();
+    let h = home.path();
+    let image = "data:image/png;base64,iVBORw0KGgo=";
+    for name in ["owl", "fox"] {
+        call(
+            h,
+            "alice",
+            "hexbot.bots.create",
+            json!({"name":name,"display_name":"network","model":"model-a","provider":"openai"}),
+        );
+    }
+    call(
+        h,
+        "alice",
+        "hexbot.bots.update",
+        json!({"name":"fox","avatar":image}),
+    );
+    // As an older daemon left them: no face file of any kind.
+    for name in ["owl", "fox"] {
+        let assets = h.join(format!("profiles/{name}/assets"));
+        let _ = fs::remove_file(assets.join("face.json"));
+        let _ = fs::remove_file(assets.join("face.kept.json"));
+    }
+    catalog::keep_name_faces(h).unwrap();
+    assert_eq!(
+        catalog::bot(h, "alice", "owl").unwrap()["face"],
+        json!({"shape":"square","color":"violet"})
+    );
+    call(
+        h,
+        "alice",
+        "hexbot.bots.update",
+        json!({"name":"owl","display_name":"Router"}),
+    );
+    catalog::keep_name_faces(h).unwrap();
+    assert_eq!(
+        catalog::bot(h, "alice", "owl").unwrap()["face"],
+        json!({"shape":"square","color":"violet"})
+    );
+    // A photo stays a photo.
+    let fox = catalog::bot(h, "alice", "fox").unwrap();
+    assert!(fox["face"].is_null() && !fox["avatar"].is_null());
+
+    // A face put aside for a photo that is gone comes back, not the name's.
+    let kept = json!({"shape":"cloud","color":"pink"});
+    let assets = h.join("profiles/fox/assets");
+    fs::remove_file(assets.join("avatar.png")).unwrap();
+    fs::write(assets.join("face.kept.json"), kept.to_string()).unwrap();
+    catalog::keep_name_faces(h).unwrap();
+    assert_eq!(catalog::bot(h, "alice", "fox").unwrap()["face"], kept);
+}
+#[cfg(unix)]
+#[test]
+fn a_profile_that_cannot_be_read_does_not_stop_a_new_face() {
+    let home = setup();
+    let h = home.path();
+    call(
+        h,
+        "alice",
+        "hexbot.bots.create",
+        json!({"name":"owl","model":"model-a","provider":"openai"}),
+    );
+    let assets = h.join("profiles/owl/assets");
+    fs::remove_dir_all(&assets).unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    std::os::unix::fs::symlink(elsewhere.path(), &assets).unwrap();
+    let created = call(
+        h,
+        "alice",
+        "hexbot.bots.create",
+        json!({"name":"fox","model":"model-a","provider":"openai"}),
+    );
+    assert!(created["bot"]["face"]["shape"].is_string());
+    catalog::keep_name_faces(h).unwrap();
 }
 #[test]
 fn hexbot_keeps_the_face_it_is_created_with() {
@@ -839,16 +1173,20 @@ fn every_bot_has_computer_use_once_it_is_set_up_and_never_the_daemons_code_or_br
         "hexbot.bots.create",
         json!({"name":"no-tools","tools":[]}),
     );
-    assert_eq!(created["bot"]["tools"], json!(["computer_use"]));
-    // Older clients still send the tools Computer use replaced; they are dropped.
+    // Computer Use is a connector now, not one of the bot's tool switches.
+    assert_eq!(created["bot"]["tools"], json!([]));
+    assert!(hexbot_core::machines::computer_use_on(home.path(), "no-tools").unwrap());
+    // Older clients still send the tools Computer Use replaced, and Computer
+    // use itself; they are dropped.
     let bot = call(
         home.path(),
         "alice",
         "hexbot.bots.update",
-        json!({"name":"no-tools","tools":["files","code_execution","browser"]}),
+        json!({"name":"no-tools","tools":["files","code_execution","browser","computer_use"]}),
     )["bot"]
         .clone();
-    assert_eq!(bot["tools"], json!(["files", "computer_use"]));
+    assert_eq!(bot["tools"], json!(["files"]));
+    assert!(hexbot_core::machines::computer_use_on(home.path(), "no-tools").unwrap());
     let available = bot["available_tools"].as_array().unwrap();
     assert!(!available.contains(&json!("code_execution")));
     assert!(!available.contains(&json!("browser")));

@@ -28,6 +28,9 @@ use std::{
     time::Duration,
 };
 
+#[path = "server_media.rs"]
+mod media;
+
 pub(crate) const WS_MESSAGE_LIMIT: usize = 64 * 1024 * 1024;
 
 pub struct App {
@@ -36,8 +39,10 @@ pub struct App {
     pub runtime: Arc<Runtime>,
     pub rooms: Arc<RoomEngine>,
     pub dreaming: Arc<crate::dreaming::Dreaming>,
+    pub discord: Arc<crate::discord::Discord>,
     memory: MemoryStore,
     tickets: Mutex<HashMap<String, (String, f64)>>,
+    media: media::Links,
     proofs: Arc<dpop::Proofs>,
     logins: Mutex<HashMap<String, BrowserLogin>>,
     auth_connection: Mutex<rusqlite::Connection>,
@@ -94,8 +99,15 @@ impl App {
                 error.message
             );
         }
+        if let Err(error) = catalog::keep_name_faces(&home) {
+            eprintln!("Could not keep the bots' faces: {}", error.message);
+        }
+        if let Err(error) = crate::machines::migrate(&home) {
+            eprintln!("Could not keep the bots' computers: {}", error.message);
+        }
         let events = EventHub::new();
         crate::computers::attach(&home, events.clone());
+        crate::machines::attach_events(&home, events.clone());
         let runtime = Runtime::new(home.clone(), events.clone(), pi)?;
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let runtime = runtime.clone();
@@ -124,6 +136,7 @@ impl App {
         ));
         let dreaming =
             crate::dreaming::Dreaming::new(home.clone(), runtime.clone(), events.clone());
+        let discord = crate::discord::Discord::new(home.clone(), events.clone(), rooms.clone());
         auth::local_token(&home)?;
         let (stop, _) = tokio::sync::watch::channel(false);
         let app = Arc::new(Self {
@@ -135,7 +148,9 @@ impl App {
             runtime,
             rooms,
             dreaming,
+            discord,
             tickets: Mutex::new(HashMap::new()),
+            media: Default::default(),
             proofs: Arc::new(dpop::Proofs::default()),
             logins: Mutex::new(HashMap::new()),
             address,
@@ -160,7 +175,9 @@ impl App {
             runtime: self.runtime.clone(),
             rooms: self.rooms.clone(),
             dreaming: self.dreaming.clone(),
+            discord: self.discord.clone(),
             tickets: Mutex::new(std::mem::take(&mut *self.tickets.lock().unwrap())),
+            media: Default::default(),
             proofs: self.proofs.clone(),
             logins: Mutex::new(std::mem::take(&mut *self.logins.lock().unwrap())),
             address,
@@ -428,13 +445,25 @@ impl App {
                 "sandbox": crate::credentials::sandbox(),
                 // Clients describe Manual, Auto and Bypass only to a daemon that has them.
                 "approvals": "sandbox",
+                // `hexbot.approvals.rules.*`: persistent Always allow and Ask first rules.
+                "approval_rules": true,
                 // `hexbot.sections.create` returns the bot's one chat; an older
                 // daemon makes a new section every time.
                 "one_chat": true,
                 // `session.recall` takes back the owner's latest message in a chat.
                 "recall": true,
+                // `hexbot.sections.history` reads a chat without starting its bot.
+                "section_history": true,
+                // `hexbot.reactions.*`: an emoji on a message in a bot's chat.
+                "reactions": true,
                 "home": self.home
             })),
+            "hexbot.sections.history" => {
+                let (home, owner, p) = (self.home.clone(), owner.to_owned(), p.clone());
+                tokio::task::spawn_blocking(move || catalog::section_history(&home, &owner, &p))
+                    .await
+                    .map_err(|error| Error::new(5200, error.to_string()))?
+            }
             "hexbot.diagnostics.get" => {
                 let (home, owner, p) = (self.home.clone(), owner.to_owned(), p.clone());
                 let load = self.runtime.diagnostic_load();
@@ -443,6 +472,12 @@ impl App {
                 })
                 .await
                 .map_err(|error| Error::new(5200, error.to_string()))
+            }
+            "hexbot.diagnostics.logs" => {
+                let (home, p) = (self.home.clone(), p.clone());
+                tokio::task::spawn_blocking(move || crate::log_files::read(&home, &p))
+                    .await
+                    .map_err(|error| Error::new(5200, error.to_string()))?
             }
             "hexbot.diagnostics.trace" => Ok(crate::diagnostics::get().trace(
                 p["trace"]
@@ -461,7 +496,9 @@ impl App {
                 p["keep_room"] == true,
             ),
             _ => {
-                if let Some(result) = self.dreaming.call(owner, method, p).await {
+                if let Some(result) = self.discord.call(owner, method, p).await {
+                    result
+                } else if let Some(result) = self.dreaming.call(owner, method, p).await {
                     result
                 } else if let Some(result) = self.runtime.call(owner, method, p).await {
                     result
@@ -485,6 +522,14 @@ impl App {
                     result
                 } else if let Some(result) = settings::call(&self.home, owner, method, p) {
                     result
+                } else if let Some(result) =
+                    crate::approval_rules::call(&self.home, owner, method, p)
+                {
+                    if result.is_ok() && crate::approval_rules::CHANGES.contains(&method) {
+                        self.events
+                            .emit(owner, None, "hexbot.approvals.changed", json!({}));
+                    }
+                    result
                 } else if let Some(result) = rooms::call(&self.home, owner, method, p) {
                     result
                 } else if let Some(result) = crate::passwords::call(&self.home, owner, method, p) {
@@ -493,7 +538,20 @@ impl App {
                             .emit(owner, None, "hexbot.passwords.changed", json!({}));
                     }
                     result
+                } else if let Some(result) = crate::reactions::call(&self.home, owner, method, p) {
+                    // Every app showing the chat draws the reaction.
+                    if method == "hexbot.reactions.set"
+                        && let Ok(changed) = &result
+                    {
+                        self.events
+                            .emit(owner, None, "hexbot.reactions.changed", changed.clone());
+                    }
+                    result
                 } else if let Some(result) = crate::computers::call(&self.home, method, p).await {
+                    result
+                } else if let Some(result) =
+                    crate::machines::call(&self.home, owner, method, p).await
+                {
                     result
                 } else if let Some(result) = connectors::call(&self.home, owner, method, p).await {
                     result
@@ -511,6 +569,19 @@ impl App {
                     }
                     result
                 } else if let Some(result) = providers::call(&self.home, owner, method, p).await {
+                    result
+                } else if let Some(result) =
+                    crate::accounts::call(&self.home, owner, method, p, self.address.port()).await
+                {
+                    // A sign-in that finished on its own (a Microsoft code, the
+                    // browser back on this computer) is seen by the poll.
+                    if result.as_ref().is_ok_and(|v| {
+                        crate::accounts::CHANGES.contains(&method)
+                            || (method == "hexbot.accounts.sign_in_poll" && v["status"] == "done")
+                    }) {
+                        self.events
+                            .emit(owner, None, "hexbot.connectors.changed", json!({}));
+                    }
                     result
                 } else if let Some(result) = services::call(&self.home, owner, method, p).await {
                     result
@@ -545,6 +616,16 @@ impl App {
             self.events
                 .emit(owner, None, "hexbot.heartbeat.changed", json!({}));
         }
+        // Bots carry the limits in effect, so a new default reaches every open
+        // app, whichever app or bot changed it.
+        if method == "hexbot.settings.set"
+            && p["patch"].as_object().is_some_and(|patch| {
+                patch.contains_key("soul_char_limit") || patch.contains_key("memory_char_limit")
+            })
+        {
+            self.events
+                .emit(owner, None, "hexbot.bots.changed", json!({}));
+        }
         // Each running turn lists the cards it still waits on, so a client
         // drops the ones it missed being settled. Opening a room restores them.
         if matches!(method, "hexbot.rooms.get" | "hexbot.rooms.list") {
@@ -560,6 +641,14 @@ impl App {
                         }
                         if let Some(pending) = self.runtime.pending_requests(owner, &live) {
                             turn["pending_requests"] = json!(pending);
+                        }
+                        if let Some(turn_id) = self.runtime.active_turn_id(owner, &live) {
+                            turn["turn_id"] = json!(turn_id);
+                        }
+                        if let Some(asks) = self.runtime.turn_asks(owner, &live)
+                            && !asks.is_empty()
+                        {
+                            turn["asks"] = json!(asks);
                         }
                     }
                 }
@@ -601,6 +690,17 @@ impl App {
                 result["bind_host"] = json!(self.address.ip().to_string());
             }
         }
+        // A deleted bot's Discord app goes offline, its token goes, and so
+        // does its place in Plugins.
+        if method == "hexbot.bots.delete"
+            && let Some(bot) = p["name"].as_str()
+            && let Err(error) = self
+                .discord
+                .forget(bot)
+                .and_then(|()| crate::discord::forget_bot(&self.home, bot))
+        {
+            eprintln!("Could not disconnect {bot} from Discord: {}", error.message);
+        }
         if method == "hexbot.rooms.send" {
             let id = common::required(p, "id")?;
             self.events.emit(
@@ -635,6 +735,15 @@ impl App {
             self.bot_status(owner, &mut result["bot"]);
         }
         self.changed(owner, method, p, &result);
+        // Creating a bot gives it computers, a tools change can give or take
+        // them, and deleting one takes them: Settings, Computers reads again.
+        if matches!(
+            method,
+            "hexbot.bots.create" | "hexbot.bots.create_primary" | "hexbot.bots.delete"
+        ) || method == "hexbot.bots.update" && p.get("tools").is_some()
+        {
+            crate::machines::changed(&self.home, owner);
+        }
         for room in affected_rooms {
             self.events.emit(
                 room["owner_id"].as_str().unwrap_or(""),
@@ -668,9 +777,11 @@ impl App {
     }
     pub async fn shutdown(&self) {
         self.disconnect();
+        self.discord.shutdown().await;
         self.rooms.shutdown().await;
         self.dreaming.shutdown().await;
         self.runtime.shutdown().await;
+        crate::searxng::stop(&self.home).await;
     }
     fn addresses(&self) -> Vec<String> {
         settings::network(&self.home)
@@ -718,13 +829,16 @@ impl App {
         Ok(id)
     }
     fn changed(&self, owner: &str, method: &str, p: &Value, result: &Value) {
+        // A finished sign-in connects a provider as a key does, so every bot
+        // on it says so again.
         if matches!(
             method,
             "hexbot.providers.set_key"
                 | "hexbot.providers.clear_key"
                 | "model.save_key"
                 | "model.disconnect"
-        ) {
+        ) || (method == "hexbot.providers.login_poll" && result["status"] == "done")
+        {
             self.events
                 .emit(owner, None, "hexbot.bots.changed", json!({}));
             return;
@@ -785,7 +899,7 @@ impl App {
         if (method == "hexbot.bots.update" && p.get("skills").is_some())
             || (method == "profiles.configure" && p.get("disabled_skills").is_some())
             || (method == "hexbot.connectors.set_for_bot"
-                && matches!(p["id"].as_str(), Some("notion" | "airtable")))
+                && matches!(p["id"].as_str(), Some("notion")))
         {
             self.changed(
                 owner,
@@ -805,6 +919,7 @@ impl App {
                 | "create_primary"
                 | "set_primary"
                 | "update"
+                | "pin"
                 | "delete"
                 | "clear_status"
                 | "setup"
@@ -1031,6 +1146,28 @@ fn take_browser_login(app: &App, headers: &HeaderMap, state: &str) -> Result<Bro
         return Err(invalid());
     }
     Ok(logins.remove(state).expect("checked login"))
+}
+/// Where Google sends the browser after a sign-in for one of its
+/// connectors (`accounts.rs`). Only a browser on this computer gets here, as
+/// Google returns to the loopback address; the state names the sign-in.
+async fn google_return(
+    State(app): State<Arc<App>>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+) -> Response {
+    if peer.is_some_and(|Extension(ConnectInfo(p))| !p.ip().is_loopback()) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let (ok, page) = crate::accounts::callback(&app.home, &query.unwrap_or_default()).await;
+    let mut response = axum::response::Html(page).into_response();
+    if !ok {
+        *response.status_mut() = StatusCode::BAD_REQUEST;
+    }
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store"),
+    );
+    response
 }
 async fn browser_callback(
     State(app): State<Arc<App>>,
@@ -1398,7 +1535,7 @@ async fn origin_guard(
             .append("vary", HeaderValue::from_static("Origin"));
         response.headers_mut().insert(
             "access-control-allow-headers",
-            HeaderValue::from_static("Content-Type, Authorization, DPoP"),
+            HeaderValue::from_static("Content-Type, Authorization, DPoP, Range"),
         );
         response.headers_mut().insert(
             "access-control-expose-headers",
@@ -1406,7 +1543,7 @@ async fn origin_guard(
         );
         response.headers_mut().insert(
             "access-control-allow-methods",
-            HeaderValue::from_static("GET, POST, OPTIONS"),
+            HeaderValue::from_static("GET, HEAD, POST, OPTIONS"),
         );
         response.headers_mut().insert(
             "access-control-allow-credentials",
@@ -1678,7 +1815,7 @@ async fn index(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
         .as_ref()
         .and_then(|p| std::fs::read_to_string(p.join("index.html")).ok())
         .unwrap_or_else(|| {
-            "<!doctype html><html><head></head><body>Hexbot daemon is running. Build apps/web to serve the browser app.</body></html>"
+            "<!doctype html><html><head><title>Hexbot</title></head><body>Hexbot daemon is running. Build apps/web to serve the browser app.</body></html>"
                 .into()
         });
     // Kept for older clients: the web bundle reads it only as a "served by
@@ -1777,8 +1914,20 @@ async fn connection(
     let mut verify = tokio::time::interval(Duration::from_secs(1));
     let mut tasks = tokio::task::JoinSet::new();
     let bytes = Arc::new(tokio::sync::Semaphore::new(WS_MESSAGE_LIMIT));
+    // Work for this app's own computer, once it attaches (machines.rs).
+    let (computer_tx, mut computer_rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
+    let connection_id = crate::machines::connection_id();
     'connection: loop {
         tokio::select! {
+            Some(frame) = computer_rx.recv() => {
+                if socket
+                    .send(Message::Text(format!("{frame}\n").into()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
             _ = stop.changed() => {
                 let _ = socket
                     .send(Message::Close(Some(CloseFrame {
@@ -1874,9 +2023,10 @@ async fn connection(
                         let owner = owner.clone();
                         let device_id = device_id.clone();
                         let token = token.clone();
+                        let computer = (computer_tx.clone(), connection_id);
                         tasks.spawn(async move {
                             let _permit = permit;
-                            handle_request(app, owner, device_id, token, request).await
+                            handle_request(app, owner, device_id, token, computer, request).await
                         });
                     }
                 }
@@ -1891,14 +2041,18 @@ async fn connection(
         }
     }
     // Runtime RPCs own their command tasks. One-shot requests still cancel
-    // with this connection and run their scoped cleanup.
-    tasks.abort_all();
+    // with this connection and run their scoped cleanup. Waited for, so an
+    // attach already running can't offer this computer after it detaches.
+    tasks.shutdown().await;
+    app.media.disconnect(connection_id);
+    crate::machines::detach(&app.home, &device_id, connection_id);
 }
 async fn handle_request(
     app: Arc<App>,
     owner: String,
     device_id: String,
     token: String,
+    computer: (tokio::sync::mpsc::UnboundedSender<Value>, u64),
     request: std::result::Result<Value, serde_json::Error>,
 ) -> Option<Value> {
     let request = match request {
@@ -1926,8 +2080,29 @@ async fn handle_request(
         Err(Error::new(-32602, "params must be an object"))
     } else if method == "hexbot.devices.set_push" {
         set_push(&app.home, &owner, &device_id, &params)
+    } else if method == "hexbot.computers.attach" {
+        // Only this connection's app can offer its own computer.
+        crate::machines::attach(
+            &app.home, &owner, &device_id, computer.1, computer.0, &params,
+        )
+    } else if method == "hexbot.computers.reply" {
+        crate::machines::reply(&app.home, &device_id, &params)
     } else {
         app.call(&owner, method, &params).await
+    };
+    let result = if method == "hexbot.files.read" && params["stream_media"] == true {
+        result.and_then(|mut info| {
+            if info.get("text").is_none() && info.get("data_url").is_none() {
+                let session = common::required(&params, "session_id")?;
+                let path = common::required(&info, "path")?;
+                let version = common::required(&info, "version")?;
+                info["media_path"] =
+                    json!(app.media.link(computer.1, &token, session, path, version)?);
+            }
+            Ok(info)
+        })
+    } else {
+        result
     };
     request.get("id")?;
     Some(match result {
@@ -1944,7 +2119,7 @@ async fn handle_request(
         Err(error) => json!({"jsonrpc":"2.0","id":id,"error":error.rpc_value()}),
     })
 }
-/// A phone's push token, for heartbeat messages. Only the calling device's own
+/// A phone's push token, for heartbeat messages and unread replies. Only the calling device's own
 /// row changes; a null token stops pushes to it.
 fn set_push(home: &std::path::Path, owner: &str, device: &str, p: &Value) -> Result<Value> {
     // Only a string sets it and only null clears it; anything else is a mistake.
@@ -1998,14 +2173,56 @@ async fn computer_view(
 ) -> Response {
     crate::computers::proxy(token, request).await
 }
-/// Frames on a daemon page may only load from the daemon. A bot's visual runs
-/// in a sandboxed frame (`/visual-frame.html`); this keeps its script from
+/// Frames on a daemon page may only load from the daemon, or a `blob:` the
+/// page made itself (a PDF opened beside the chat). A bot's visual runs in a
+/// sandboxed frame (`/visual-frame.html`); this keeps its script from
 /// navigating that frame to another site with data in the URL.
-async fn frame_policy(mut response: Response) -> Response {
-    response
-        .headers_mut()
+///
+/// Only the app's own pages run with the daemon's origin, and no other site
+/// may frame them. Everything else the daemon serves (the icon, bundle
+/// files, JSON, files) is sandboxed: opened as a page, as a bot driving a
+/// browser could, it has no origin, so its console can't use the owner's
+/// session (its requests carry `Origin: null` and no cookie). The computer
+/// viewer, behind its own short-lived token and framed by the apps, and PDFs,
+/// which run no script with the page's origin, are left as they are.
+async fn frame_policy(request: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let path = request.uri().path().to_owned();
+    let mut response = next.run(request).await;
+    let html = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("text/html"));
+    let pdf = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("application/pdf"));
+    let last = path.rsplit('/').next().unwrap_or("");
+    let app_page = html
+        && (matches!(path.as_str(), "/" | "/login")
+            || path.starts_with("/auth/")
+            || path.starts_with("/oauth/")
+            || !path.starts_with("/api/") && !path.starts_with("/hexbot/") && !last.contains('.'));
+    let headers = response.headers_mut();
+    headers
         .entry(axum::http::header::CONTENT_SECURITY_POLICY)
-        .or_insert(HeaderValue::from_static("frame-src 'self'"));
+        .or_insert(HeaderValue::from_static("frame-src 'self' blob:"));
+    let extra = if path == "/visual-frame.html" {
+        Some("sandbox allow-scripts")
+    } else if app_page {
+        Some("frame-ancestors 'self'")
+    } else if path.starts_with("/hexbot/computer/") || pdf {
+        None
+    } else {
+        Some("sandbox")
+    };
+    if let Some(extra) = extra {
+        headers.append(
+            axum::http::header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(extra),
+        );
+    }
     response
 }
 /// Vite names every file under `/assets/` by its content hash, so a browser
@@ -2046,7 +2263,9 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/api/daemon/identity", get(daemon_identity))
         .route("/auth/login", get(browser_login))
         .route("/auth/callback", get(browser_callback))
+        .route("/oauth/google", get(google_return))
         .route("/api/ws", get(upgrade))
+        .route("/api/media/{key}", get(media::serve))
         .route("/auth/password-login", post(login))
         .route("/api/auth/ws-ticket", post(ticket))
         .route("/hexbot/pair", post(pair))
@@ -2061,7 +2280,7 @@ pub fn router(app: Arc<App>) -> Router {
     }
     router
         .layer(axum::middleware::from_fn(immutable_assets))
-        .layer(axum::middleware::map_response(frame_policy))
+        .layer(axum::middleware::from_fn(frame_policy))
         .layer(DefaultBodyLimit::max(16 * 1024 * 1024))
         .layer(axum::middleware::from_fn_with_state(
             app.clone(),

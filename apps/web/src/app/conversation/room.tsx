@@ -1,13 +1,14 @@
 import { useNavigate, useParams } from '@tanstack/react-router'
 import { Info, Search } from 'lucide-react'
-import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { Avatar, useFaceColor } from '../../components/ui/avatar'
 import { RoomCluster } from '../../components/ui/room-cluster'
+import { ScrollArea } from '../../components/ui/scroll-area'
 import { SkeletonLines } from '../../components/ui/skeleton'
 import { StatusDot } from '../../components/ui/status-dot'
-import { Thinking } from '../../components/ui/thinking'
 import { roomsSend, roomsStop } from '../../lib/api'
+import { asksOf } from '../../lib/asks'
 import { botFace } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
 import { plainError } from '../../lib/plain-error'
@@ -15,6 +16,8 @@ import { useRoomOrLeave } from '../../lib/room-or-leave'
 import { useTurnCues } from '../../lib/sounds'
 import { toMillis } from '../../lib/time'
 import type { Bot, RoomEvent, RoomMember, RoomTurn } from '../../lib/types'
+import { useHeight } from '../../lib/use-height'
+import { phaseLabel } from '../../lib/work-label'
 import { useBots } from '../../stores/bots'
 import { connectorsActions } from '../../stores/connectors'
 import { useEmotion, useEmotions, useRoomFeelings } from '../../stores/emotions'
@@ -22,15 +25,18 @@ import { useMe } from '../../stores/me'
 import { roomFailure, roomStatus, useRooms } from '../../stores/rooms'
 import { useSearch } from '../../stores/search'
 import { useTranscripts } from '../../stores/transcripts'
+import { useUi } from '../../stores/ui'
 
-import { AskingRow, AskRows } from './asking-row'
+import { AskRows } from './asking-row'
 import { ClarifyCard } from './clarify-card'
 import { composerFieldClass, ComposerShell } from './composer'
+import { NotificationsBanner } from './notifications-banner'
 import { useSearchJump } from './search-jump'
 import { type Ask, liveMood } from './steps'
+import { TagScope } from './tags'
 import { DeliveryMark, NotSent, SEND_TIMEOUT_MS } from './unsent'
 import { WaitingBanner } from './waiting-banner'
-import { WorkStatus } from './work-status'
+import { StatusLine, WorkStatus } from './work-status'
 
 import {
   ApprovalCard,
@@ -62,16 +68,20 @@ interface Unsent {
 // Stable empty values: a fresh [] or {} per render re-renders forever.
 const NO_EVENTS: RoomEvent[] = []
 const NO_TURNS: Record<string, RoomTurn> = {}
+const NO_COMPLETING_ASKS: Record<string, Ask[]> = {}
 
 export const RoomEventRow = memo(function RoomEventRow({
   event,
   fresh = false,
-  latest = false
+  latest = false,
+  showAsks = true
 }: {
   event: RoomEvent
   fresh?: boolean
   /** The bot's latest message in the room: its face shows what the bot feels. */
   latest?: boolean
+  /** False when RoomConversation lifts AskRows into the shared turn list to keep row identity. */
+  showAsks?: boolean
 }) {
   const bot = useBots(state => (event.actor_id ? state.byName[event.actor_id] : undefined))
   const emotion = useEmotion(latest ? event.actor_id : undefined)
@@ -96,7 +106,14 @@ export const RoomEventRow = memo(function RoomEventRow({
 
   const botName = useBots(state => (memberId ? state.byName[memberId]?.display_name : undefined))
 
+  // Someone in a Discord channel is named as Discord showed them.
+  const discordName =
+    event.actor_kind === 'discord' && typeof event.payload.author?.name === 'string'
+      ? event.payload.author.name
+      : undefined
+
   const member =
+    discordName ??
     (me && memberKind === 'human' && memberId === me.id ? me.display_name : undefined) ??
     (memberKind === 'bot' ? botName : undefined) ??
     memberName ??
@@ -165,13 +182,17 @@ export const RoomEventRow = memo(function RoomEventRow({
 
   // Your messages are the right-hand bubble; other people speak like the bots.
   // Without user accounts (or before you are known) every message is yours.
-  const mine = event.kind === 'message.user' && (!me || event.actor_id === me.id)
+  const mine =
+    event.kind === 'message.user' &&
+    event.actor_kind !== 'discord' &&
+    (!me || event.actor_id === me.id)
+
   const name = member
   // The teammates this bot asked during its turn, kept with its reply.
   const asked = event.kind === 'message.bot' ? storedAsks(event.payload.asks) : []
 
   return (
-    <>
+    <TagScope speaker={said ? (event.actor_id ?? null) : null}>
       <article
         className={`flex gap-2 py-1 ${mine ? 'flex-row-reverse' : ''}`}
         data-testid="room-event"
@@ -206,12 +227,14 @@ export const RoomEventRow = memo(function RoomEventRow({
           </div>
         </div>
       </article>
-      {asked.length ? <AskRows asks={asked} sender={event.actor_id ?? null} /> : null}
-    </>
+      {showAsks && asked.length ? (
+        <AskRows asks={asked} fresh={false} sender={event.actor_id ?? null} />
+      ) : null}
+    </TagScope>
   )
 })
 
-/** A finished turn's asks from its `message.bot` payload: `[{to, section_id}]`. */
+/** A finished turn's asks from its `message.bot` payload: `[{to, section_id, waited?, failed?}]`. */
 function storedAsks(value: unknown): Ask[] {
   return Array.isArray(value)
     ? value.flatMap(item =>
@@ -219,8 +242,9 @@ function storedAsks(value: unknown): Ask[] {
           ? [
               {
                 sectionId: typeof item.section_id === 'string' ? item.section_id : null,
-                sent: false,
-                status: 'ok' as const,
+                sent: item.waited === 0 || item.waited === false,
+                status:
+                  item.failed === 1 || item.failed === true ? ('error' as const) : ('ok' as const),
                 target: item.to
               }
             ]
@@ -266,12 +290,12 @@ export function RoomMentionPopover({
 
   return (
     <div
-      className="hex-bubble absolute bottom-full left-14 mb-1 min-w-52 rounded-panel border border-border bg-surface p-1 shadow-popup"
+      className="hex-glass-strong hex-menu-in absolute bottom-full left-14 mb-1 min-w-52 rounded-[14px] p-1"
       role="listbox"
     >
       {suggestions.map(member => (
         <button
-          className="block w-full rounded-control px-3 py-2 text-left text-[length:var(--text-secondary)] hover:bg-surface-2"
+          className="block w-full rounded-[10px] px-3 py-2 text-left text-[length:var(--text-secondary)] hover:bg-foreground/[0.06]"
           key={member.member_id}
           onClick={() => onSelect(member.member_id)}
           type="button"
@@ -295,6 +319,7 @@ export function RoomConversation() {
   const events = useRooms(state => state.eventsByRoom[roomId] ?? NO_EVENTS)
   const loaded = useRooms(state => roomId in state.eventsByRoom)
   const turns = useRooms(state => state.liveTurnsByRoom[roomId] ?? NO_TURNS)
+  const completingAsks = useRooms(state => state.completingAsksByRoom[roomId] ?? NO_COMPLETING_ASKS)
   const transcripts = useTranscripts(state => state.bySession)
   const bots = useBots(state => state.byName)
   const [text, setText] = useState('')
@@ -309,6 +334,7 @@ export function RoomConversation() {
   const bottom = useRef<HTMLDivElement>(null)
   const viewport = useRef<HTMLDivElement>(null)
   const atBottom = useRef(true)
+  const [composerBox, composerHeight] = useHeight<HTMLDivElement>()
   const earlierAnchor = useRef<{ height: number; top: number } | null>(null)
   // Keep the first shown event while live events append, so reading older messages stays put.
   const [historyWindow, setWindow] = useState({ room: roomId, first: events.at(-60)?.seq })
@@ -380,18 +406,20 @@ export function RoomConversation() {
 
   // Presence, not the room object: every read mark stores a fresh room.
   const present = Boolean(room)
+  // Hidden behind a clicked bot's loading face or a full-view thread, the room is not being read.
+  const hidden = useUi(state => state.openingBot !== null || state.thread !== null)
   useEffect(() => {
     const seq = events.at(-1)?.seq
 
-    if (seq && present) {
+    if (seq && present && !hidden) {
       void useRooms.getState().markRead(roomId, seq)
     }
-  }, [events, present, roomId])
+  }, [events, hidden, present, roomId])
   useEffect(() => {
     if (atBottom.current) {
       void bottom.current?.scrollIntoView({ block: 'end' })
     }
-  }, [events, transcripts, unsent])
+  }, [composerHeight, events, transcripts, unsent])
 
   const members = useMemo(
     () => room?.members.filter(member => member.member_kind === 'bot' && !member.left_at) ?? [],
@@ -568,6 +596,23 @@ export function RoomConversation() {
     void deliver(item)
   }
 
+  // Index each bot's settled messages across the full log so a live turn's AskRows
+  // shares the exact React key with the settled message.bot row that replaces it.
+  const { botMessageTotal, turnIndexBySeq } = useMemo(() => {
+    const counts: Record<string, number> = {}
+    const bySeq = new Map<number, number>()
+
+    for (const event of events) {
+      if (event.kind === 'message.bot' && event.actor_id) {
+        const index = counts[event.actor_id] ?? 0
+        bySeq.set(event.seq, index)
+        counts[event.actor_id] = index + 1
+      }
+    }
+
+    return { botMessageTotal: counts, turnIndexBySeq: bySeq }
+  }, [events])
+
   if (!room) {
     return (
       <div className="grid h-full place-content-center">
@@ -577,129 +622,222 @@ export function RoomConversation() {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-background">
-      <header className="hex-drag relative flex h-14 shrink-0 items-center justify-center px-14">
-        <div className="hex-glass hex-no-drag flex h-9 min-w-0 items-center gap-2 rounded-full pr-4 pl-1.5">
-          <RoomCluster bots={bots} room={room} size="sm" status={status} />
-          <h2 className="truncate text-[length:var(--text-secondary)] font-semibold">
-            {room.name}
-          </h2>
-          <span className="shrink-0 text-[length:var(--text-secondary)] text-muted">
-            {members.length} bot{members.length === 1 ? '' : 's'}
-          </span>
-        </div>
-        <div className="hex-no-drag absolute top-2.5 right-3 flex items-center gap-1.5">
-          {searching ? null : (
-            <button
-              aria-label="Search this room"
-              className="hex-glass hex-glass-press hex-focus hex-fade grid size-9 place-items-center rounded-full text-foreground/70 hover:text-foreground"
-              onClick={() => setSearching(true)}
-              title="Search"
-              type="button"
+    <div className="h-full min-h-0 bg-background">
+      {/* The room runs under its floating header and composer, as a bot's chat does. */}
+      <ScrollArea
+        bottom={
+          <div className="mx-auto max-w-[52rem] px-1" data-testid="room-composer" ref={composerBox}>
+            <ComposerShell
+              above={
+                mention === undefined || room.discord ? null : (
+                  <RoomMentionPopover
+                    bots={bots}
+                    members={members}
+                    onSelect={name => setText(value => value.replace(/@([\w-]*)$/, `@${name} `))}
+                    query={mention}
+                  />
+                )
+              }
+              canSend={!room.discord && Boolean(text.trim())}
+              notice={status === 'stopped' && failure ? plainError(failure) : null}
+              onSend={room.discord ? undefined : send}
+              onStop={() => void roomsStop(roomId)}
+              status={status}
+              streaming={streaming}
             >
-              <Search size={16} />
-            </button>
-          )}
-          <button
-            aria-label="Room settings"
-            className="hex-glass hex-glass-press hex-focus grid size-9 place-items-center rounded-full text-foreground/70 hover:text-foreground"
-            onClick={() => void navigate({ params: { room: roomId }, to: '/r/$room/settings' })}
-            type="button"
-          >
-            <Info size={16} />
-          </button>
-        </div>
-      </header>
-      <ConnectedToolsNotice sectionId={`room:${roomId}`} />
-      {status === 'needs_you' ? (
-        <div className="shrink-0 pb-1">
-          <WaitingBanner name={waitingBot(events, bots, room.members)} />
-        </div>
-      ) : null}
-      <div
-        className="min-h-0 flex-1 overflow-y-auto"
+              {room.discord ? (
+                <p
+                  className="flex min-h-[30px] items-center gap-3 py-1 text-[length:var(--text-secondary)] text-muted"
+                  data-testid="room-discord"
+                >
+                  <span className="min-w-0 flex-1 truncate">
+                    This room is in Discord. Reply there.
+                  </span>
+                  <a
+                    className="shrink-0 font-medium text-foreground underline-offset-2 hover:underline"
+                    href={room.discord.url}
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    Open in Discord
+                  </a>
+                </p>
+              ) : (
+                <textarea
+                  aria-label="Message room"
+                  className={composerFieldClass}
+                  onChange={event => setText(event.target.value)}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter' && !event.shiftKey) {
+                      event.preventDefault()
+                      send()
+                    }
+                  }}
+                  placeholder={`Message ${room.name}`}
+                  rows={1}
+                  value={text}
+                />
+              )}
+            </ComposerShell>
+          </div>
+        }
+        className="h-full"
         onScroll={event => {
           const node = event.currentTarget
           atBottom.current = node.scrollHeight - node.scrollTop - node.clientHeight < 80
         }}
-        ref={viewport}
+        top={
+          <>
+            <header className="flex flex-col items-center gap-2 pt-2.5 pr-[max(6rem,calc(var(--hex-overlay,0px)+1rem))] pl-[max(1rem,calc(6rem-var(--hex-overlay,0px)))] max-[700px]:pl-[max(3.5rem,calc(6rem-var(--hex-overlay,0px)))] transition-[padding] duration-[var(--hex-motion-panel)] ease-[var(--hex-ease-out)]">
+              <div className="hex-glass flex h-9 max-w-[min(100%,30rem)] min-w-0 items-center gap-2 rounded-full pr-4 pl-1.5">
+                <RoomCluster bots={bots} room={room} size="sm" status={status} />
+                <h2 className="truncate text-[length:var(--text-secondary)] font-semibold">
+                  {room.name}
+                </h2>
+                <span className="shrink-0 text-[length:var(--text-secondary)] text-muted">
+                  {members.length} bot{members.length === 1 ? '' : 's'}
+                </span>
+              </div>
+              {status === 'needs_you' ? (
+                <WaitingBanner name={waitingBot(events, bots, room.members)} />
+              ) : null}
+              <ConnectedToolsNotice sectionId={`room:${roomId}`} />
+              <NotificationsBanner />
+            </header>
+            <div className="absolute top-2.5 right-3 flex items-center gap-1.5">
+              {searching ? null : (
+                <button
+                  aria-label="Search this room"
+                  className="hex-glass hex-glass-press hex-focus hex-fade grid size-9 place-items-center rounded-full text-foreground/70 hover:text-foreground"
+                  onClick={() => setSearching(true)}
+                  title="Search"
+                  type="button"
+                >
+                  <Search size={16} />
+                </button>
+              )}
+              <button
+                aria-label="Room settings"
+                className="hex-glass hex-glass-press hex-focus grid size-9 place-items-center rounded-full text-foreground/70 hover:text-foreground"
+                onClick={() => void navigate({ params: { room: roomId }, to: '/r/$room/settings' })}
+                type="button"
+              >
+                <Info size={16} />
+              </button>
+            </div>
+          </>
+        }
+        viewportRef={viewport}
       >
         <div className={transcriptClass}>
           {start > 0 ? <LoadEarlierMessages onClick={loadEarlier} /> : null}
-          {shown.map((event, index) => {
-            const previous = shown[index - 1]
+          {[
+            ...shown.flatMap((event, index) => {
+              const previous = shown[index - 1]
 
-            const separator = separates(
-              previous && toMillis(previous.created_at),
-              toMillis(event.created_at)
-            )
+              const separator = separates(
+                previous && toMillis(previous.created_at),
+                toMillis(event.created_at)
+              )
 
-            return (
-              <div key={event.seq}>
-                {separator ? <DaySeparator time={event.created_at} /> : null}
-                <div data-search-id={event.seq}>
-                  <RoomEventRow
-                    event={event}
-                    fresh={toMillis(event.created_at) > openedAt}
-                    latest={event.actor_id ? latestByBot[event.actor_id] === event.seq : false}
-                  />
-                </div>
-              </div>
-            )
-          })}
-          {unsentHere.map(item => (
-            <article
-              className="flex flex-col items-end gap-1 py-1"
-              data-testid="room-unsent"
-              key={item.id}
-            >
-              <div className="flex max-w-[80%] flex-row-reverse gap-1">
-                <div
-                  className={cn('min-w-0 max-w-full', item.delivery === 'sending' && 'hex-pending')}
-                >
-                  <div className={cn(userBubbleClass, 'hex-message hex-message-mine')}>
-                    <div className="hex-prose">
-                      <Markdown text={item.text} />
+              const asked = event.kind === 'message.bot' ? storedAsks(event.payload.asks) : []
+              const turnIndex = turnIndexBySeq.get(event.seq) ?? event.seq
+
+              return [
+                <div key={`event:${event.seq}`}>
+                  {separator ? <DaySeparator time={event.created_at} /> : null}
+                  <div data-search-id={event.seq}>
+                    <RoomEventRow
+                      event={event}
+                      fresh={toMillis(event.created_at) > openedAt}
+                      latest={event.actor_id ? latestByBot[event.actor_id] === event.seq : false}
+                      showAsks={false}
+                    />
+                  </div>
+                </div>,
+                ...(asked.length
+                  ? [
+                      <AskRows
+                        asks={asked}
+                        fresh={false}
+                        key={`ask:${event.actor_id ?? 'bot'}:${turnIndex}`}
+                        sender={event.actor_id ?? null}
+                      />
+                    ]
+                  : [])
+              ]
+            }),
+            ...unsentHere.map(item => (
+              <article
+                className="flex flex-col items-end gap-1 py-1"
+                data-testid="room-unsent"
+                key={`unsent:${item.id}`}
+              >
+                <div className="flex max-w-[80%] flex-row-reverse gap-1">
+                  <div
+                    className={cn(
+                      'min-w-0 max-w-full',
+                      item.delivery === 'sending' && 'hex-pending'
+                    )}
+                  >
+                    <div className={cn(userBubbleClass, 'hex-message hex-message-mine')}>
+                      <div className="hex-prose">
+                        <Markdown text={item.text} />
+                      </div>
                     </div>
                   </div>
+                  <DeliveryMark
+                    delivery={item.delivery}
+                    onRetry={item.delivery === 'failed' ? () => void deliver(item) : undefined}
+                  />
                 </div>
-                <DeliveryMark
-                  delivery={item.delivery}
-                  onRetry={item.delivery === 'failed' ? () => void deliver(item) : undefined}
-                />
-              </div>
-              {item.delivery === 'failed' ? (
-                <NotSent label="Not sent" onRetry={() => void deliver(item)} reason={item.reason} />
-              ) : null}
-            </article>
-          ))}
-          {Object.values(turns).map(turn => {
-            const transcript = turn.live_session_id ? transcripts[turn.live_session_id] : undefined
-            const message = transcript?.messages.at(-1)
-            const bot = bots[turn.bot]
+                {item.delivery === 'failed' ? (
+                  <NotSent
+                    label="Not sent"
+                    onRetry={() => void deliver(item)}
+                    reason={item.reason}
+                  />
+                ) : null}
+              </article>
+            )),
+            ...Object.values(turns).flatMap(turn => {
+              const transcript = turn.live_session_id
+                ? transcripts[turn.live_session_id]
+                : undefined
 
-            const name =
-              bot?.display_name ??
-              room.members.find(
-                member => member.member_kind === 'bot' && member.member_id === turn.bot
-              )?.display_name ??
-              turn.bot
+              const message = transcript?.messages.at(-1)
+              const bot = bots[turn.bot]
 
-            // Members see the bot wait while the owner answers an approval or
-            // question; the daemon writes the text ("Waiting for Alice").
-            const waiting = transcript?.status?.kind === 'waiting' ? transcript.status.text : ''
-            // Only the owner receives the cards; answered or expired ones leave.
-            const approvals = transcript?.approvals.filter(approval => !approval.decision) ?? []
+              const name =
+                bot?.display_name ??
+                room.members.find(
+                  member => member.member_kind === 'bot' && member.member_id === turn.bot
+                )?.display_name ??
+                turn.bot
 
-            const clarifies =
-              transcript?.clarifies.filter(
-                clarify =>
-                  !clarify.expired && Object.keys(clarify.answers).length < clarify.questions.length
-              ) ?? []
+              // Members see the bot wait while the owner answers an approval or
+              // question; the daemon writes the text ("Waiting for Alice").
+              const waiting = transcript?.status?.kind === 'waiting' ? transcript.status.text : ''
+              // Only the owner receives the cards; answered or expired ones leave.
+              const approvals = transcript?.approvals.filter(approval => !approval.decision) ?? []
 
-            return (
-              <Fragment key={turn.bot}>
-                <article className="flex gap-2 py-1" data-testid="room-event">
+              const clarifies =
+                transcript?.clarifies.filter(
+                  clarify =>
+                    !clarify.expired &&
+                    Object.keys(clarify.answers).length < clarify.questions.length
+                ) ?? []
+
+              // Keep asks from every assistant message in the live turn so an approval or
+              // clarify split mid-turn never drops and remounts the ask pill.
+              const liveAsks = asksOf((transcript?.messages ?? []).flatMap(item => item.toolCalls))
+
+              return [
+                <article
+                  className="flex gap-2 py-1"
+                  data-testid="room-event"
+                  key={`turn:${turn.bot}`}
+                >
                   <span className="relative mt-1 shrink-0">
                     <Avatar
                       {...botFace(bot)}
@@ -726,62 +864,46 @@ export function RoomConversation() {
                     {message ? (
                       <WorkStatus checking={transcript?.checking} message={message} name={name} />
                     ) : (
-                      <Thinking name={name} />
+                      <StatusLine label={phaseLabel('thinking')} name={name} />
                     )}
                   </div>
-                </article>
-                {message ? <AskingRow message={message} sender={turn.bot} /> : null}
-                {clarifies.map(clarify => (
-                  <CardRow bot={bot} key={clarify.requestId}>
+                </article>,
+                ...(liveAsks.length
+                  ? [
+                      <AskRows
+                        asks={liveAsks}
+                        fresh
+                        key={`ask:${turn.bot}:${botMessageTotal[turn.bot] ?? 0}`}
+                        sender={turn.bot}
+                      />
+                    ]
+                  : []),
+                ...clarifies.map(clarify => (
+                  <CardRow bot={bot} key={`clarify:${clarify.requestId}`}>
                     <ClarifyCard bot={bot} clarify={clarify} />
                   </CardRow>
-                ))}
-                {approvals.map(approval => (
-                  <CardRow bot={bot} key={approval.requestId}>
+                )),
+                ...approvals.map(approval => (
+                  <CardRow bot={bot} key={`approval:${approval.requestId}`}>
                     <ApprovalCard approval={approval} />
                   </CardRow>
-                ))}
-              </Fragment>
-            )
-          })}
+                ))
+              ]
+            }),
+            ...Object.entries(completingAsks)
+              .filter(([bot]) => !(bot in turns))
+              .map(([bot, held]) => (
+                <AskRows
+                  asks={held}
+                  fresh={false}
+                  key={`ask:${bot}:${botMessageTotal[bot] ?? 0}`}
+                  sender={bot}
+                />
+              ))
+          ]}
           <div ref={bottom} />
         </div>
-      </div>
-      <div data-testid="room-composer">
-        <ComposerShell
-          above={
-            mention === undefined ? null : (
-              <RoomMentionPopover
-                bots={bots}
-                members={members}
-                onSelect={name => setText(value => value.replace(/@([\w-]*)$/, `@${name} `))}
-                query={mention}
-              />
-            )
-          }
-          canSend={Boolean(text.trim())}
-          notice={status === 'stopped' && failure ? plainError(failure) : null}
-          onSend={send}
-          onStop={() => void roomsStop(roomId)}
-          status={status}
-          streaming={streaming}
-        >
-          <textarea
-            aria-label="Message room"
-            className={composerFieldClass}
-            onChange={event => setText(event.target.value)}
-            onKeyDown={event => {
-              if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault()
-                send()
-              }
-            }}
-            placeholder={`Message ${room.name}`}
-            rows={1}
-            value={text}
-          />
-        </ComposerShell>
-      </div>
+      </ScrollArea>
     </div>
   )
 }

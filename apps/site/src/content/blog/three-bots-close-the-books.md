@@ -55,4 +55,4 @@ A few honest notes. The bots ran on GLM 5.3 through OpenCode Go. We turned appro
 
 ![The Studio room with Ledger's table and Scout's check.](/screens/room.webp)
 
-Want to try it yourself? Hexbot is in [nightly early access](/blog/nightly-early-access/) for Mac and Linux.
+Want to try it yourself? Hexbot is in [nightly early access](/blog/nightly-early-access/) for Mac, Linux, and 64-bit Windows.

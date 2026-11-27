@@ -122,6 +122,34 @@ fn reviewed_request(id: &str) -> Value {
 }
 
 #[tokio::test]
+async fn waiting_in_a_thread_names_the_bot_that_asked() {
+    let (home, runtime, hub) = setup();
+    install_stop_pi(home.path());
+    db::open(home.path())
+        .unwrap()
+        .execute_batch(
+            "UPDATE bots SET approval_mode='manual'; UPDATE sections SET peer_bot='fox' WHERE id='first'",
+        )
+        .unwrap();
+    let id = open(&runtime).await;
+    let mut events = hub.subscribe();
+    runtime
+        .call_inner(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":id,"text":"late-dialogs"}),
+        )
+        .await
+        .unwrap();
+    stop_event(&mut events, |event| event["type"] == "approval.request").await;
+    let status = runtime.status_for_bot("alice", "owl").unwrap();
+    assert_eq!(status["status"], "needs_you");
+    assert_eq!(status["status_detail"]["section_id"], "first");
+    assert_eq!(status["status_detail"]["peer_bot"], "fox");
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
 async fn stopping_cancels_late_approvals_and_questions_before_abort_finishes() {
     let (home, runtime, hub) = setup();
     install_stop_pi(home.path());
@@ -357,11 +385,14 @@ async fn stopping_cancels_an_inflight_auto_review_without_a_fallback_card() {
     socket.write_all(b"finish\n").await.unwrap();
     let card = stop_event(&mut events, |event| event["type"] == "approval.request").await;
     assert_eq!(card["payload"]["request_id"], "fresh-review");
-    assert_eq!(card["payload"]["choices"], json!(["once", "deny"]));
+    assert_eq!(
+        card["payload"]["choices"],
+        json!(["once", "always", "deny"])
+    );
     runtime.shutdown().await;
 }
 
-// Pi 1.0.1 queues follow-ups while streaming, retains them on abort, and
+// Pi 1.5.2 queues follow-ups while streaming, retains them on abort, and
 // starts a fresh run for a prompt received while idle. stop-queue.test.mjs
 // checks this contract against the pinned package with a local provider.
 fn install_queue_pi(home: &Path, idle_before_settled: bool) {
@@ -376,12 +407,14 @@ const emit = event => process.stdout.write(JSON.stringify(event) + '\n');
 const status = text => emit({type:'extension_ui_request', method:'setStatus', statusText:text});
 const response = (c, data = {}) => emit({type:'response', id:c.id, command:c.type, success:true, data});
 const idleBeforeSettled = JSON.parse(fs.readFileSync(__dirname + '/idle-before-settled'));
+// Some aborts end in an error message instead, such as "This operation was aborted".
+const abortError = fs.existsSync(__dirname + '/abort-error') ? fs.readFileSync(__dirname + '/abort-error', 'utf8') : null;
 let active = false, abort;
 const queue = [], steering = [];
 const delivered = text => emit({type:'message_end', message:{role:'user', content:text}});
 const finishAbort = () => {
   active = false;
-  emit({type:'message_end', message:{role:'assistant', content:[], stopReason:'aborted'}});
+  emit({type:'message_end', message:abortError ? {role:'assistant', content:[], stopReason:'error', errorMessage:abortError} : {role:'assistant', content:[], stopReason:'aborted'}});
   if (!idleBeforeSettled) emit({type:'agent_settled'});
   response(abort);
   abort = undefined;
@@ -730,7 +763,7 @@ async fn stop_never_cancels_again_a_late_dialog_its_task_already_answered() {
 }
 
 // Control command replies independently of run events. Idle abort and manual
-// compaction do not produce agent_settled in Pi 1.0.1.
+// compaction do not produce agent_settled in Pi 1.5.2.
 fn install_stop_lifecycle_pi(home: &Path) {
     fs::write(home.join("pi.cjs"), r#"#!/usr/bin/env node
 const fs = require('node:fs');
@@ -1286,5 +1319,204 @@ async fn abort_admission_error_releases_stop_and_rejects_waiting_results() {
         runtime.interrupt(&s, DEADLINE).await.unwrap_err().code,
         4001
     );
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_stopped_run_ends_interrupted_without_a_failure_whatever_its_abort_says() {
+    let (home, runtime, hub) = setup();
+    install_queue_pi(home.path(), false);
+    fs::write(
+        home.path().join("abort-error"),
+        "This operation was aborted",
+    )
+    .unwrap();
+    let id = open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    let mut events = hub.subscribe();
+    runtime
+        .call_inner(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":id,"text":"wait"}),
+        )
+        .await
+        .unwrap();
+    stop_event(&mut events, |event| {
+        event["payload"]["text"] == "projected wait"
+    })
+    .await;
+    // Stop, or a deadline running out, aborts the run; Pi ends it with an error.
+    let stopping = start_stop(&runtime, &id);
+    stop_event(&mut events, |event| {
+        event["payload"]["text"] == "abort waiting"
+    })
+    .await;
+    Runtime::command(&s, json!({"type":"release_abort"}))
+        .await
+        .unwrap();
+    let cut = stop_event(&mut events, |event| event["type"] == "message.complete").await;
+    assert_eq!(cut["payload"]["error"], "The turn was interrupted", "{cut}");
+    tokio::time::timeout(EVENT_WAIT, stopping)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    // Nothing failed, so the bot's dot does not turn red.
+    let incidents: i64 = db::open(home.path())
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM bot_incidents WHERE bot='owl'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(incidents, 0);
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_message_sent_with_interrupt_stops_the_reply_and_starts_a_fresh_run() {
+    let (home, runtime, hub) = setup();
+    install_queue_pi(home.path(), false);
+    let id = open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    let mut events = hub.subscribe();
+    runtime
+        .call_inner(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":id,"text":"wait"}),
+        )
+        .await
+        .unwrap();
+    stop_event(&mut events, |event| {
+        event["payload"]["text"] == "projected wait"
+    })
+    .await;
+
+    // Without interrupt, a second message is still refused while it works.
+    let refused = runtime
+        .call_inner(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":id,"text":"too early"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, 4002);
+    // A message that would be refused anyway leaves the reply running.
+    let refused = runtime
+        .call_inner(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":id,"text":"see file","attachments":["gone"],"interrupt":true}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, 4204);
+    let refused = runtime
+        .call_inner(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":id,"text":"/compact","interrupt":true}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, 4002);
+    let commands = fs::read_to_string(home.path().join("commands.jsonl")).unwrap();
+    assert!(!commands.contains("\"type\":\"abort\""), "{commands}");
+    assert!(!s.state.lock().unwrap().superseded);
+
+    let sending = {
+        let (runtime, id) = (runtime.clone(), id.clone());
+        tokio::spawn(async move {
+            runtime
+                .call_inner(
+                    "alice",
+                    "prompt.submit",
+                    &json!({"session_id":id,"text":"change of plan","interrupt":true}),
+                )
+                .await
+        })
+    };
+    // Pi holds the abort until released; the message waits for it.
+    stop_event(&mut events, |event| {
+        event["payload"]["text"] == "abort waiting"
+    })
+    .await;
+    let early = fs::read_to_string(home.path().join("commands.jsonl")).unwrap();
+    assert!(!early.contains("change of plan"), "{early}");
+    Runtime::command(&s, json!({"type":"release_abort"}))
+        .await
+        .unwrap();
+    // The owner moved on: the cut-off reply ends without an error to retry.
+    let cut = stop_event(&mut events, |event| event["type"] == "message.complete").await;
+    assert_eq!(cut["payload"]["status"], "complete", "{cut}");
+    assert!(cut["payload"]["error"].is_null(), "{cut}");
+    let reply = tokio::time::timeout(EVENT_WAIT, sending)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(reply["status"], "submitted");
+    stop_event(&mut events, |event| {
+        event["payload"]["text"] == "projected change of plan"
+    })
+    .await;
+    let commands = fs::read_to_string(home.path().join("commands.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    let abort = commands
+        .iter()
+        .position(|command| command["c"]["type"] == "abort")
+        .expect("the running reply is stopped");
+    let sent = commands
+        .iter()
+        .position(|command| command["c"]["message"] == "change of plan")
+        .unwrap();
+    assert!(abort < sent, "Stop comes before the new message");
+    assert_eq!(
+        commands[sent]["active"], false,
+        "the message starts a new run"
+    );
+    assert!(s.state.lock().unwrap().busy);
+    assert!(!s.state.lock().unwrap().interrupted);
+
+    Runtime::command(&s, json!({"type":"finish_run"}))
+        .await
+        .unwrap();
+    stop_event(&mut events, |event| {
+        event["type"] == "message.complete" && event["payload"]["text"] == "finished"
+    })
+    .await;
+    let history = store::history(home.path(), "first").unwrap();
+    let users = history
+        .iter()
+        .filter(|row| row["role"] == "user")
+        .map(|row| row["text"].as_str().unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert_eq!(users, ["wait", "change of plan"]);
+
+    // Idle, interrupt stops nothing and sends as usual.
+    runtime
+        .call_inner(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":id,"text":"while idle","interrupt":true}),
+        )
+        .await
+        .unwrap();
+    stop_event(&mut events, |event| {
+        event["payload"]["text"] == "projected while idle"
+    })
+    .await;
+    let aborts = fs::read_to_string(home.path().join("commands.jsonl"))
+        .unwrap()
+        .matches("\"type\":\"abort\"")
+        .count();
+    assert_eq!(aborts, 1);
     runtime.shutdown().await;
 }

@@ -258,6 +258,33 @@ fn defaults_and_settings_are_persisted_and_access_controlled() {
 }
 
 #[test]
+fn the_review_model_is_chosen_cleared_and_forgotten_with_its_provider() {
+    let home = setup();
+    // Unset, Auto reviews run on each bot's own model.
+    assert!(settings::get(home.path()).unwrap()["review_model"].is_null());
+    let patch = json!({"review_model":"openai/small","fallback_model":"anthropic/backup"});
+    let saved = settings::update(home.path(), "alice", &patch).unwrap();
+    assert_eq!(saved["review_model"], "openai/small");
+    // Removing another provider leaves it; removing its own clears it.
+    assert!(settings::forget_provider(home.path(), "alice", "anthropic").unwrap());
+    let kept = settings::get(home.path()).unwrap();
+    assert_eq!(kept["review_model"], "openai/small");
+    assert!(kept["fallback_model"].is_null());
+    assert!(settings::forget_provider(home.path(), "alice", "openai").unwrap());
+    assert!(settings::get(home.path()).unwrap()["review_model"].is_null());
+    assert!(!settings::forget_provider(home.path(), "alice", "openai").unwrap());
+    // The user can clear it too.
+    settings::update(
+        home.path(),
+        "alice",
+        &json!({"review_model":"openai/small"}),
+    )
+    .unwrap();
+    let cleared = settings::update(home.path(), "alice", &json!({"review_model":null})).unwrap();
+    assert!(cleared["review_model"].is_null());
+}
+
+#[test]
 fn invalid_patches_never_partially_change_settings_or_profiles() {
     let home = setup();
     let initial = settings::get(home.path()).unwrap();
@@ -272,6 +299,10 @@ fn invalid_patches_never_partially_change_settings_or_profiles() {
         json!({"bot_daily_token_budget":-1}),
         json!({"room_budget_tokens_per_human_turn":1.2}),
         json!({"default_model":"bad"}),
+        json!({"review_model":"bad"}),
+        json!({"review_model":true}),
+        json!({"review_model":"openai/"}),
+        json!({"review_model":"/small"}),
         json!({"workspace_dir":[]}),
     ] {
         assert!(
@@ -594,4 +625,151 @@ fn yaml_lists_can_empty_and_refill_beside_other_lists() {
             desired
         );
     }
+}
+
+#[test]
+fn usage_report_buckets_by_the_clients_edges_and_names_the_place() {
+    let home = setup();
+    db::open(home.path())
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO sections(id,bot,owner_id,peer_bot) VALUES ('t','owl','alice','fox');
+             INSERT INTO rooms(id,name,owner_id) VALUES ('room','Room','alice');
+             INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES ('room','owl','room-s');",
+        )
+        .unwrap();
+    let conn = hexbot_core::runtime_store::open(home.path()).unwrap();
+    let hour = 3600.0;
+    // Three local days; the middle one is 23 hours long, as on a daylight-saving change.
+    let start = 1_000_000.0;
+    let edges = [
+        start,
+        start + 24.0 * hour,
+        start + 47.0 * hour,
+        start + 71.0 * hour,
+    ];
+    let in_middle = start + 46.5 * hour;
+    let rows = [
+        ("a", start + 1.0, 0.5),
+        ("a", in_middle, 0.25),
+        ("t", start + 1.0, 1.0),
+        ("room-s", start + 1.0, 1.0),
+        ("cron-job-1", start + 1.0, 1.0),
+        ("child-1", start + 1.0, 1.0),
+        ("heartbeat-owl-1", start + 1.0, 1.0),
+        ("dream-1", start + 1.0, 1.0),
+        ("gone", start + 1.0, 1.0),
+        // An hour into the third day, which the middle day's 23 hours end before.
+        ("a", start + 48.0 * hour, 2.0),
+        // Before the window, counted as the previous period.
+        ("a", start - hour, 4.0),
+        // At the end edge, outside the window.
+        ("a", start + 71.0 * hour, 8.0),
+    ];
+    for (session, at, cost) in rows {
+        conn.execute(
+            "INSERT INTO native_usage(session_id,owner_id,bot,model,provider,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,cost,timestamp) VALUES(?,'alice','owl','m','p',10,2,30,1,?,?)",
+            rusqlite::params![session, cost, at],
+        )
+        .unwrap();
+    }
+    // Someone else's usage never shows.
+    conn.execute(
+        "INSERT INTO native_usage(session_id,owner_id,bot,model,provider,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,cost,timestamp) VALUES('c','bob','fox','m','p',1,1,0,0,9,?)",
+        [start + 1.0],
+    )
+    .unwrap();
+    // A copied conversation's zeroed copies of earlier calls, in the window and before
+    // it, are not calls; a real call that reported no usage is, even once copied.
+    for (session, at) in [
+        ("copy", start + 1.0),
+        ("copy", start - hour),
+        ("free", start + 2.0),
+        ("copy", start + 2.0),
+    ] {
+        conn.execute(
+            "INSERT INTO native_usage(session_id,owner_id,bot,model,provider,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,cost,timestamp) VALUES(?,'alice','owl','m','p',0,0,0,0,0,?)",
+            rusqlite::params![session, at],
+        )
+        .unwrap();
+    }
+    let report = settings::report(home.path(), "alice", &json!({ "edges": edges })).unwrap();
+    assert_eq!(report["since"], start);
+    assert_eq!(report["until"], edges[3]);
+    let rows = report["rows"].as_array().unwrap();
+    let place = |p: &str| {
+        rows.iter()
+            .filter(|r| r["place"] == p)
+            .map(|r| r["calls"].as_i64().unwrap())
+            .sum::<i64>()
+    };
+    for (name, calls) in [
+        ("chat", 3),
+        ("thread", 1),
+        ("room", 1),
+        ("job", 1),
+        ("subagent", 1),
+        ("heartbeat", 1),
+        ("dream", 1),
+        ("other", 2),
+    ] {
+        assert_eq!(place(name), calls, "{name}");
+    }
+    assert!(rows.iter().all(|r| r["bot"] == "owl"));
+    let chat_days = rows
+        .iter()
+        .filter(|r| r["place"] == "chat")
+        .map(|r| r["t"].as_f64().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(chat_days, edges[..3].to_vec());
+    let first = rows.iter().find(|r| r["place"] == "thread").unwrap();
+    assert_eq!(first["input"], 10);
+    assert_eq!(first["cache_read"], 30);
+    assert_eq!(first["cache_write"], 1);
+    assert_eq!(first["output"], 2);
+    assert_eq!(report["previous"]["calls"], 1);
+    assert_eq!(report["previous"]["tokens"], 43);
+    assert_eq!(report["previous"]["cost"], 4.0);
+
+    for bad in [
+        json!({}),
+        json!({"edges":[start]}),
+        json!({"edges":[start, start]}),
+        json!({"edges":[start + 1.0, start]}),
+        json!({"edges":["soon", start]}),
+        json!({"edges":vec![start; 8001]}),
+    ] {
+        assert_eq!(
+            settings::report(home.path(), "alice", &bad)
+                .unwrap_err()
+                .code,
+            4202
+        );
+    }
+}
+
+#[test]
+fn usage_report_gives_usage_from_before_the_native_runtime_apart() {
+    let home = setup();
+    usage(home.path());
+    // A profile whose old database can't be read is skipped, not fatal.
+    db::open(home.path())
+        .unwrap()
+        .execute_batch("INSERT INTO sections(id,bot,owner_id) VALUES ('s','sparrow','alice');")
+        .unwrap();
+    let broken = home.path().join("profiles/sparrow");
+    fs::create_dir_all(&broken).unwrap();
+    fs::write(broken.join("state.db"), "not a database").unwrap();
+    let report = settings::report(
+        home.path(),
+        "alice",
+        &json!({"edges":[150.0, 200.0, 300.0]}),
+    )
+    .unwrap();
+    // Running totals with no time per call: on no day, in no window.
+    assert_eq!(report["rows"], json!([]));
+    assert_eq!(report["previous"]["tokens"], 0);
+    // Alice's sessions a and room-a; bob's b is his.
+    assert_eq!(report["earlier"]["tokens"], 110 + 220 + 33);
+    assert!((report["earlier"]["cost"].as_f64().unwrap() - 0.33).abs() < 1e-9);
 }

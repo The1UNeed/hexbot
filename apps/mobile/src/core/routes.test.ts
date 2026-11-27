@@ -3,6 +3,7 @@ import {
   ROOMS_QUERY,
   SECTIONS_QUERY,
   botChat,
+  botStatusOf,
   chatPreview,
   isOpenRoom,
   pulseTarget,
@@ -238,5 +239,28 @@ describe('stopped bot', () => {
     expect(stoppedIn(thread, section('t', { peer_bot: 'grace' } as Partial<Section>))).toBe(true)
     expect(stoppedIn(thread, section('chat'))).toBe(false)
     expect(stoppedIn({ ...thread, status: 'idle' } as Bot, section('t'))).toBe(false)
+  })
+})
+
+describe("a bot's status, which its profile face wears", () => {
+  const working = { ...bot, status: 'working', status_detail: { room_id: 'r' } } as Bot
+  it('follows the bot wherever it works, and says done for a finished turn you have not seen', () => {
+    expect(botStatusOf(working, [])).toBe('working')
+    expect(
+      botStatusOf({ ...bot, status: 'idle', sections_recent: [section('a', { done_at: 1 })] } as Bot, [])
+    ).toBe('done')
+    // Check-ins do not count.
+    expect(
+      botStatusOf(
+        { ...bot, status: 'idle', sections_recent: [section('c', { done_at: 1, purpose: 'checkins' })] } as Bot,
+        []
+      )
+    ).toBe('idle')
+    // A daemon from before one chat marks Check-ins only on the listed copy.
+    expect(
+      botStatusOf({ ...bot, status: 'idle', sections_recent: [section('c', { done_at: 1 })] } as Bot, [
+        section('c', { purpose: 'checkins' })
+      ])
+    ).toBe('idle')
   })
 })

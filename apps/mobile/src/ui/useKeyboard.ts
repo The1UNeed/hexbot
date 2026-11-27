@@ -1,9 +1,15 @@
 import { useEffect, useState } from 'react'
 import { Keyboard, Platform } from 'react-native'
 
-/** Whether the software keyboard is up, so bars can step out of its way. */
+import { useCovered } from './Layer'
+
+/**
+ * Whether the software keyboard is up, so bars can step out of its way. A
+ * card or sheet over the screen owns the keyboard; the bars under it stay put.
+ */
 export function useKeyboardVisible() {
   const [visible, setVisible] = useState(false)
+  const covered = useCovered()
 
   useEffect(() => {
     const show = Keyboard.addListener(
@@ -21,5 +27,5 @@ export function useKeyboardVisible() {
     }
   }, [])
 
-  return visible
+  return visible && !covered
 }

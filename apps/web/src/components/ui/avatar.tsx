@@ -49,7 +49,7 @@ const avatarVariants = cva('relative inline-flex shrink-0 items-center justify-c
 })
 
 export interface AvatarProps extends VariantProps<typeof avatarVariants> {
-  /** An act to keep playing, such as typing while the bot works. A click plays a random one. */
+  /** An act to keep playing, such as typing while the bot works. */
   act?: HexbotActName | null
   className?: string
   /** Data URL or `data:<mime>;base64,...` from the bot's profile asset. */
@@ -94,6 +94,9 @@ function useReducedMotion(): boolean {
 
 /** A four-pointed spark, one unit from its centre to each point. */
 const SPARK = 'M0 -1Q0.16 -0.16 1 0Q0.16 0.16 0 1Q-0.16 0.16 -1 0Q-0.16 -0.16 0 -1Z'
+
+/** The pointer a face rides beside on the computer, its tip at the origin, as the Computer tab draws it. */
+const POINTER = 'M0 0 26 11a1.5 1.5 0 0 1-.2 2.8L15 17 11.8 27.6a1.5 1.5 0 0 1-2.8.2Z'
 
 /**
  * What a face folds into: three dots while it thinks, a pencil while it
@@ -307,6 +310,13 @@ export function LiveFace({
           <Morph color={color} eyes={eyes} kind={kind} tint={`url(#${tint})`} />
         </g>
       ))}
+      <g
+        data-part="pointer"
+        display={rest.pointer ? 'inline' : 'none'}
+        transform={rest.pointer ?? undefined}
+      >
+        <path d={POINTER} fill={color} stroke={color} strokeLinejoin="round" strokeWidth={4} />
+      </g>
       <g data-part="sparks" display="none">
         {Array.from({ length: SPARKS }, (_, index) => (
           <g data-part="spark" key={index} transform="scale(0)">
@@ -379,7 +389,7 @@ export function useFaceColor(
 /**
  * The generated face, live, whether the bot has none saved or saved one this
  * app drew; any other uploaded picture as it is. Every face of one bot (the
- * sidebar, the header, the chat) moves as one and plays a clicked act together.
+ * sidebar, the header, the chat) moves as one.
  */
 export function Avatar({
   act,
@@ -392,7 +402,7 @@ export function Avatar({
   style,
   sync = name
 }: AvatarProps) {
-  const playing = useAct(act, `avatar:${sync}`)
+  const playing = useAct(act)
   const { ref, visible } = useFaceVisibility<HTMLSpanElement>()
   const read = useFaceRead(image)
   const face = read ?? style ?? styleForName(name)
@@ -406,7 +416,6 @@ export function Avatar({
       data-look={look ?? undefined}
       data-mood={picture ? undefined : shownMood}
       data-visible={visible}
-      onClick={playing.play}
       ref={ref}
       role="img"
     >

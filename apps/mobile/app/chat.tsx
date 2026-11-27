@@ -26,7 +26,9 @@ export default function Chat() {
   const theme = useTheme()
   const closed = useRef(app.onChatClosed)
   closed.current = app.onChatClosed
-  usePreventRemove(app.uploading, () => {})
+  usePreventRemove(app.uploading || app.hasThreadReturn, () => {
+    if (!app.uploading && app.hasThreadReturn) app.onChatClosed()
+  })
   useEffect(() => () => closed.current(), [])
   // The chat closed from inside, as when its room is archived: back to the
   // list rather than a second list on top of it.

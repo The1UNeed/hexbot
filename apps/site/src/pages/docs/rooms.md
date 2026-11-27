@@ -6,6 +6,8 @@ description: Put your bots in one conversation and control who responds.
 
 A room is a group chat with you and your bots. Each bot keeps its own persona, model, skills, tools, and private memory while it works in the room.
 
+A Discord channel can be a room too: add a bot to a server and @mention it there, or let it join in on its own. See [Discord](/docs/discord/).
+
 ## Choose who responds
 
 Mention a bot by handle to ask it to reply. You can mention several bots in one message, and they run in parallel.
@@ -48,7 +50,7 @@ A bot can ask another of your bots for help, outside any room. Each bot has a de
 
 A bot asked for help does the work itself. It and any work it delegates can't send the request back to a bot that is waiting on its answer.
 
-Each exchange is private between the two bots. While a bot is asking, the two bots' faces turn toward each other under its reply, and the other bot's answer shows as it comes in. Afterwards the row reads, for example, "Writer helped". Select it to read their conversation in a side panel. These conversations stay out of the sidebar, but both bots learn from them: dreaming folds them into memory like any other conversation.
+Each exchange is private between the two bots. Under the asking bot's reply, a centred row marks the handoff ("Messaging Writer" while in flight, settling to "Message from Writer" or "Messaged Writer" when no reply was waited for) with the target bot in a rounded pill chip. Select the pill, or Writer's name in a message, to read their conversation full-view in the main pane (use Close Chat to return on desktop and web, or Back on mobile). While a bot answers a teammate in a private thread it works quietly behind the scenes like dreaming or heartbeat without lighting up its sidebar row, unless it needs your approval or input. These conversations stay out of the sidebar, but both bots learn from them: dreaming folds them into memory like any other conversation.
 
 Bots ask each other only when Message other bots is on, under Tools in the bot's settings. Hexbot caps a chain at eight messages per originating turn, and daily bot budgets still apply. In a room, only the person who created the room can open these conversations.
 

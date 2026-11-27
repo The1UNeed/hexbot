@@ -9,20 +9,30 @@ import {
   roomsList,
   roomsLog,
   roomsMarkRead,
+  roomsPin,
   roomsRemoveMember,
   roomsUpdate
 } from '../lib/api'
 import type { RoomCreateInput } from '../lib/api'
-import { CatalogAuthority, type ReadOutcome } from '../lib/catalog-authority'
-import type { BotStatus, Room, RoomEvent, RoomTurn } from '../lib/types'
+import { type Ask, asksOf } from '../lib/asks'
+import { CatalogAuthority, type CatalogRead, type ReadOutcome } from '../lib/catalog-authority'
+import type { BotStatus, Room, RoomEvent, RoomTurn, ToolCall } from '../lib/types'
 
 import { connectionRead } from './connection'
+import { useMe } from './me'
 import { useTranscripts } from './transcripts'
+import { useUi } from './ui'
 
 export interface RoomsState {
   addMember: (id: string, bot: string) => Promise<void>
   byId: Record<string, Room>
   answers: Record<string, ReadOutcome>
+  /**
+   * Asks held across the brief gap between `hexbot.rooms.turn` (`complete`) and
+   * the `message.bot` event that carries persisted `payload.asks`, so the ask
+   * pill and avatar never unmount mid-handoff.
+   */
+  completingAsksByRoom: Record<string, Record<string, Ask[]>>
   create: (input: RoomCreateInput) => Promise<Room>
   /** Forget a room the daemon deleted. */
   drop: (id: string) => void
@@ -62,6 +72,7 @@ export interface RoomsState {
   /** Only pass false after confirming room deletion. Resolves true if the room was deleted. */
   removeMember: (id: string, bot: string, keepRoom: boolean) => Promise<boolean>
   update: (id: string, patch: Parameters<typeof roomsUpdate>[1]) => Promise<void>
+  pin: (id: string, pinned: boolean) => Promise<void>
 }
 
 /** The daemon no longer shows this room to you. */
@@ -74,12 +85,121 @@ function roomGone(error: unknown): boolean {
 const authority = new CatalogAuthority()
 const looking = new Map<string, Promise<ReadOutcome>>()
 const opening = new Map<string, { request: Promise<ReadOutcome>; current: () => boolean }>()
+/** Cleanup timers for held room asks if a completed turn turns out to be a silent `(pass)`. */
+const completingTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+function clearCompletingTimer(roomId: string, bot?: string) {
+  if (bot !== undefined) {
+    const key = `${roomId}\u0000${bot}`
+    const timer = completingTimers.get(key)
+
+    if (timer) {
+      clearTimeout(timer)
+      completingTimers.delete(key)
+    }
+
+    return
+  }
+
+  for (const [key, timer] of completingTimers) {
+    if (key.startsWith(`${roomId}\u0000`)) {
+      clearTimeout(timer)
+      completingTimers.delete(key)
+    }
+  }
+}
+
+function clearAllCompletingTimers() {
+  for (const timer of completingTimers.values()) {
+    clearTimeout(timer)
+  }
+
+  completingTimers.clear()
+}
+
+function withoutCompletingAsk(
+  map: Record<string, Record<string, Ask[]>>,
+  roomId: string,
+  bot?: string
+): Record<string, Record<string, Ask[]>> {
+  const roomAsks = map[roomId]
+
+  if (!roomAsks) {
+    return map
+  }
+
+  if (bot === undefined) {
+    const next = { ...map }
+    delete next[roomId]
+
+    return next
+  }
+
+  if (!(bot in roomAsks)) {
+    return map
+  }
+
+  const nextRoom = { ...roomAsks }
+  delete nextRoom[bot]
+  const next = { ...map }
+
+  if (Object.keys(nextRoom).length) {
+    next[roomId] = nextRoom
+  } else {
+    delete next[roomId]
+  }
+
+  return next
+}
 
 export function roomCacheRead(): (id: string) => boolean {
   const connected = connectionRead()
   const current = authority.cacheRead()
 
   return id => connected() && current(id)
+}
+
+/** What each change shown early replaced, so a refused one can put it back. */
+const shownBefore = new WeakMap<CatalogRead, Partial<Room>>()
+
+/**
+ * Shows a change to a listed room before the daemon answers, so a pin or a
+ * rename lands at once. Older lists and replies can no longer overwrite it.
+ */
+function optimistic(id: string, patch: Partial<Room>): CatalogRead {
+  const room = useRooms.getState().byId[id]
+
+  if (!room) {
+    return authority.request()
+  }
+
+  const ticket = authority.claim(id)
+  shownBefore.set(
+    ticket,
+    Object.fromEntries(Object.keys(patch).map(key => [key, room[key as keyof Room]]))
+  )
+  useRooms.setState(state => {
+    const current = state.byId[id]
+
+    return current ? { byId: { ...state.byId, [id]: { ...current, ...patch } } } : state
+  })
+
+  return ticket
+}
+
+/** The daemon refused the change: unless something newer came, the room looks as before. */
+function undo(id: string, ticket: CatalogRead) {
+  const before = shownBefore.get(ticket)
+
+  if (!before || !authority.current(id, ticket)) {
+    return
+  }
+
+  useRooms.setState(state => {
+    const current = state.byId[id]
+
+    return current ? { byId: { ...state.byId, [id]: { ...current, ...before } } } : state
+  })
 }
 
 function roomRead(id: string): () => boolean {
@@ -109,6 +229,48 @@ function runningTurns(rooms: Room[]): RoomsState['liveTurnsByRoom'] {
       )
     ])
   )
+}
+
+/**
+ * Hydrated `message_bot` tool calls from a running room turn snapshot so a cold
+ * or reconnecting client renders active and earlier asks immediately.
+ */
+function roomTurnCalls(turn: RoomTurn): ToolCall[] {
+  return (turn.asks ?? []).map(ask => ({
+    args: ask.args ?? null,
+    durationS: null,
+    ...(ask.message_id ? { messageId: ask.message_id } : {}),
+    ...(ask.occurrence_id ? { occurrenceId: ask.occurrence_id } : {}),
+    ...(ask.parent_occurrence_id ? { parentOccurrenceId: ask.parent_occurrence_id } : {}),
+    ...(ask.parent_tool_call_id ? { parentToolCallId: ask.parent_tool_call_id } : {}),
+    name: 'message_bot',
+    result: ask.result ?? (ask.section_id ? { section_id: ask.section_id } : null),
+    startedAt: 0,
+    status: ask.status,
+    ...(ask.context ? { summary: ask.context } : {}),
+    toolId: ask.tool_id
+  }))
+}
+
+function hydrateRoomTurn(
+  turn: RoomTurn,
+  pending: string[] | undefined,
+  readAt: number
+): void {
+  if (!turn.live_session_id) {
+    return
+  }
+
+  useTranscripts
+    .getState()
+    .mergeTurnCalls(
+      turn.live_session_id,
+      `room:${turn.room_id}`,
+      roomTurnCalls(turn),
+      turn.turn_id ?? turn.asks?.[0]?.turn_id,
+      pending ? { pending, readAt } : undefined,
+      turn.id
+    )
 }
 
 function messageSeq(events: RoomEvent[]): number {
@@ -207,6 +369,7 @@ function mergeRoom(state: RoomsState, room: Room): Partial<RoomsState> {
 }
 
 function dropRoom(state: RoomsState, id: string): Partial<RoomsState> {
+  clearCompletingTimer(id)
   const byId = { ...state.byId }
   const eventsByRoom = { ...state.eventsByRoom }
   const liveTurnsByRoom = { ...state.liveTurnsByRoom }
@@ -219,6 +382,7 @@ function dropRoom(state: RoomsState, id: string): Partial<RoomsState> {
   delete endedByRoom[id]
 
   return {
+    completingAsksByRoom: withoutCompletingAsk(state.completingAsksByRoom, id),
     endedByRoom,
     answers: authority.outcomes(),
     byId,
@@ -232,6 +396,7 @@ function dropRoom(state: RoomsState, id: string): Partial<RoomsState> {
 export const useRooms = create<RoomsState>((set, get) => ({
   byId: {},
   answers: {},
+  completingAsksByRoom: {},
   endedByRoom: {},
   error: null,
   eventsByRoom: {},
@@ -247,9 +412,11 @@ export const useRooms = create<RoomsState>((set, get) => ({
     looking.clear()
     opening.clear()
     turnChanges.clear()
+    clearAllCompletingTimers()
     set({
       byId: {},
       answers: {},
+      completingAsksByRoom: {},
       endedByRoom: {},
       order: [],
       eventsByRoom: {},
@@ -306,7 +473,11 @@ export const useRooms = create<RoomsState>((set, get) => ({
         for (const turn of Object.values(turns)) {
           const running = liveTurnsByRoom[turn.room_id]?.[turn.bot]
 
-          if (turn.live_session_id && running?.live_session_id !== turn.live_session_id) {
+          if (
+            turn.live_session_id &&
+            (running?.live_session_id !== turn.live_session_id ||
+              (turn.id && running?.id && turn.id !== running.id))
+          ) {
             transcripts.drop(turn.live_session_id)
           }
         }
@@ -315,16 +486,7 @@ export const useRooms = create<RoomsState>((set, get) => ({
       for (const [id, turns] of Object.entries(liveTurnsByRoom)) {
         for (const turn of Object.values(turns)) {
           const pending = turns === read[id] ? turn.pending_requests : undefined
-
-          if (turn.live_session_id) {
-            transcripts.open(
-              turn.live_session_id,
-              `room:${turn.room_id}`,
-              [],
-              undefined,
-              pending ? { pending, readAt } : undefined
-            )
-          }
+          hydrateRoomTurn(turn, pending, readAt)
         }
       }
 
@@ -479,6 +641,8 @@ export const useRooms = create<RoomsState>((set, get) => ({
         return outcome === 'present' ? read() : outcome
       }
 
+      const changesBefore = turnChanges.get(id)
+      const readAt = Date.now()
       let loaded: [{ room: Room }, LogUpdate]
 
       try {
@@ -506,8 +670,38 @@ export const useRooms = create<RoomsState>((set, get) => ({
       }
 
       const [{ room }, update] = loaded
+      clearCompletingTimer(id)
+
+      const canSyncTurns = Boolean(room.turns && turnChanges.get(id) === changesBefore)
+      const nextTurns = canSyncTurns ? (runningTurns([room])[id] ?? {}) : undefined
+
+      if (nextTurns) {
+        const previousTurns = get().liveTurnsByRoom[id] ?? {}
+        const transcripts = useTranscripts.getState()
+
+        for (const turn of Object.values(previousTurns)) {
+          const running = nextTurns[turn.bot]
+
+          if (
+            turn.live_session_id &&
+            (running?.live_session_id !== turn.live_session_id ||
+              (turn.id && running?.id && turn.id !== running.id))
+          ) {
+            transcripts.drop(turn.live_session_id)
+          }
+        }
+
+        for (const turn of Object.values(nextTurns)) {
+          hydrateRoomTurn(turn, turn.pending_requests, readAt)
+        }
+      }
+
       set(state => ({
         ...mergeRoom(state, room),
+        ...(nextTurns
+          ? { liveTurnsByRoom: { ...state.liveTurnsByRoom, [id]: nextTurns } }
+          : {}),
+        completingAsksByRoom: withoutCompletingAsk(state.completingAsksByRoom, id),
         logBaseline: {
           ...state.logBaseline,
           [id]: update.latest ? (update.events[0]?.seq ?? 0) : (state.logBaseline[id] ?? 0)
@@ -518,8 +712,10 @@ export const useRooms = create<RoomsState>((set, get) => ({
         }
       }))
       const seq = messageSeq(get().eventsByRoom[id] ?? [])
+      const ui = useUi.getState()
+      const hidden = ui.openingBot !== null || ui.thread !== null
 
-      if (seq) {
+      if (seq && !hidden) {
         void get().markRead(id, seq)
       }
 
@@ -541,6 +737,35 @@ export const useRooms = create<RoomsState>((set, get) => ({
     // Acknowledging displayed events must not supersede an existence/log read.
     const currentRead = roomRead(id)
     const ticket = authority.request()
+    const me = useMe.getState().me?.id
+    const roomBefore = get().byId[id]
+
+    // The dot clears at once; the daemon's answer only ever moves the mark forward.
+    set(state => {
+      const current = state.byId[id]
+
+      const yours = (member: Room['members'][number]) =>
+        member.member_kind === 'human' &&
+        (!me || member.member_id === me) &&
+        (member.last_read_seq ?? 0) < seq
+
+      if (!current?.members.some(yours)) {
+        return state
+      }
+
+      return {
+        byId: {
+          ...state.byId,
+          [id]: {
+            ...current,
+            members: current.members.map(member =>
+              yours(member) ? { ...member, last_read_seq: seq } : member
+            )
+          }
+        }
+      }
+    })
+
     const roomAtRead = get().byId[id]
 
     try {
@@ -586,6 +811,9 @@ export const useRooms = create<RoomsState>((set, get) => ({
       // A newer room result supersedes even an earlier read mark's permission error.
       if (roomGone(error) && authority.commit(id, ticket, 'gone')) {
         set(state => dropRoom(state, id))
+      } else if (roomBefore && roomAtRead !== roomBefore) {
+        // Refused, and nothing newer came: the room shows unread again.
+        set(state => ({ byId: { ...state.byId, [id]: roomBefore } }))
       }
     }
   },
@@ -661,14 +889,40 @@ export const useRooms = create<RoomsState>((set, get) => ({
 
   async update(id, patch) {
     const connected = connectionRead()
-    const ticket = authority.request()
-    const { room } = await roomsUpdate(id, patch)
+    const ticket = optimistic(id, patch)
 
-    if (!connected() || !authority.commit(room.id, ticket, 'present')) {
-      return
+    try {
+      const { room } = await roomsUpdate(id, patch)
+
+      if (!connected() || !authority.commit(room.id, ticket, 'present')) {
+        return
+      }
+
+      set(state => mergeRoom(state, room))
+    } catch (error) {
+      undo(id, ticket)
+      throw error
     }
+  },
 
-    set(state => mergeRoom(state, room))
+  async pin(id, pinned) {
+    const connected = connectionRead()
+    const before = get().byId[id]?.pinned_at
+    // Pinning again keeps the room's place among the pinned, as the daemon does.
+    const ticket = optimistic(id, { pinned_at: pinned ? (before ?? Date.now() / 1000) : null })
+
+    try {
+      const { room } = await roomsPin(id, pinned)
+
+      if (!connected() || !authority.commit(room.id, ticket, 'present')) {
+        return
+      }
+
+      set(state => mergeRoom(state, room))
+    } catch (error) {
+      undo(id, ticket)
+      throw error
+    }
   },
 
   async remove(id) {
@@ -693,6 +947,12 @@ export const useRooms = create<RoomsState>((set, get) => ({
 
       const room = state.byId[roomId]
       const turns = { ...(state.liveTurnsByRoom[roomId] ?? {}) }
+      let completingAsksByRoom = state.completingAsksByRoom
+
+      if ((event.kind === 'message.bot' || event.kind === 'turn.failed') && event.actor_id) {
+        clearCompletingTimer(roomId, event.actor_id)
+        completingAsksByRoom = withoutCompletingAsk(completingAsksByRoom, roomId, event.actor_id)
+      }
 
       if (event.kind === 'message.bot' && event.actor_id) {
         bumpTurns(roomId)
@@ -716,6 +976,7 @@ export const useRooms = create<RoomsState>((set, get) => ({
               }
             }
           : state.byId,
+        completingAsksByRoom,
         eventsByRoom: { ...state.eventsByRoom, [roomId]: events },
         liveTurnsByRoom: { ...state.liveTurnsByRoom, [roomId]: turns }
       }
@@ -728,26 +989,93 @@ export const useRooms = create<RoomsState>((set, get) => ({
       const current = { ...(state.liveTurnsByRoom[turn.room_id] ?? {}) }
 
       if (turn.live_session_id && !['complete', 'failed', 'stopped'].includes(turn.status)) {
+        clearCompletingTimer(turn.room_id, turn.bot)
         current[turn.bot] = turn
-        useTranscripts.getState().open(turn.live_session_id, `room:${turn.room_id}`, [])
-      } else {
-        const previous = current[turn.bot]
-
-        // The turn is over; its live session may serve the next one, which
-        // must not inherit cards nobody can answer any more.
-        if (previous?.live_session_id) {
-          useTranscripts.getState().drop(previous.live_session_id)
-        }
-
-        delete current[turn.bot]
+        useTranscripts
+          .getState()
+          .mergeTurnCalls(
+            turn.live_session_id,
+            `room:${turn.room_id}`,
+            roomTurnCalls(turn),
+            turn.turn_id ?? turn.asks?.[0]?.turn_id,
+            undefined,
+            turn.id
+          )
 
         return {
-          endedByRoom: { ...state.endedByRoom, [turn.room_id]: turn.status },
+          completingAsksByRoom: withoutCompletingAsk(
+            state.completingAsksByRoom,
+            turn.room_id,
+            turn.bot
+          ),
           liveTurnsByRoom: { ...state.liveTurnsByRoom, [turn.room_id]: current }
         }
       }
 
-      return { liveTurnsByRoom: { ...state.liveTurnsByRoom, [turn.room_id]: current } }
+      const previous = current[turn.bot]
+      let completingAsksByRoom = state.completingAsksByRoom
+
+      // Carry completed asks across the gap between `turn (complete)` and `message.bot`
+      // so the asking pill's avatar stays mounted until the settled row takes over.
+      if (turn.status === 'complete' && previous?.live_session_id) {
+        const transcript = useTranscripts.getState().bySession[previous.live_session_id]
+        const turnMessages = transcript?.messages ?? []
+        const finalText = transcript?.completedText?.trim()
+
+        // Match the daemon (`rooms.rs`): an empty or `(pass)` final answer emits no `message.bot`.
+        const silent =
+          transcript?.completedText !== undefined &&
+          (!finalText || finalText.toLowerCase() === '(pass)')
+
+        const settled = silent
+          ? []
+          : asksOf(turnMessages.flatMap(message => message.toolCalls)).map(ask =>
+              ask.status === 'running' ? { ...ask, status: 'ok' as const } : ask
+            )
+
+        clearCompletingTimer(turn.room_id, turn.bot)
+
+        if (settled.length) {
+          completingAsksByRoom = {
+            ...completingAsksByRoom,
+            [turn.room_id]: {
+              ...(completingAsksByRoom[turn.room_id] ?? {}),
+              [turn.bot]: settled
+            }
+          }
+          const key = `${turn.room_id}\u0000${turn.bot}`
+          completingTimers.set(
+            key,
+            setTimeout(() => {
+              completingTimers.delete(key)
+              set(latest => ({
+                completingAsksByRoom: withoutCompletingAsk(
+                  latest.completingAsksByRoom,
+                  turn.room_id,
+                  turn.bot
+                )
+              }))
+            }, 10_000)
+          )
+        }
+      } else {
+        clearCompletingTimer(turn.room_id, turn.bot)
+        completingAsksByRoom = withoutCompletingAsk(completingAsksByRoom, turn.room_id, turn.bot)
+      }
+
+      // The turn is over; its live session may serve the next one, which
+      // must not inherit cards nobody can answer any more.
+      if (previous?.live_session_id) {
+        useTranscripts.getState().drop(previous.live_session_id)
+      }
+
+      delete current[turn.bot]
+
+      return {
+        completingAsksByRoom,
+        endedByRoom: { ...state.endedByRoom, [turn.room_id]: turn.status },
+        liveTurnsByRoom: { ...state.liveTurnsByRoom, [turn.room_id]: current }
+      }
     })
   }
 }))

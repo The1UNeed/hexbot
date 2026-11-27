@@ -27,7 +27,7 @@ const daemonPath = process.env.HEXBOT_SMOKE_DAEMON || path.join(root, 'backend/h
 const piPath = process.env.HEXBOT_TEST_PI || path.join(root, 'backend/pi-runtime/node_modules/.bin/pi')
 const webDist = path.join(root, 'apps/web/dist')
 await Promise.all([access(daemonPath), access(piPath), access(path.join(webDist, 'index.html'))])
-assert.equal((await promisify(execFile)(piPath, ['--version'])).stdout.trim(), '1.0.1')
+assert.equal((await promisify(execFile)(piPath, ['--version'])).stdout.trim(), '1.5.2')
 const home = await mkdtemp(path.join(tmpdir(), 'hexbot-native-ui-'))
 // The daemon refuses a workspace inside its home.
 const workspace = await mkdtemp(path.join(tmpdir(), 'hexbot-native-ui-workspace-'))
@@ -243,7 +243,9 @@ try {
       await composer.fill(prompt)
       await composer.press('Enter')
       await expect.poll(() => requests.some(request => textOf(request.messages?.findLast(message => message.role === 'user')?.content) === prompt), { timeout: 30_000 }).toBe(true)
-      await expect(page.getByRole('button', { name: 'Stop', exact: true })).toBeVisible()
+      // The bot works; its chat offers Recall, never Stop.
+      await expect(page.getByTestId('thinking')).toBeVisible()
+      await expect(page.getByRole('button', { name: 'Stop', exact: true })).toHaveCount(0)
       if (state !== 'foreground') {
         await electronApp.evaluate(({ BrowserWindow }, state) => {
           const win = BrowserWindow.getAllWindows()[0]
@@ -258,7 +260,7 @@ try {
       assert.equal(await electronApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length), 1)
       heldReplies.get(prompt).release()
       await expect(replies).toHaveCount(++completed)
-      await expect(page.getByRole('button', { name: 'Stop', exact: true })).toHaveCount(0)
+      await expect(page.getByTestId('thinking')).toHaveCount(0)
       if (state !== 'foreground') {
         await expect.poll(async () => (await notifications()).length).toBe(completed)
         if (process.env.HEXBOT_SMOKE_NATIVE_NOTIFICATIONS === '1')
@@ -297,15 +299,35 @@ try {
   const log = (await rpc('hexbot.rooms.log', { id: room })).events
   assert.deepEqual(log.filter(event => event.kind === 'message.bot').map(event => event.actor_id), ['owl', 'fox', 'owl'])
 
+  // The Memory tab holds the bot's own limit; memory itself is edited from the Fingerprint tab.
   await visit('/b/owl/settings/memory')
-  await page.getByRole('textbox', { name: 'Bot memory', exact: true }).fill('The user likes jasmine tea.')
-  await page.getByRole('button', { name: 'Save', exact: true }).click()
-  await expect.poll(async () => (await rpc('hexbot.memory.bot.get', { bot: 'owl' })).memory_md).toBe('The user likes jasmine tea.')
+  const memoryLimit = page.getByRole('textbox', { name: 'Memory limit', exact: true })
+  await memoryLimit.fill('3000')
+  await memoryLimit.blur()
+  await expect.poll(async () => (await rpc('hexbot.bots.get', { name: 'owl' })).bot.memory_cap).toBe(3000)
+  assert.equal((await rpc('hexbot.bots.get', { name: 'fox' })).bot.memory_cap, 2200, 'Bot memory limits must be isolated')
+  await rpc('hexbot.memory.bot.set', { bot: 'owl', memory_md: 'The user likes jasmine tea.' })
   assert.equal((await rpc('hexbot.memory.bot.get', { bot: 'fox' })).memory_md, '', 'Bot memories must be isolated')
   await visit('/b/owl/settings/persona')
   await page.getByRole('textbox', { name: 'Soul', exact: true }).fill('You are Owl. Give clear, short answers.')
   await page.getByRole('textbox', { name: 'Soul', exact: true }).blur()
   await expect.poll(async () => (await rpc('hexbot.bots.get', { name: 'owl' })).bot.persona).toBe('You are Owl. Give clear, short answers.')
+  // The face is picked on its own page, which the button on Profile opens.
+  // Each pick is saved at once, with its picture.
+  await visit('/b/owl/settings/profile')
+  await page.getByRole('button', { name: 'Change face', exact: true }).click()
+  await expect(page).toHaveURL(/\/b\/owl\/settings\/face$/)
+  await expect(page.getByRole('heading', { name: 'Face', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Star', exact: true }).click()
+  await page.getByRole('button', { name: 'Lemon', exact: true }).click()
+  await expect.poll(async () => (await rpc('hexbot.bots.get', { name: 'owl' })).bot.face).toEqual({ color: 'yellow', shape: 'star' })
+  assert.equal((await rpc('hexbot.bots.get', { name: 'owl' })).bot.avatar?.mime, 'image/png', 'A picked face is saved with its picture')
+  await expect(page.getByRole('button', { name: 'Star', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await page.screenshot({ path: path.join(artifacts, 'face.png') })
+  // Shuffle gives a face no bot has.
+  await page.getByRole('button', { name: 'Shuffle', exact: true }).click()
+  await expect.poll(async () => JSON.stringify((await rpc('hexbot.bots.get', { name: 'owl' })).bot.face)).not.toBe(JSON.stringify({ color: 'yellow', shape: 'star' }))
+  assert.notDeepEqual((await rpc('hexbot.bots.get', { name: 'owl' })).bot.face, (await rpc('hexbot.bots.get', { name: 'fox' })).bot.face)
   await visit('/settings/memory')
   await page.getByRole('textbox', { name: 'About you', exact: true }).fill('I prefer jasmine tea.')
   await page.getByRole('button', { name: 'Save', exact: true }).click()
@@ -331,7 +353,7 @@ try {
   }
   assert.deepEqual(errors, [], 'No uncaught browser or local model errors')
   assert(requests.length >= 4, 'The real Pi process must call the local streaming model')
-  console.log(JSON.stringify({ passed: true, client: desktop ? 'electron' : 'browser', edition: desktop ? edition : undefined, scenarios: ['cold room deep link and reload', 'warm room navigation', 'chat', 'multi-agent room and @user', 'per-bot memory', 'soul editing', 'About you', 'one chat per bot and history'], modelRequests: requests.length, artifacts }, null, 2))
+  console.log(JSON.stringify({ passed: true, client: desktop ? 'electron' : 'browser', edition: desktop ? edition : undefined, scenarios: ['cold room deep link and reload', 'warm room navigation', 'chat', 'multi-agent room and @user', 'per-bot memory', 'soul editing', 'face page', 'About you', 'one chat per bot and history'], modelRequests: requests.length, artifacts }, null, 2))
 } catch (error) {
   await writeFile(path.join(artifacts, 'model-requests.json'), JSON.stringify(requests, null, 2))
   if (electronApp)

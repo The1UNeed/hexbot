@@ -1,3 +1,4 @@
+import { asksOf } from '../lib/asks'
 import type { DaemonInfo } from '../lib/types'
 
 import { useConnection } from './connection'
@@ -98,6 +99,56 @@ describe('transcript reducer', () => {
     expect(
       useTranscripts.getState().bySession.s?.clarifies.map(clarify => clarify.requestId)
     ).toEqual(['c'])
+  })
+  it('shows an answered card once when history brings it back', () => {
+    const actions = useTranscripts.getState()
+
+    const form = {
+      bcc: [],
+      body: 'Dear Admissions Team,',
+      cc: [],
+      from: 'alex@example.com',
+      kind: 'email_draft' as const,
+      service: 'microsoft' as const,
+      service_name: 'Outlook',
+      subject: 'Report cards',
+      to: []
+    }
+
+    actions.approvalRequest('s', { form, message_id: 'a1', request_id: 'live', turn_id: 't' })
+    actions.approvalRequest('s', { message_id: 'a3', request_id: 'waiting', turn_id: 't' })
+    actions.resolveApproval('s', 'live', 'once', {
+      draft: { ...form, to: ['admission@example.com'] },
+      mail_action: 'send'
+    })
+
+    const restored = {
+      choices: ['once' as const, 'deny' as const],
+      decision: 'once' as const,
+      form,
+      messageId: 'a1',
+      receivedAt: 0,
+      requestId: 'm1',
+      sessionId: ''
+    }
+
+    actions.open('s', 'sec', [
+      {
+        approvals: [restored],
+        attachments: [],
+        createdAt: 0,
+        fragmentIds: ['a1'],
+        id: 'a1',
+        role: 'assistant',
+        streaming: false,
+        text: '',
+        toolCalls: []
+      }
+    ])
+    const transcript = useTranscripts.getState().bySession.s
+    // The live copy goes; a card still waiting stays live.
+    expect(transcript?.approvals.map(card => card.requestId)).toEqual(['waiting'])
+    expect(transcript?.messages[0]?.approvals).toEqual([restored])
   })
   it('opens on a delta and does not duplicate streamed interim text', () => {
     const actions = useTranscripts.getState()
@@ -305,5 +356,275 @@ describe('transcript reducer', () => {
       errorDetail: { connector: 'notion' },
       role: 'system'
     })
+  })
+
+  it('completes the sole running call when a reused tool id omits message_id after an earlier call finished', () => {
+    const actions = useTranscripts.getState()
+    actions.messageStart('s')
+    actions.toolStart('s', {
+      args: { text: 'Ping bio', to: 'biology', wait: false },
+      name: 'message_bot',
+      tool_id: 'call_0'
+    })
+    actions.toolComplete('s', {
+      name: 'message_bot',
+      result: { details: { section_id: 'th-bio', status: 'sent' } },
+      tool_id: 'call_0'
+    })
+    actions.toolStart('s', {
+      args: { text: 'Ping chem', to: 'chemistry', wait: false },
+      name: 'message_bot',
+      tool_id: 'call_0'
+    })
+    actions.toolComplete('s', {
+      name: 'message_bot',
+      result: { details: { section_id: 'th-chem', status: 'sent' } },
+      tool_id: 'call_0'
+    })
+    actions.messageComplete('s', { text: 'Sent both.' })
+    const calls = useTranscripts.getState().bySession.s!.messages.flatMap(m => m.toolCalls)
+    expect(calls).toMatchObject([
+      {
+        args: { to: 'biology', wait: false },
+        result: { details: { section_id: 'th-bio', status: 'sent' } },
+        status: 'ok',
+        toolId: 'call_0'
+      },
+      {
+        args: { to: 'chemistry', wait: false },
+        result: { details: { section_id: 'th-chem', status: 'sent' } },
+        status: 'ok',
+        toolId: 'call_0'
+      }
+    ])
+  })
+
+  it('upgrades a hydrated running message_bot declaration on replayed toolStart and completes it cleanly', () => {
+    const actions = useTranscripts.getState()
+    actions.open(
+      's',
+      'sec-1',
+      [
+        {
+          attachments: [],
+          createdAt: 0,
+          fragmentIds: ['a1'],
+          id: 'a1',
+          role: 'assistant',
+          streaming: false,
+          text: 'Checking.',
+          textId: 'a1',
+          toolCalls: [
+            {
+              args: { to: 'biology' },
+              durationS: null,
+              messageId: 'a1',
+              name: 'message_bot',
+              result: null,
+              startedAt: 0,
+              status: 'running',
+              toolId: 'call_0'
+            }
+          ],
+          turnId: 'T1'
+        }
+      ],
+      { reports: [] },
+      { busy: true, readAt: Date.now() }
+    )
+    actions.eventIdentity('s', { messageId: 'a1', turnId: 'T1' })
+    actions.toolStart('s', {
+      args: { to: 'biology' },
+      context: 'biology',
+      name: 'message_bot',
+      tool_id: 'call_0'
+    })
+    actions.toolComplete('s', {
+      context: 'biology',
+      name: 'message_bot',
+      result: { details: { section_id: 'th-bio', status: 'replied' } },
+      tool_id: 'call_0'
+    })
+    const calls = useTranscripts.getState().bySession.s!.messages.flatMap(m => m.toolCalls)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({
+      args: { to: 'biology' },
+      messageId: 'a1',
+      name: 'message_bot',
+      result: { details: { section_id: 'th-bio', status: 'replied' } },
+      status: 'ok',
+      toolId: 'call_0'
+    })
+  })
+
+  it('does not overwrite an earlier settled ask or web_search call when a reconnect completion reuses call_0 without message_id', () => {
+    const actions = useTranscripts.getState()
+    actions.eventIdentity('s', { messageId: 'a1', turnId: 'T1' })
+    actions.messageStart('s')
+    actions.toolStart('s', {
+      args: { to: 'chemistry' },
+      context: 'chemistry',
+      name: 'message_bot',
+      tool_id: 'call_0'
+    })
+    actions.toolComplete('s', {
+      context: 'chemistry',
+      name: 'message_bot',
+      result: { details: { section_id: 'th-chem', status: 'replied' } },
+      tool_id: 'call_0'
+    })
+    // Reconnect after missing Biology's tool.start; daemon omits message_id on reused call_0.
+    actions.eventIdentity('s', { turnId: 'T1' })
+    actions.toolComplete('s', {
+      context: 'biology',
+      name: 'message_bot',
+      result: { details: { section_id: 'th-bio', status: 'replied' } },
+      tool_id: 'call_0'
+    })
+    const calls = useTranscripts.getState().bySession.s!.messages.flatMap(m => m.toolCalls)
+    expect(calls).toMatchObject([
+      {
+        args: { to: 'chemistry' },
+        name: 'message_bot',
+        result: { details: { section_id: 'th-chem', status: 'replied' } },
+        status: 'ok',
+        toolId: 'call_0'
+      },
+      {
+        name: 'message_bot',
+        result: { details: { section_id: 'th-bio', status: 'replied' } },
+        status: 'ok',
+        summary: 'biology',
+        toolId: 'call_0'
+      }
+    ])
+
+    // Same isolation when an earlier settled call was a different tool (web_search) using call_0.
+    actions.eventIdentity('s2', { messageId: 'b1', turnId: 'T2' })
+    actions.messageStart('s2')
+    actions.toolStart('s2', { args: { query: 'biology' }, name: 'web_search', tool_id: 'call_0' })
+    actions.toolComplete('s2', { name: 'web_search', result_text: 'results', tool_id: 'call_0' })
+    actions.eventIdentity('s2', { turnId: 'T2' })
+    actions.toolComplete('s2', {
+      context: 'biology',
+      name: 'message_bot',
+      result: { details: { section_id: 'th-bio', status: 'replied' } },
+      tool_id: 'call_0'
+    })
+    expect(
+      useTranscripts.getState().bySession.s2!.messages.flatMap(m => m.toolCalls)
+    ).toMatchObject([
+      { name: 'web_search', result: 'results', status: 'ok', toolId: 'call_0' },
+      {
+        name: 'message_bot',
+        result: { details: { section_id: 'th-bio', status: 'replied' } },
+        status: 'ok',
+        summary: 'biology',
+        toolId: 'call_0'
+      }
+    ])
+
+    // A still-running Chemistry ask on call_0 must NOT absorb an untagged Biology completion on call_0.
+    actions.eventIdentity('s3', { messageId: 'c1', turnId: 'T3' })
+    actions.messageStart('s3')
+    actions.toolStart('s3', {
+      args: { to: 'chemistry' },
+      context: 'chemistry',
+      name: 'message_bot',
+      tool_id: 'call_0'
+    })
+    actions.eventIdentity('s3', { turnId: 'T3' })
+    actions.toolComplete('s3', {
+      context: 'biology',
+      name: 'message_bot',
+      result: { details: { section_id: 'th-bio', status: 'replied' } },
+      tool_id: 'call_0'
+    })
+    expect(
+      useTranscripts.getState().bySession.s3!.messages.flatMap(m => m.toolCalls)
+    ).toMatchObject([
+      { args: { to: 'chemistry' }, name: 'message_bot', result: null, status: 'running', toolId: 'call_0' },
+      {
+        name: 'message_bot',
+        result: { details: { section_id: 'th-bio', status: 'replied' } },
+        status: 'ok',
+        summary: 'biology',
+        toolId: 'call_0'
+      }
+    ])
+
+    // A settled wait:true Biology reply must NOT be overwritten by a later missed-start
+    // untagged wait:false send reusing call_0 on the same section; both calls survive.
+    actions.eventIdentity('s4', { messageId: 'd1', turnId: 'T4' })
+    actions.messageStart('s4')
+    actions.toolStart('s4', {
+      args: { to: 'biology', wait: true },
+      context: 'biology',
+      name: 'message_bot',
+      tool_id: 'call_0'
+    })
+    actions.toolComplete('s4', {
+      context: 'biology',
+      name: 'message_bot',
+      result: { details: { section_id: 'th-bio', status: 'replied' } },
+      tool_id: 'call_0'
+    })
+    actions.eventIdentity('s4', { turnId: 'T4' })
+    actions.toolComplete('s4', {
+      context: 'biology',
+      name: 'message_bot',
+      result: { details: { section_id: 'th-bio', status: 'sent' } },
+      tool_id: 'call_0'
+    })
+    const bioCalls = useTranscripts.getState().bySession.s4!.messages.flatMap(m => m.toolCalls)
+    expect(bioCalls).toHaveLength(2)
+    expect(asksOf(bioCalls)).toEqual([
+      { sectionId: 'th-bio', sent: false, status: 'ok', target: 'biology' }
+    ])
+
+    // An untagged Biology tool.start must NOT rename a hydrated Chemistry call_0 placeholder.
+    actions.open(
+      's5',
+      'sec-5',
+      [
+        {
+          attachments: [],
+          createdAt: 0,
+          fragmentIds: ['a1'],
+          id: 'a1',
+          role: 'assistant',
+          streaming: false,
+          text: 'Asking Chem.',
+          toolCalls: [
+            {
+              args: { to: 'chemistry' },
+              durationS: null,
+              messageId: 'a1',
+              name: 'message_bot',
+              result: null,
+              startedAt: 0,
+              status: 'running',
+              toolId: 'call_0'
+            }
+          ],
+          turnId: 'T5'
+        }
+      ],
+      { reports: [] },
+      { busy: true, readAt: Date.now() }
+    )
+    actions.eventIdentity('s5', { turnId: 'T5' })
+    actions.toolStart('s5', {
+      args: { to: 'biology' },
+      context: 'biology',
+      name: 'message_bot',
+      tool_id: 'call_0'
+    })
+    expect(
+      useTranscripts.getState().bySession.s5!.messages.flatMap(m => m.toolCalls)
+    ).toMatchObject([
+      { args: { to: 'chemistry' }, messageId: 'a1', status: 'running', toolId: 'call_0' },
+      { args: { to: 'biology' }, status: 'running', summary: 'biology', toolId: 'call_0' }
+    ])
   })
 })

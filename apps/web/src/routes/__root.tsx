@@ -5,12 +5,13 @@ import { ChatChooser } from '../app/chat-chooser'
 import { ConnectionLost, useConnectionLost } from '../app/connection-lost'
 import { UpdateInstalling, useUpdateInstalling } from '../app/update-installing'
 import { cancelConfirm, ConfirmHost } from '../components/ui/confirm'
-import { userMemoryGet } from '../lib/api'
+import { sectionsList, userMemoryGet } from '../lib/api'
 import { getBridge, hasLocalRuntime } from '../lib/bridge'
 import { getSupervisor, setLocalDaemonPort } from '../lib/connection'
-import { OPEN_SECTION_EVENT } from '../lib/events'
+import { OPEN_SECTION_EVENT } from '../lib/notify'
+import { useBots } from '../stores/bots'
 import { useConnection } from '../stores/connection'
-import { useSections } from '../stores/sections'
+import { sectionBot, useSections } from '../stores/sections'
 import { applyTheme, useUi } from '../stores/ui'
 import { bindAppUpdates } from '../stores/updates'
 
@@ -28,6 +29,8 @@ function RootLayout() {
   const location = useRouterState({ select: state => state.location })
   // The next location can change before Outlet switches to its new match.
   const pathname = useRouterState({ select: state => state.matches.at(-1)?.pathname })
+  const pathnameRef = useRef(pathname)
+  pathnameRef.current = pathname
   const theme = useUi(state => state.theme)
   const lost = useConnectionLost()
   const installing = useUpdateInstalling()
@@ -66,10 +69,40 @@ function RootLayout() {
     // A notification click names the section it is about. Clicked as the app
     // starts, it waits for the sections list to name the bot.
     const openSection = (section: string) => {
-      const open = (bot: string) =>
-        void navigate({ params: { bot, section }, to: '/b/$bot/s/$section' })
+      const inMainShell = () =>
+        /^\/(?:b\/[^/]+\/s\/[^/]+|r\/[^/]+)$/.test(pathnameRef.current ?? '')
 
-      const bot = useSections.getState().byId[section]?.bot
+      const peerOf = (sectionId: string) => {
+        const match = Object.values(useBots.getState().byName).find(
+          item => item.status_detail?.peer_bot && item.status_detail.section_id === sectionId
+        )
+
+        return match?.status_detail?.peer_bot
+          ? { bot: match.name, peer: match.status_detail.peer_bot }
+          : undefined
+      }
+
+      const open = (bot: string, peer?: null | string) => {
+        if (peer && inMainShell()) {
+          useUi.getState().openThread({ bot, peer, sectionId: section })
+
+          return
+        }
+
+        // Clicking a notification for the covered chat must dismiss any open peer thread overlay.
+        useUi.getState().closeThread()
+        void navigate({ params: { bot, section }, to: '/b/$bot/s/$section' })
+      }
+
+      const knownPeer = peerOf(section)
+
+      if (knownPeer) {
+        open(knownPeer.bot, knownPeer.peer)
+
+        return
+      }
+
+      const bot = sectionBot(section)
 
       if (bot) {
         open(bot)
@@ -77,19 +110,56 @@ function RootLayout() {
         return
       }
 
-      const stop = useSections.subscribe(state => {
-        const found = state.byId[section]?.bot
+      let waiting = true
 
-        if (found) {
+      const found = (bot: string | undefined, peer?: null | string) => {
+        if (bot && waiting) {
           stop()
-          open(found)
+          open(bot, peer)
+        }
+      }
+
+      // A thread is in no list, and a bot waiting in two reports only one: ask the
+      // daemon, and again once a connection that was not up yet comes back.
+      const lookup = () =>
+        void sectionsList({ include_archived: true, include_threads: true })
+          .then(result => {
+            const row = result.sections?.find(item => item.id === section)
+            found(row?.bot, row?.peer_bot)
+          })
+          .catch(() => undefined)
+
+      const check = () => {
+        const peer = peerOf(section)
+
+        if (peer) {
+          found(peer.bot, peer.peer)
+        } else {
+          found(sectionBot(section))
+        }
+      }
+
+      const offSections = useSections.subscribe(check)
+      const offBots = useBots.subscribe(check)
+
+      const offConnection = useConnection.subscribe((state, previous) => {
+        if (state.status === 'connected' && previous.status !== 'connected') {
+          lookup()
         }
       })
 
+      const stop = () => {
+        waiting = false
+        offSections()
+        offBots()
+        offConnection()
+      }
+
+      lookup()
       window.setTimeout(stop, 60_000)
     }
 
-    // A browser tab's own notifications (lib/events.ts) land here.
+    // A browser tab's own notifications (lib/notify.ts) land here.
     const fromPage = (event: Event) => {
       const section = (event as CustomEvent<string>).detail
 

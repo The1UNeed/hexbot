@@ -20,7 +20,11 @@ jobs:
         - name: Check the mobile app
           run: pnpm run check
 
-  testflight:
+  # Uploads that exact build to App Store Connect. Team (Expo), with automatic
+  # distribution, gets it once Apple processes it. Apple's upload event then
+  # starts testflight-testers.yml, which hands it to the public link group.
+  # Not a testflight job with build_id: Expo runs that only on paid plans.
+  submit_ios:
     name: Upload to App Store Connect
     needs: [build_ios]
     type: submit

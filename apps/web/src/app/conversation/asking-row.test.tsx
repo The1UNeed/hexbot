@@ -63,7 +63,7 @@ describe('asks', () => {
     expect(asks(message([call({ result: '{"reply":"ok","section_id":"th2"}' })]))).toEqual([
       { sectionId: 'th2', sent: false, status: 'ok', target: 'writer' }
     ])
-    // Older transcripts carry only the reply: the panel looks the thread up instead.
+    // Older transcripts carry only the reply: the view looks the thread up instead.
     expect(asks(message([call({ result: { reply: 'ok' } })]))).toEqual([
       { sectionId: null, sent: false, status: 'ok', target: 'writer' }
     ])
@@ -86,8 +86,36 @@ describe('asks', () => {
 
   it('knows a message sent without waiting, unless another ask to that bot did wait', () => {
     const sent = call({ result: { message_id: 'x', section_id: 'th1', status: 'sent' } })
+
+    const serializedSent = call({
+      result: JSON.stringify({
+        content: [{ text: 'Sent', type: 'text' }],
+        details: { message_id: 'x', section_id: 'th1', status: 'sent' }
+      })
+    })
+
+    const failed = call({ result: { error: 'Timed out' }, status: 'error', toolId: 'fail' })
+    const replied = call({ toolId: 'ok' })
+
     expect(asks(message([sent]))).toEqual([
       { sectionId: 'th1', sent: true, status: 'ok', target: 'writer' }
+    ])
+    expect(asks(message([serializedSent]))).toEqual([
+      { sectionId: 'th1', sent: true, status: 'ok', target: 'writer' }
+    ])
+    // Mixed failed + wait:false send yields Messaged in either order, matching room SQL.
+    expect(asks(message([failed, sent]))).toEqual([
+      { sectionId: 'th1', sent: true, status: 'ok', target: 'writer' }
+    ])
+    expect(asks(message([sent, failed]))).toEqual([
+      { sectionId: 'th1', sent: true, status: 'ok', target: 'writer' }
+    ])
+    // Mixed failed + reply yields Message from in either order.
+    expect(asks(message([failed, replied]))).toEqual([
+      { sectionId: 'th1', sent: false, status: 'ok', target: 'writer' }
+    ])
+    expect(asks(message([replied, failed]))).toEqual([
+      { sectionId: 'th1', sent: false, status: 'ok', target: 'writer' }
     ])
     expect(asks(message([sent, call({ toolId: 'b' })]))[0]?.sent).toBe(false)
     expect(asks(message([call({ toolId: 'a' }), { ...sent, toolId: 'b' }]))[0]?.sent).toBe(false)
@@ -107,22 +135,26 @@ describe('asks', () => {
 })
 
 describe('askLabel', () => {
-  it('names both bots while it runs, then says what came of it', () => {
+  it('uses a consistent prefix around the target bot pill across running and settled states', () => {
     expect(askLabel({ sent: false, status: 'running' }, 'Writer', 'Research')).toBe(
-      'Research is asking Writer'
+      'Messaging Writer'
     )
-    expect(askLabel({ sent: false, status: 'running' }, 'Writer', null)).toBe('Asking Writer')
-    expect(askLabel({ sent: false, status: 'ok' }, 'Writer', 'Research')).toBe('Writer helped')
-    expect(askLabel({ sent: true, status: 'ok' }, 'Writer', 'Research')).toBe('Sent to Writer')
+    expect(askLabel({ sent: false, status: 'running' }, 'Writer', null)).toBe('Messaging Writer')
+    expect(askLabel({ sent: false, status: 'ok' }, 'Writer', 'Research')).toBe(
+      'Message from Writer'
+    )
+    expect(askLabel({ sent: true, status: 'ok' }, 'Writer', 'Research')).toBe('Messaged Writer')
     expect(askLabel({ sent: false, status: 'error' }, 'Writer', 'Research')).toBe('Asked Writer')
   })
 
   it('says "a teammate" when a room member is not told the name', () => {
     expect(askLabel({ sent: false, status: 'running' }, null, 'Research')).toBe(
-      'Research is asking a teammate'
+      'Messaging a teammate'
     )
-    expect(askLabel({ sent: false, status: 'ok' }, null, 'Research')).toBe('A teammate helped')
-    expect(askLabel({ sent: true, status: 'ok' }, null, 'Research')).toBe('Sent to a teammate')
+    expect(askLabel({ sent: false, status: 'ok' }, null, 'Research')).toBe(
+      'Message from a teammate'
+    )
+    expect(askLabel({ sent: true, status: 'ok' }, null, 'Research')).toBe('Messaged a teammate')
   })
 })
 
@@ -139,7 +171,7 @@ describe('AskingRow', () => {
     expect(container).toBeEmptyDOMElement()
   })
 
-  it('shows both faces turned to each other while the ask runs, then that the target helped', () => {
+  it('keeps one persistent pill and face across running and done so the row settles smoothly', () => {
     const { rerender } = render(
       <AskingRow
         message={message([call({ result: null, status: 'running' })], true)}
@@ -147,22 +179,23 @@ describe('AskingRow', () => {
       />
     )
 
-    expect(screen.getByText('Scout is asking Writer')).toBeVisible()
-    expect(screen.getByRole('img', { name: 'Scout' })).toHaveAttribute('data-look', 'right')
-    expect(screen.getByRole('img', { name: 'Writer' })).toHaveAttribute('data-look', 'left')
-    // Writer listens until its reply streams; nothing nods yet.
-    expect(screen.getByRole('img', { name: 'Writer' })).toHaveAttribute('data-mood', 'listening')
+    expect(screen.getByTestId('asking-row')).toHaveTextContent('Messaging Writer')
+    expect(screen.getByRole('status', { name: 'Messaging Writer' })).toBeVisible()
+    const face = screen.getByRole('img', { name: 'Writer' })
+    expect(face).toHaveAttribute('data-mood', 'listening')
+    expect(screen.queryByRole('img', { name: 'Scout' })).toBeNull()
     expect(screen.getByTestId('asking-row')).toHaveAttribute('data-status', 'running')
 
     rerender(<AskingRow message={message([call({})])} sender="scout" />)
-    expect(screen.getByText('Writer helped')).toBeVisible()
+    expect(screen.getByTestId('asking-row')).toHaveTextContent('Message from Writer')
     expect(screen.getByTestId('asking-row')).toHaveAttribute('data-status', 'done')
-    expect(screen.getByRole('img', { name: 'Writer' })).toHaveAttribute('data-look', 'left')
-    expect(screen.getByRole('img', { name: 'Writer' })).toHaveAttribute('data-mood', 'idle')
-    expect(screen.queryByText(/is asking/)).toBeNull()
+    // Same avatar node stays mounted and smoothly settles to idle without remounting.
+    expect(screen.getByRole('img', { name: 'Writer' })).toBe(face)
+    expect(face).toHaveAttribute('data-mood', 'idle')
+    expect(screen.getByTestId('asking-row')).not.toHaveTextContent(/Messaging/)
   })
 
-  it('shows the reply as it streams, from the thread it looked up once', async () => {
+  it('keeps the streaming reply out of the row, and its face writes while it answers', async () => {
     const rpc = threadRpc('live-t')
     render(
       <AskingRow
@@ -181,23 +214,29 @@ describe('AskingRow', () => {
       transcripts.messageDelta('live-t', '**Your bots** now work as a team.')
     })
 
-    expect(await screen.findByText('Your bots now work as a team.')).toBeVisible()
-    expect(screen.getByRole('img', { name: 'Writer' })).toHaveAttribute('data-mood', 'writing')
+    await waitFor(() =>
+      expect(screen.getByRole('img', { name: 'Writer' })).toHaveAttribute('data-mood', 'writing')
+    )
+    expect(screen.getByTestId('asking-row')).toHaveTextContent(/^Messaging Writer$/)
     expect(rpc).toHaveBeenCalledTimes(1)
 
     act(() => transcripts.messageComplete('live-t', { text: 'Your bots now work as a team.' }))
-    expect(screen.queryByText('Your bots now work as a team.')).toBeNull()
     expect(screen.getByRole('img', { name: 'Writer' })).toHaveAttribute('data-mood', 'listening')
   })
 
-  it('says a message was sent when no reply was waited for', () => {
+  it('settles to "Message from <bot>" alone, with none of the reply under it', () => {
+    render(<AskingRow message={message([call({})])} sender="scout" />)
+    expect(screen.getByTestId('asking-row')).toHaveTextContent(/^Message from Writer$/)
+  })
+
+  it('marks a message sent without waiting for a reply', () => {
     render(
       <AskingRow
         message={message([call({ result: { section_id: 'th1', status: 'sent' } })])}
         sender="scout"
       />
     )
-    expect(screen.getByText('Sent to Writer')).toBeVisible()
+    expect(screen.getByTestId('asking-row')).toHaveTextContent('Messaged Writer')
   })
 
   it('opens the conversation between the two bots, with the thread id once known', () => {
@@ -214,7 +253,7 @@ describe('AskingRow', () => {
 
     fireEvent.click(button)
     expect(useUi.getState().thread).toEqual({ bot: 'writer', peer: 'scout' })
-    // The result lands: the open panel learns the id without a second click.
+    // The result lands: the open view learns the id without a second click.
     rerender(<AskingRow message={message([call({})])} sender="scout" />)
     expect(useUi.getState().thread).toEqual({ bot: 'writer', peer: 'scout', sectionId: 'th1' })
     fireEvent.click(screen.getByRole('button', { name: /Open the conversation/ }))
@@ -223,10 +262,10 @@ describe('AskingRow', () => {
 
   it('names the target by its handle when its profile is unknown', () => {
     render(<AskingRow message={message([call({ args: { to: 'planner' } })])} sender="scout" />)
-    expect(screen.getByText('planner helped')).toBeVisible()
+    expect(screen.getByTestId('asking-row')).toHaveTextContent('Message from planner')
   })
 
-  it('tells a room member only that a teammate was asked, with nothing to open', () => {
+  it('tells a room member only that a teammate was messaged, with nothing to open', () => {
     const rpc = threadRpc('live-t')
 
     const { rerender } = render(
@@ -239,7 +278,7 @@ describe('AskingRow', () => {
       />
     )
 
-    expect(screen.getByText('Scout is asking a teammate')).toBeVisible()
+    expect(screen.getByTestId('asking-row')).toHaveTextContent('Messaging a teammate')
     expect(screen.getByRole('img', { name: 'Teammate' })).toBeVisible()
     expect(screen.queryByRole('button')).toBeNull()
     // Without a name there is no thread to look up.
@@ -251,7 +290,36 @@ describe('AskingRow', () => {
         sender="scout"
       />
     )
-    expect(screen.getByText('A teammate helped')).toBeVisible()
+    expect(screen.getByTestId('asking-row')).toHaveTextContent('Message from a teammate')
     expect(screen.queryByRole('button')).toBeNull()
+  })
+
+  it('draws settled history still, reserves prefix width, and fades the live ring via opacity', () => {
+    const { rerender } = render(
+      <AskingRow fresh={false} message={message([call({})])} sender="scout" />
+    )
+
+    const row = screen.getByTestId('asking-row')
+    expect(row).not.toHaveClass('hex-ask-enter')
+    expect(row.querySelector('.hex-ask-prefix')).not.toBeNull()
+    expect(row.querySelector('.hex-ask-label')).toBeNull()
+    expect(row.querySelector('.hex-ask-ring')).toHaveClass('opacity-0')
+    expect(row.querySelector('.hex-ask-ring')).not.toHaveClass('hex-ask-ring-live')
+
+    rerender(
+      <AskingRow
+        fresh
+        message={message([call({ result: null, status: 'running' })], true)}
+        sender="scout"
+      />
+    )
+    expect(row).toHaveClass('hex-ask-enter')
+    expect(row.querySelector('.hex-ask-label')).not.toBeNull()
+    expect(row.querySelector('.hex-ask-ring')).toHaveClass('opacity-100', 'hex-ask-ring-live')
+
+    // Settling after a live transition keeps the label transition animation cleanly.
+    rerender(<AskingRow fresh={false} message={message([call({})])} sender="scout" />)
+    expect(row.querySelector('.hex-ask-label')).not.toBeNull()
+    expect(row.querySelector('.hex-ask-ring')).toHaveClass('opacity-0')
   })
 })

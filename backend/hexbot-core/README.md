@@ -2,7 +2,7 @@
 
 The `hexbot` binary is the native daemon. Rust owns HTTP/WebSocket serving,
 authentication, storage, rooms, tool dispatch, providers, scheduling, Connect,
-and updates. A pinned **Pi 1.0.1** subprocess runs each agent conversation.
+and updates. A pinned **Pi 1.5.2** subprocess runs each agent conversation.
 Pi is the agent runtime at [earendil-works/pi](https://github.com/earendil-works/pi),
 not Raspberry Pi hardware. The private extension in `../pi-runtime/extension.ts`
 connects Pi tools, approvals, clarification, provider auth, and events to Rust.
@@ -100,6 +100,11 @@ it also installs over SSH when nobody is signed in at the screen.
   `heartbeat_messages`; the scheduler tick runs each bot's, and pushes go out
   through Hex Connect (`services::push`). Every migration drops the
   check-in tables it replaced.
+  Discord (`src/discord.rs`) adds `discord_bots`, `discord_channels`,
+  `discord_messages`, `discord_closed`, `discord_plugin` (the bots it is on
+  for in Plugins, with each one's mode) and `discord_guilds` (each app's
+  servers and their own modes), created by the same table list without a
+  version bump; tokens are in `accounts/discord/<bot>.json`.
 - Memory stays in `profiles/<bot>/memories/MEMORY.md`, soul in `SOUL.md`, and
   About you in `users/<id>/user.md`. Deleting a section leaves bot memory alone.
   Only sections, rooms, and dreams write it; a scheduled job's memory tool
@@ -155,8 +160,9 @@ it also installs over SSH when nobody is signed in at the screen.
   displayed history: a message row, or the journal link that orders it or
   hides it on another branch. `native_history_rewrites` counts changes that
   are not appends, including edits, deletions, reordered rows and journal links
-  that hide or reveal messages. `hexbot.sections.open` and `session.history`
-  return a conversation-bound `history_cursor` and `history_delta`, so clients
+  that hide or reveal messages. `hexbot.sections.open`, `session.history` and
+  `hexbot.sections.history` (which reads without starting the bot) return a
+  conversation-bound `history_cursor` and `history_delta`, so clients
   can request appended rows until a rewrite requires a full snapshot. Purging
   history removes both counters after the delete triggers finish. Chat fork
   reservations refuse targets containing either counter. History search
@@ -193,7 +199,7 @@ it also installs over SSH when nobody is signed in at the screen.
   includes the restart that moves a chat to new tools or a new model. Replay
   retention is bounded by session count and bytes.
   Stop also blocks retirement and input admission through its cleanup and queue
-  recovery. Pi 1.0.1 retains queued user input on abort. After Stop, the old
+  recovery. Pi 1.5.2 retains queued user input on abort. After Stop, the old
   operation and its preflights finish before `clear_queue` clears Pi's actual
   queues. Its text metadata can omit identical queued messages; acknowledged
   queued preflights and actual user projections determine what remains. Unknown
@@ -215,9 +221,11 @@ it also installs over SSH when nobody is signed in at the screen.
   holds the shared bot/room boundary through enqueue. Deletion refuses pending
   work and prevents later input from starting after its final busy check.
 - `profiles/<bot>/pi/` is the bot's Pi agent directory. The daemon rewrites
-  `auth.json`, `models.json`, and the `compaction` key of `settings.json`
-  atomically before every Pi start and whenever credentials change; other
-  `settings.json` keys are kept. Compaction uses Pi 1.0.1's defaults, written
+  `auth.json`, `models.json`, and the `compaction` and `cacheWarming` keys of
+  `settings.json` atomically before every Pi start and whenever credentials
+  change; other `settings.json` keys are kept. `cacheWarming` stays
+  `streaming`: Pi refreshes a cache only during a run, never between runs,
+  so a bot sends no request the user did not start. Compaction uses Pi 1.5.2's defaults, written
   out so a Pi upgrade cannot move them: reserve 16,384 tokens, keep the most
   recent 20,000. Each model Hexbot lists in `models.json` gets a
   `modelOverrides` entry capping the reserve and recent context kept at a
@@ -250,7 +258,7 @@ it also installs over SSH when nobody is signed in at the screen.
   differs, even if an earlier reply was interrupted, and also when the saved
   prompt differs from the live one. Offering writes nothing.
   The extension stages the offer until `before_agent_start`. If a provider
-  request comes first, it discards the offer: Pi 1.0.1 keeps its forced
+  request comes first, it discards the offer: Pi 1.5.2 keeps its forced
   prompt through a run, including automatic compaction and continuation.
   The next ordinary turn must not rewrite a prefix that continuation cached.
   Manual compaction and compaction before a new prompt can refresh before the
@@ -344,15 +352,25 @@ the production platform guard stays intact. Neither check establishes sandbox su
 ## Skills
 
 One resolver in `skills.rs` supplies prompts, tools, RPCs, scheduled jobs and
-skill-backed connectors. Skills resolve by directory name, with a bot's private
-copy taking precedence over `<home>/skills`, then bundled `skills/` selected by
-`HEXBOT_BUNDLED_SKILLS`. New bots do not copy bundled skills. Bot authoring writes
-only private skills; editing an inherited skill creates a private override.
-People can move a private skill into the library using the share RPC.
+skill-backed connectors. Skills resolve by directory name. A bundled skill
+(`skills/`, selected by `HEXBOT_BUNDLED_SKILLS`) always wins its name: nothing
+replaces it, and a library save, a share, a bot's `skill_manage` and a package
+install all refuse the name (`skills::built_in`). Among other names a bot's
+private copy takes precedence over `<home>/skills`, then over a package's. The
+one-time migration `migration:bundled-names-v1` renamed copies that had a
+bundled name to `<name>-own`, keeping their switches. New bots do not copy
+bundled skills. Bot authoring writes only private skills; editing an inherited
+library skill creates a private override. People can move a private skill into
+the library using the share RPC.
 
 A skill's `ready` and `missing` come from its frontmatter `platforms` and
 `prerequisites` (`commands`, `env_vars`), checked at every resolve; `enabled`
 requires `ready`, so every path that reads it hides a skill waiting for setup.
+A bundled skill named in a connector's `skills` (`connectors.json`) also needs
+the bot to have one of those connectors, on and set up
+(`connectors::with_skills`); until then `missing` holds a `connector`
+requirement naming them. Plugin lists show such a skill on its connector's row,
+not among the skills, as a package's skills show on the package.
 
 New library skills are on for every bot. The bot's `config.yaml` `skills.disabled`
 is the per-bot deny-list, and the root config's `skills.disabled` disables a
@@ -384,6 +402,10 @@ dot directories, empty directories and other permission bits are ignored,
 matching the old seeding rules. Modified bodies, scripts, extra non-dot files
 and non-dot symlinks keep a copy private. Empty category directories and those
 containing only an unchanged bundled `DESCRIPTION.md` are also removed.
+Installs from before the native daemon also seeded every bundled skill into
+the library, `<home>/skills`, where an unchanged copy hides each newer bundled
+version. A second one-time pass applies the same rule there, with its own
+completion marker so installs that already ran the first pass get it too.
 
 Run `node scripts/desktop/skill-history.mjs` after changing bundled skills.
 It reads every commit from `git log -- skills` plus the current tree and needs
@@ -406,12 +428,12 @@ inline skill bodies. Compatible sections refresh their catalog at the
 compaction boundary described above. The former shared-session About you
 repair is no longer needed after ownership is folded.
 
-Pi starts with `--no-skills` and receives no `--skill` paths. Pi 1.0.1 accepts
+Pi starts with `--no-skills` and receives no `--skill` paths. Pi 1.5.2 accepts
 explicit skill paths even with `--no-skills`; its `/skill:name` commands load
 bodies directly, bypassing daemon grants. Its generated skill prompt is also
 replaced by the private extension's `before_agent_start` handler. Scheduled
 jobs resolve their explicitly requested skills through the same live grants.
-Notion and Airtable connectors toggle grants without making private copies.
+The Notion connector toggles grants without making private copies.
 
 ## Verification
 
@@ -646,7 +668,7 @@ request retries at the next prompt. One invalid entry cannot disable the rest.
 Approvals for sections with no chat or room entry fail immediately. Visible
 sections retain the existing approval-card behavior.
 
-Pi 1.0.1 exposes no execute wrapper for a tool owned by its MCP extension.
+Pi 1.5.2 exposes no execute wrapper for a tool owned by its MCP extension.
 `getAllTools()` returns metadata, and `tool_execution_start` fires *before*
 `tool_call`, including for nested calls. We re-check mode and server revision
 after an approval answer in the last blocking hook. Unlike Hexbot's wrapped
@@ -663,7 +685,7 @@ and codemode once at `session_start`. Deferred tools never enter the model's
 tool declarations. Every Pi process runs with `--no-approve`, so a workspace
 `.pi/` directory (settings, `mcp.json`, extensions, skills, prompts, system
 prompt files) is never loaded, whatever Pi's trust store or
-`defaultProjectTrust` says. Without the flag Pi 1.0.1 resolves trust through
+`defaultProjectTrust` says. Without the flag Pi 1.5.2 resolves trust through
 the extension's `project_trust` event, then `<agent-dir>/trust.json`, then
 `defaultProjectTrust`; in RPC mode the `ask` default answers no, but a trust
 entry for the workspace or any parent would let a project `.pi/settings.json`

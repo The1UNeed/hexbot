@@ -37,8 +37,12 @@ more freedom and more capability than a hosted product can offer.
 
 - Each bot has two files: its soul (persona; the user and the bot both edit
   it, and the bot says so when it does) and its memory (short entries the
-  bot writes during chat, each ending with the month it was learned, capped
-  at 2,200 characters, injected every turn).
+  bot writes during chat, each ending with the month it was learned,
+  injected every turn). Both have a character limit, by default 4,000 for
+  the soul and 2,200 for memory. The user sets the defaults in Settings,
+  Memory, and can give a bot its own in its settings; the limit applies to
+  every write, the user's included. Both sit in every prompt, so the limits
+  stay between 500 and 20,000.
   Beside them sit its daily notes: one file a day, up to 4,000 characters,
   that the bot appends to at natural pauses and reads back by day. Notes
   are never injected; the dream folds what lasts into memory, and a day is
@@ -76,6 +80,9 @@ more freedom and more capability than a hosted product can offer.
   the soul. What a job asks to remember is a proposal; the bot's next dream reviews it
   as an untrusted suggestion and keeps or drops it. Soul changes need the
   user.
+- A bot that schedules a job says so in its reply, and each run's result is
+  posted in its chat with a notification, unless the user asked for no
+  notifications (the job's `notify`). Jobs made in the app stay quiet.
 
 ### Rooms
 
@@ -91,6 +98,21 @@ more freedom and more capability than a hosted product can offer.
   When a limit trips the room posts a notice and stops.
 - Usage comes from the core's `session_model_usage` table and the native
   runtime's usage rows, all on the owner's keys.
+- A Discord channel can be a room. Each bot is its own Discord app, so the
+  owner can put different bots in different servers and each keeps what a
+  channel says to itself. Discord is turned on for a bot in Plugins and
+  connected in the bot's own settings. The owner chooses how each bot acts,
+  for every server or one: answer mentions and see only them, answer
+  mentions and read along, join in as an active member, or answer everyone.
+  The first mention of a bot, or the first message where it listens, makes
+  the channel a room; the bot replies in Discord as itself; the owner reads
+  along, since Discord is where people reply. Each channel stays its own
+  conversation, so the cached prefix holds; a bot that reads along reaches
+  the rest of its server with a read tool instead of one giant prompt. The
+  people there are not the owner: the room stays Manual with no main bot,
+  and its bots get notes, the web and their server only, without memory or
+  About you. One Gateway connection per bot, outbound, so a daemon at home needs no
+  open port (`docs/rooms.md`, Discord rooms).
 
 ### Bots talking to bots
 
@@ -117,6 +139,11 @@ more freedom and more capability than a hosted product can offer.
   even in Bypass.
   Network, service, and billing settings and every credential stay with
   the user.
+- It puts a bot only on a provider the user has connected, never one it
+  assumes. A new bot without a model takes the default model from Settings
+  when that is on the bot's provider, or no provider was named; otherwise
+  the tool refuses and the bot asks the user which provider and model to
+  use. The same holds for the default and fallback models in Settings.
 - Its tools and guidance are frozen with its chat like any other change of
   tools, so a bot made primary takes them with its next message, which
   misses the prompt cache once.
@@ -147,10 +174,67 @@ more freedom and more capability than a hosted product can offer.
   soul, `skill_view`, `hexbot_notify`, `hexbot_heartbeat`,
   `hexbot_connector_read`, `web_search` and `web_extract`; of Pi's, read,
   grep, find and ls. Connector tools still ask before changing anything, and
-  nobody can answer. Notion and Airtable work through skills and the shell
-  elsewhere; in a heartbeat, `hexbot_connector_read` makes their read
-  requests (GET, and Notion's search and queries) with the bot's key, which
-  the model never sees.
+  nobody can answer. Notion works through a skill that describes its
+  API, and no shell has its key, so the daemon makes the requests
+  with the bot's key, which the model never sees: `hexbot_connector_read`
+  for reads (GET, and Notion's search and queries) and, outside heartbeats,
+  `hexbot_connector_write` for changes, which Auto reviews and Manual asks
+  about like a connected tool's. GitHub works the same way with the user's
+  fine-grained token; its reads are GET only, so every POST, GraphQL
+  included, is a change.
+- Google and Microsoft each have one connector per service, not one for
+  the whole account: Gmail, Calendar, Drive, Docs, Sheets, Slides and Tasks;
+  Outlook, Outlook Calendar, OneDrive, Word, Excel, PowerPoint and To Do.
+  The user connects the ones they want, and each asks its provider for only
+  the permissions it needs, so a bot with the calendar has no way into the
+  mailbox. A connector is connected by signing in, not with a key, and
+  several of one account can share one sign-in; each still keeps a grant of
+  its own (`accounts/<connector>.json`), so disconnecting one leaves the
+  others. The daemon keeps the grants and makes every request
+  (`accounts.rs`); the model never sees a token.
+- Each kind of thing has one tool for both accounts, as mail does: a
+  calendar, tasks, files, documents, spreadsheets and presentations
+  (`runtime_workspace.rs`). A bot has a tool once either of its connectors
+  is on and connected, and names the account only when it has both. Reads
+  run in every mode. A change passes the extension's gate like a
+  connector's: Bypass runs it, Auto's reviewer checks it, Manual asks.
+  Deleting an event or a task takes its title as well as its id, so the
+  approval names what goes and a wrong id deletes nothing. Google Drive is
+  read whole but changed only where Hexbot added the file, which Google
+  enforces (`drive.file`); OneDrive keeps every version it replaces.
+- Google has an API for a document's, a sheet's and a deck's content;
+  Microsoft has none for Word and PowerPoint, and its workbook API does not
+  serve personal accounts. So Word, Excel and PowerPoint files are read and
+  changed as the files they are (`word.rs`, `excel.rs`, `powerpoint.rs`,
+  over `ooxml.rs` and `zip.rs`): the daemon fetches the file, changes the
+  parts a change names, leaves every other part byte for byte, and puts it
+  back only if the file is still the version it read. For anything past
+  adding, replacing and writing cells, a bot downloads the file, works on
+  it with a skill, and uploads the next version.
+- Times on a calendar are the calendar's own local time, with its zone
+  named beside them. The daemon has no time zone database and never
+  converts one: Google and Outlook resolve a local time in the zone they
+  are given, and a day asked for in local time is fetched as every instant
+  it could be and cut to the day here (`calendar.rs`).
+- A bot's `hexbot_mail` searches and reads Gmail, Outlook and IMAP mail,
+  as plain text, and drafts. IMAP mail is any other mailbox, set up with an
+  address and an app password as connector fields, so the daemon, not a
+  shell, opens every IMAP and SMTP connection. A draft is a
+  card in the bot's chat that the user edits, then sends or saves to Drafts
+  with their own click, in every approval mode: sending email is never the
+  bot's decision, and a reviewer can't tell a good email from a bad one.
+  The draft stays in the chat until then, so nothing half-written lands in
+  the mailbox, and the card says Sent only once the mailbox took it; a
+  refusal leaves the card open with the user's edits. Mail stays in the bot's own chat and its jobs; rooms and
+  threads between bots may have other readers. Google refuses Gmail scopes
+  to device codes, so it signs in with PKCE, and a desktop client may only
+  return to 127.0.0.1. Google returns to the daemon's loopback port from a
+  browser beside it, to the desktop app's own port (the app passes the
+  address on) wherever the daemon runs, and through Hex Connect to the
+  daemon's tunnel from a browser or phone elsewhere. Connect forwards the
+  browser only when it is signed in as the daemon's owner, so a consent
+  page someone else started can't hand them your grant, and keeps nothing.
+  A daemon without Connect falls back to a pasted address.
 - Its one way to speak is `hexbot_notify`: one message per run, eight a day
   from each bot. The message is posted as the bot's own message in its chat
   (made if it has none) and broadcast whole as `hexbot.heartbeat.message`:
@@ -210,33 +294,49 @@ more freedom and more capability than a hosted product can offer.
   including without a card when the owner requested that exact change.
 - Auto's reviewer (`runtime_review.rs`): a full-access command, a file change
   outside the workspace, a connected tool that changes something, and a
-  browser page script go to a tool-free one-shot call on the section's model.
+  browser page script go to a tool-free one-shot call on the section's model,
+  or on the review model the user chose in Settings, Approvals
+  (`review_model`, one for every bot; removing its provider clears it, and a
+  review that fails on it shows the card, without trying the bot's model).
   It reads the owner's visible messages in the section and their room
   messages, newest first, plus the step's whole input, working directory,
   checked file destination and overwrite status. It loads no project instruction files,
   skills or tools. Assistant text, tool output and bot-added messages stay out.
+  A step the owner approves on a reviewed card is shown to later reviews in
+  the same turn (the newest twelve, as the card showed them), so ten edits to
+  one page ask once; a denied step is also shown for that turn so retries do
+  not silently auto-allow. Clicking **Always allow** on a non-critical card
+  persists an **Allow automatically** rule (`approval_rules` in `hexbot.db`,
+  managed alongside **Ask first** rules in Settings, Approvals,
+  `hexbot.approvals.rules.*`); **Ask first** rules always override **Allow
+  automatically**, and critical safety hazards never offer Always allow.
+  Reviewed cards lead with a plain-English title and reason and tuck raw
+  commands behind an expandable disclosure. A connected service names things by
+  ids the reviewer cannot check, so it judges the action and the content: an
+  edit that fits the request runs, and deleting, sharing or notifying people asks.
   Pi starts in an empty directory and explicitly excludes `APPEND_SYSTEM.md`.
   ACP reviewers also use an isolated temporary home and Copilot/XDG folders,
   keeping only explicit GitHub-token authentication. Stored CLI login is not
   imported. Only `--acp` and `--stdio` are accepted as configured ACP arguments.
   Extra arguments, missing auth or rejected isolation flags fall back to a
   card; ordinary ACP sessions keep their login behavior.
-  A step over 20,000 characters asks without review, whatever the tool.
-  Owner messages fill the rest of an 80,000-character request, newest first
-  and never clipped. When older ones are left out (or a stored row is too
-  large to load), the request says so and only a low risk `allow` runs: a
-  long chat's lost restriction could forbid a medium-risk step, so it asks.
+  A step over 40,000 characters asks without review, whatever the tool.
+  Owner messages fill the rest of an 80,000-character request alongside the
+  user's standing Custom Rules (`allow` and `ask`), newest first and never
+  clipped. Oversized non-owner rows are skipped by metadata so they never hide
+  earlier user messages; when older owner messages are still left out, only a
+  low-risk `allow` runs so a missing chat restriction can still guard a
+  medium-risk step.
   History-read failures also ask. Each section runs at most two reviews at
   once, and shows "Checking this step" while one runs. The final check
   retries once when the database or reply slot is briefly busy. Reported reviewer usage counts toward section,
-  room and daily totals. Changed owner messages or pending owner prompts and steers
+  room and daily totals. Changed owner messages, changed approval rules, or pending owner prompts and steers
   invalidate automatic approval when the complete evidence is rechecked.
   Copilot ACP reports zero token usage and cost, so its reviews add no measured
   usage to budgets or totals.
   A low or medium risk `allow` runs the step; anything else, including a failure,
-  a timeout (60 s) or unparseable output, shows the card with the reviewer's sentence. Those
-  cards offer Approve and Deny only, and reviewed steps ignore Allow for now
-  grants from Manual, so one approval never covers the next step. Changing the mode
+  a timeout (60 s) or unparseable output, shows a card with the reviewer's sentence.
+  When the reviewer supplied a plain-English title, the card leads with it and tucks the raw command behind an expandable disclosure; failed or untitled reviews show the raw command directly. Non-critical reviewed cards offer **Allow once**, **Always allow** (showing the exact computer-scoped rule it will save to Allow automatically), and **Deny**; critical or failed-review cards offer **Allow once** and **Deny** only. Reviewed steps ignore Allow for now grants from Manual. Changing the mode
   or working directory during review blocks the step. File execution also
   checks the resolved destination and reviewed overwrite status again.
   Only visible sections are reviewed; the rest still refuse.
@@ -282,27 +382,107 @@ more freedom and more capability than a hosted product can offer.
   name (each server's `bots` list); a new server reaches no bot until the
   user picks one, and a new bot starts with none. A server defined in one
   bot's profile stays private to it.
+- Computers (`machines.rs`): a bot works on the bots' computer (`vm`), this
+  computer (`host`) or one of the user's computers (`device:<id>`), each
+  given to bots as one of their environments like a plugin (each
+  computer's `terminal` list of bots in `config.yaml`, `computers`); bash
+  runs in every one. The Computer Use connector (`computers.computer_use`)
+  adds the screens of a bot's environments where each is shared; a desktop
+  is never granted on its own. A daemon from before computers keeps what
+  its bots had: the bots' computer's desktop for every bot (now the bots'
+  computer as an environment plus Computer Use), this computer's terminal
+  for bots with the terminal toolset; the first start writes that down,
+  including whether new bots get this computer's terminal, from the
+  daemon's default toolsets. The Terminal switch in bot settings, and
+  `terminal` in a bot's tools as the API and the primary bot set them, give
+  the default computer or take every one (while the bots' computer is
+  switched off or can't run here, it gives no bash and a tools list leaves
+  what was saved for it, so installing Cua brings it back); Settings,
+  Computers sets each computer exactly, and a tool list never changes
+  Computer Use.
+  bash and computer_use take a `computer` argument with a fixed schema; the
+  bot's computers freeze with its tools (`computers` in the section options)
+  and the prompt's Computers block lists them; a delegate or other
+  restricted section keeps the ones its tools reach. A chat whose computers
+  change (which ones, or what each offers; never a name or an OS a computer
+  reports) is rebuilt at its next message, like a tools change; rooms,
+  threads, jobs and delegates keep theirs. Online or offline shows only in tool results,
+  and every call checks the live grant (`computersNow`).
+  - The bots' computer: commands run there through `cua sb exec`, without
+    the OS sandbox, since it is easy to reset. Bypass runs them; Manual asks
+    for each (Allow for now covers it); Auto runs routine dev work (package
+    installs, read-only fetches, git clone/pull/fetch) freely and sends only
+    higher-impact commands to the reviewer: root escalation, remote host
+    shells/transfers, `git push`, outbound network uploads/mutations, broad
+    deletes, or piping into a shell (`riskyCommand` in the extension).
+    `full_access` is refused there.
+  - This computer: bash in the OS sandbox exactly as before. Its desktop is
+    shared through Cua's direct connection on loopback (`cua host setup
+    --direct 127.0.0.1:3211 --no-provide-spaces`, never the relay), turned
+    on in Settings, Computers; macOS then asks for Screen Recording and
+    Accessibility.
+  - The user's computers: a desktop app connected to a daemon on another
+    computer offers its own when the user turns on Let bots work here, and
+    its screen with Computer Use here, which asks with a native dialog in the main process and
+    can't be turned on by the daemon or the page. The app attaches over its
+    own WebSocket (`hexbot.computers.attach`), the daemon sends work as
+    `hexbot.computers.request` events on that connection only, and the app
+    answers with `hexbot.computers.reply`; the main process checks its own
+    switch again and runs the command in the user's shell (PowerShell on
+    Windows) or one allowed Cua desktop tool. Commands there run with no
+    sandbox: Auto reviews every one, Manual asks for each (no Allow for
+    now), Bypass runs. The tray says while a bot acts and stops it, killing
+    running commands and what they started; the connection ending or the
+    app quitting does too, keeping the switch. The daemon's own app (the local device)
+    can't attach; this computer is `host`.
+  - Desktops on this computer and the user's computers follow Codex and
+    Claude: the first action in an app asks, Allow for now (this
+    conversation) or Always allow (saved per bot and computer, removable in
+    Settings, Computers); Bypass asks for no app. The app is where the
+    action lands: the focused window for typing and keys, every app with a
+    window under each point a click, scroll or drag must name, the app a
+    launch names. Editors, IDEs and script apps take no input, like
+    terminals, all known by name; system-wide shortcuts are refused.
+    Unknown targets and `open` are refused. Just before it runs, under one
+    lock per computer, the action is checked again (grant, apps, and the
+    mode, read again then).
+    Terminal apps and Hexbot itself never take input, and computer_use's
+    shell is refused there: commands go through bash and its approvals.
+    Browsers, file managers and system settings say more on the card.
+    Unattended runs can't ask, so they are refused there.
 - Approvals render inline in the transcript with Approve, Allow for now, and
   Deny when a grant is available. "Allow for now" quiets the same kind of
   Manual or unreviewed request until the bot's agent process restarts;
   nothing is saved. Reviewed Auto cards, incomplete file scans and requests
   the daemon raises itself (code runs, browser scripts, cron) offer Approve
   and Deny only. Native notifications for approvals and mentions.
-- New bots get files, web search and terminal (terminal gated by
-  approvals). Every bot has Computer use: the bots' own computer, a Cua
-  sandbox separate from the daemon's computer, where they run code, install
-  programs, browse and use apps. Nothing a bot runs there lands on the
-  daemon's computer. Settings, Manuals, Computer use holds its size and
-  controls; Settings, Plugins shows connectors, MCP servers and skills on
-  three tabs. Self-authored skills are on,
-  with a transcript notice. Bundled and user-shared skills form one library,
-  enabled for every bot unless disabled globally or for that bot. A skill
+- New bots get files and web search, plus the computers setup chose as
+  their environments: the bots' own computer when Cua can run it, and this
+  computer as setup chose (without a choice, this computer when Cua can't
+  run; an install with bots from before computers keeps giving it, as its
+  first start wrote down). A bot's terminal runs in every environment it
+  has. Computer Use is a connector, as setup chose for new bots: with it a
+  bot sees and uses the screens of its environments where they are
+  shared, so a desktop is never granted apart from a computer. Settings,
+  Computers holds every computer and its bots, each computer's Computer
+  Use here switch, and the bots' computer's size and controls;
+  Settings, Plugins shows connectors, MCP servers and skills on three tabs. Self-authored skills are on,
+  with a transcript notice. A bot gets only the skills it needs, since every
+  one it has is a line in its prompt. Hexbot bundles few: the ones for its
+  own tools (computer use, MCP servers, writing and installing skills) and
+  PDF files are on for every bot; the rest come with a connector
+  (`skills` in `connectors.json`), such as `xlsx` with Excel, and a bot has
+  them only while it has that connector. Bundled skills can be turned off,
+  never changed, deleted, or added again under their name, by the user, a
+  bot or a package. Skills the user adds in Settings, Plugins, Skills join
+  the library, on for the bots chosen there. A skill
   whose frontmatter names a platform, program or key this computer lacks
   stays hidden from bots until it is set up; settings say what it needs. Bots write
   private skills; the owner can share a bot's skills into the library.
   A bot owner can edit its private skills and grants.
-- Tools run on the host in a shared workspace at `~/Hexbot`. Per-bot working
-  directories come with the roster milestone.
+- File tools run on the host in a shared workspace at `~/Hexbot`; commands
+  and desktop actions run on the computers each bot may use. Per-bot
+  working directories come with the roster milestone.
 
 ### Chats
 
@@ -346,8 +526,13 @@ more freedom and more capability than a hosted product can offer.
   change, or an update changes Hexbot's own tools, the chat is rebuilt with
   them at its next message; rooms, threads between bots, jobs and delegates
   keep what they started with. Skill reads use current bodies and grants.
-- Sidebar: one list of bots and rooms ordered by recent activity. A bot is one
-  row; opening it opens the chat.
+- Sidebar: one list of bots and rooms, newest message first. A bot moves up
+  when you write in its chat and when it posts there; work out of sight
+  (threads between bots, rooms, jobs, heartbeat runs, dreams) leaves it in
+  place. A bot is one row; opening it opens the chat. Pinned bots and rooms
+  sit above the list as large faces, in the order they were pinned; the
+  primary bot starts pinned. Right-click a row (long-press on the phone) to
+  pin, mark as read, rename, or open settings.
 
 ## 3. Client
 
@@ -366,13 +551,56 @@ more freedom and more capability than a hosted product can offer.
   implements it. One daemon connection at a time (several in the Connect
   milestone).
 - Bot avatars: uploaded image, generated initials by default.
-- Tool calls show only while they run, then collapse into one line above the reply.
+- While a bot works, one line at the foot of its turn says what it is doing:
+  its face, in the mood of the step, and a few words in two tones, the verb
+  quiet and the thing it acts on stronger: "Thinking…", "Opening Taobao",
+  "Searching the web for CER dates", "Reading notes.md", "Typing…". The
+  words are built in the app from the running step and its arguments
+  (`apps/web/src/lib/work-label.ts`), so they cost no tokens and leave
+  prompts and their cache alone. A page is named by its site and a file by
+  its own name; a command or a script is never quoted. The line is gone when
+  the turn is: a conversation shows what bots say, not how they got there.
+- Tags: what a message names can be clicked. A tag is an ordinary Markdown
+  link whose target says what it is, so the message reads the same anywhere
+  else: a web page (`https://…`, drawn with the site's own icon, asked of
+  that site and of no one else, and never of an address on your network), a
+  bot (`@handle`, drawn with its face and its name in its colour), a file (an
+  absolute path), a room (`hexbot:room/<name>`), a bot's scheduled jobs
+  (`hexbot:jobs/<handle>`), a Settings page (`hexbot:settings/<page>`), a
+  plugin or a skill (`hexbot:plugin/<name>`, `hexbot:skill/<name>`). A page
+  opens in the browser, a file beside the chat, and the rest where it lives.
+  Scheduled jobs have a page only in the mobile app; the web and desktop
+  apps mark the tag and open nothing.
+  A bot's name opens the private conversation between it and the bot that
+  named it; named by you, its chat. The daemon's prompt teaches bots the
+  list; a tag for something that is gone reads as its plain words.
+- A bot messaging another is marked under its turn, in the middle of the
+  column like the time between messages, with the other bot's tag:
+  "Research is asking Writer" while it runs, then "Writer helped", or
+  "Messaged Writer" when no reply was waited for. The mark opens the
+  conversation between the two.
+- Reactions: in a bot's chat, you leave one emoji on something the bot said,
+  and the bot can leave one on your latest message (`hexbot_react`). Each
+  side has one reaction a message; the same emoji again takes yours back.
+  Reactions are kept beside the history and never change the conversation
+  the model holds: yours reach the bot with your next message, the way its
+  heartbeat's messages do, so the cached prefix stays. Rooms and threads
+  between bots have none.
 - Visuals: a bot can show a chart, table, diagram or mockup as an HTML page
   in the conversation (`hexbot_show_html`). It is drawn, live, in a bot
   bubble above the bot's final reply, under its title and an Expand button
   that opens it beside the chat, where each visual gets a tab like a
   browser's. It follows the app's theme and runs sandboxed with no network
   access beyond a few script CDNs.
+- Shared files: a bot hands the user a file it chose, the way a person
+  attaches one (`hexbot_share_file`). It shows as a card under the reply and
+  opens beside the chat. The files a bot writes or edits while it works stay
+  out of the chat; the chat is for what the user asked for, not a log of
+  every file touched.
+- Media: a video or audio file you send plays in your message, then and after
+  a reload. A bot's voice replies, the pictures and clips it makes, and a
+  picture, video or audio file it shares show under its reply: video and audio
+  play there. Rooms name these files without playing them.
 
 ## 4. Network, auth, Connect
 

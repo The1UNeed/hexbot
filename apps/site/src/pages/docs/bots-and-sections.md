@@ -15,7 +15,7 @@ Use Bot settings to configure how it works:
 | Profile    | Display name, face, and teammate description.                        |
 | Soul       | How the bot behaves and speaks. You and the bot can edit it.         |
 | Model      | The provider and model this bot uses.                                |
-| Tools      | Workspace tools, senses, working with other bots, and the working directory. Computer use is in Settings, Manuals. |
+| Tools      | Workspace tools, senses, working with other bots, and the working directory. Which computers it works on is in Settings, Computers. |
 | Connectors | Outside services and MCP servers this bot can use.                   |
 | Skills     | Instructions for particular kinds of work.                           |
 | Approvals  | A bot-specific override of the daemon's approval mode.               |
@@ -25,11 +25,11 @@ The teammate description tells other bots when to ask this one for help. For exa
 
 ## Faces and colours
 
-In Profile, pick a shape and a colour for the bot's face, or use a photo. A picked face is kept with the bot on the daemon, so the web app, the desktop app, and the mobile app all draw it. The bot's message bubbles take a light wash of its face colour in chats and rooms, so you can tell bots apart at a glance. A bot with a photo keeps grey bubbles. The mobile app shows faces and can switch a bot to a photo, but faces are picked in the web or desktop app. On an older daemon a picked face is saved only as a picture: the web and desktop apps still draw it live, and the mobile app shows the picture.
+A bot's settings have a **Face** page, which **Change face** on Profile also opens. It shows the bot as it will look, on a stage in its colour over a sample of its message bubble, then every shape and colour: nineteen shapes in twenty-one colours. Each pick is saved at once. **Shuffle** gives a face none of your other bots has, and **Use a photo** takes a picture in its place; picking a shape or a colour again, or **Back to a face**, brings the face back. A new bot gets a face at random, with Shuffle and Change face in the New bot window. A picked face is kept with the bot on the daemon, so the web app, the desktop app, and the mobile app all draw it. The bot's message bubbles take a light wash of its face colour in chats and rooms, so you can tell bots apart at a glance. A bot with a photo keeps grey bubbles. The mobile app has the same page behind **Change face** on a bot's profile. On an older daemon a picked face is saved only as a picture: the web and desktop apps still draw it live, and the mobile app shows the picture.
 
-Faces have two capsule eyes, as on the Hexbot icon. In the web and desktop apps, a face sways, glances, and blinks while idle. While the bot thinks, the face folds into three bobbing dots; while it writes, into a pencil; while it searches, it peers around; while it works, it bobs and narrows its eyes in concentration. Now and then a busy or happy face turns all the way round. Faces in the roster and in chat and room headers, including every face in a room, match their status dot: working, listening (a tilt from side to side) when it needs you, or happy (a hop) when an unseen reply is done. Two bots asking each other turn toward each other. The Hexbot mark dozes while the app has lost its connection. Reduced motion keeps each expression without animation. Mobile draws the same settled expressions.
+Faces have two capsule eyes, as on the Hexbot icon. In the web and desktop apps, a face sways, glances, and blinks while idle. While the bot thinks, the face folds into three bobbing dots; while it writes, into a pencil; while it searches, it peers around; while it reads, its eyes go down the page a line at a time; while it waits on your answer, it listens; while it works, it bobs and narrows its eyes in concentration. Now and then a busy or happy face turns all the way round. Faces in the roster and in chat and room headers, including every face in a room, match their status dot: working, listening (a tilt from side to side) when it needs you, or happy (a hop) when an unseen reply is done. Two bots asking each other turn toward each other. The Hexbot mark dozes while the app has lost its connection. Reduced motion keeps each expression without animation. Mobile draws the same settled expressions.
 
-Faces also react to what happens. A bot looks shy when you thank it, surprised when something is urgent, and curious about other requests. It looks confused when a step fails and frustrated after several, sad when a reply fails or it has to apologise, proud after a long job, and it celebrates passing tests, merges, and deploys. Left alone in an open chat it gets bored, then drowsy, and wakes when something happens. Hexbot reads these from the conversation; it never asks the model, so they cost nothing. The mobile app shows them in a bot's chat.
+Faces also react to what happens. A bot looks shy when you thank it, sheepish when you correct it, determined when you ask it to try again, surprised when something is urgent, amused when you laugh, excited at good news, cheerful when you greet it, and curious about other requests. It looks confused when a step fails and frustrated after several, sad when a reply fails or it has to apologise, relieved when it gets there after a failed step, proud after a long job, and it celebrates passing tests, merges, and deploys. Left alone in an open chat it gets bored, then drowsy, and wakes when something happens. Hexbot reads these from the conversation; it never asks the model, so they cost nothing. The mobile app shows them in a bot's chat.
 
 To hear when a bot starts, finishes, or needs you, turn on **Sounds** in Settings, Appearance. The tones play for the conversation you have open while the window is in view; otherwise notifications speak for the bot. Sounds are off by default and set for each app or browser. The mobile app has no Sounds switch yet.
 
@@ -37,7 +37,7 @@ To hear when a bot starts, finishes, or needs you, turn on **Sounds** in Setting
 
 HexBot is your primary bot. Setup creates it, and it looks after the rest: in its chat it can list, create, change, and delete your bots, create rooms and change who is in them, schedule jobs for any bot, and change settings, skills, and connectors. It always asks before it deletes a bot, room, or job, removes a room's last bot (which deletes the room), changes a bot's or room's approval mode or a bot's or job's working folder, changes a setting, or turns a skill or connector on or off, even in Bypass. It never sees API keys or connector credentials, and it can't change network or service settings.
 
-There is one primary bot, pinned at the top of the roster, and it can't be deleted. You can rename it and change its soul, model, and tools like any other bot. If you used Hexbot before the primary bot existed, the bot list asks you to add HexBot or to make one of your bots primary; on the phone app, choose Make primary in a bot's profile. A bot made primary gets the extra tools in its chat from your next message. Its tools don't work in rooms or scheduled jobs.
+There is one primary bot, and it can't be deleted. It starts pinned at the top of the sidebar; you can unpin it like any other bot. You can rename it and change its soul, model, and tools like any other bot. If you used Hexbot before the primary bot existed, the bot list asks you to add HexBot or to make one of your bots primary; on the phone app, choose Make primary in a bot's profile. A bot made primary gets the extra tools in its chat from your next message. Its tools don't work in rooms or scheduled jobs.
 
 ## Heartbeat
 
@@ -56,11 +56,19 @@ You can also ask the bot in its chat to keep an eye on something; it adds the li
 
 The message shows in the bot's chat and as a notification in the app, in a browser tab you allowed (browsers notify only over HTTPS, such as through Hex Connect), and on your phone. Reply in the chat and the bot knows what it told you. Each bot sends at most one message per heartbeat and eight a day. Its Notify me switch silences the notifications; the messages still arrive in the chat.
 
-The same page shows when the next heartbeat runs, runs one now, and lists recent heartbeats with what each looked at. Turn heartbeats off for every bot there or in Settings. A heartbeat runs unattended, like a scheduled job, with your keys. It only looks: it can read files, search and read the web, and read its connectors, including Notion and Airtable, but it can't run commands, use the browser or the computer, change anything through a connector, or ask you anything, and it suggests memory changes for its next dream instead of writing them.
+The same page shows when the next heartbeat runs, runs one now, and lists recent heartbeats with what each looked at. Turn heartbeats off for every bot there or in Settings. A heartbeat runs unattended, like a scheduled job, with your keys. It only looks: it can read files, search and read the web, and read its connectors, including Notion, but it can't run commands, use the browser or the computer, change anything through a connector, or ask you anything, and it suggests memory changes for its next dream instead of writing them.
 
 The heartbeat replaced your primary bot's check-ins. If it sent you any, its Check-ins conversation stays until you delete it under Heartbeat in its settings or in its profile on the phone app.
 
+## Notifications
+
+Hexbot notifies you when a bot finishes a reply, asks for approval, has a question, stops, or writes from its heartbeat: in the app, in a browser tab you allowed (browsers notify only over HTTPS, such as through Hex Connect), and on your phone. It stays quiet only about the chat you have in front of you; a Hexbot window behind another app, or another chat, still notifies. Settings, Notifications shows whether this computer or browser can notify and sends a test, lists the phones that take notifications, and has a Notify me switch for each bot. Until you turn them on, a banner under the chat's header offers to.
+
+On a Mac, macOS decides whether the app's notifications show, and the app cannot see its answer. macOS asks when you first open Hexbot; if you did not choose Allow, it hides every notification without saying so. That is why the banner sends a test and asks whether it appeared. If it did not, choose Open System Settings, allow Hexbot under Notifications, and try again. Settings, Notifications has the same test and button.
+
 ## Keep the chat going
+
+Right-click a bot or a room in the sidebar to pin it, mark it as read, rename it, or open its settings. Pinned bots and rooms sit above the list as large faces, in the order you pinned them; a search lists them as rows again. Renaming a bot changes the name you see; its handle stays the same. On the phone app, long-press a chat for the same menu.
 
 Select a bot in the sidebar to open its chat and carry on where you left off. Closing the app or restarting the daemon does not end it. Behind the chat is one persistent Pi conversation.
 
@@ -68,13 +76,29 @@ Changes reach the chat at different times:
 
 | Change                                         | When the chat has it                                                                                                              |
 | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| Model or reasoning level                       | From your next message.                                                                                                           |
+| Model, reasoning level, or fast mode           | From your next message.                                                                                                           |
 | Tools, connectors, or MCP servers              | From your next message. That one reply rereads the conversation without the provider's prompt cache, so it costs more than usual. |
 | Soul, memory, About you, skills, and teammates | After the chat next summarises older messages, as described below.                                                                |
 
 When a chat grows past what the model can hold, Hexbot summarises the older messages so the chat can go on.
 
 A summary keeps the thread of the work but not every detail. What lasts goes into the bot's memory and notes, and the bot can search the chat's history from before its latest summary when it needs an exact detail.
+
+## What a bot is doing
+
+While a bot works, a line under its messages says what it is doing: "Thinking…" before anything happens, then the step it is on, such as "Opening Taobao", "Searching the web for CER dates", or "Reading notes.md", and "Typing…" while it writes its reply. Its face beside the line follows the step. Hexbot builds the words from the step itself and never asks the model, so they cost nothing. A page is named by its site and a file by its own name; a command is never shown. The line goes when the bot is done. The side panel's Computer tab still lists every step.
+
+## Tags
+
+What a message names can be clicked. A web page shows its site's icon and opens in your browser. A bot shows its face and its name in its colour, and opens the private conversation between it and the bot that named it. A file opens beside the chat. A room, a Settings page, a plugin, and a skill open where they live. A bot's scheduled jobs open in the phone app, which has the page for them. When a bot messages another bot, a centred line under its turn marks it with that bot's tag: "Messaged Biology", or "Biology helped" once a reply came back.
+
+Tags work in chats and rooms, in the web, desktop, and mobile apps. The mobile app shows a globe in place of a site's icon, and a bot's name in its colour without its face. A site's icon is asked of that site and no one else, and never of an address on your own network.
+
+## Reactions
+
+In a bot's chat you can react to anything the bot said: point at the message and choose the face beside it, or hold the message on a phone, then pick an emoji. Picking the same emoji again takes it back. The bot learns of your reactions with your next message, so a thumbs-up is a quick way to say a result was right. A bot can react to your latest message too.
+
+Each of you has one reaction a message. Reactions are in a bot's chat only, not in rooms.
 
 ## Formulas
 
@@ -84,21 +108,23 @@ Bots write math in LaTeX. The desktop app and the browser typeset it, in chats a
 
 A [dream](/docs/dreaming/) posts nothing in the chat; its summary is in the bot's settings, Memory. Reports an earlier version posted stay in the chat. The bot does not see them as something it said, and later dreams skip them.
 
-## Stop and delete
+## Recall and delete
 
-Use **Stop** to interrupt a running answer. The chat stays available, and you can send another message once the bot is idle. Queued background results run before your next message. A result accepted just after Stop finishes can start the next answer itself. A background result arriving while the answer stops waits until it has stopped, then continues the chat. The new answer can ask questions and request approvals. A question or approval the bot was waiting on goes away in every app.
+A bot's chat has no Stop button. To take back a message you sent, **Recall** it: hover over your latest message (or long-press it on the phone), and the bot stops, forgets it, and hands the text back to edit. A message you send while the bot works cuts its answer off and goes next. In a room, **Stop** interrupts the bots that are answering. Queued background results run before your next message. A background result arriving while an answer stops waits until it has stopped, then continues the chat. The new answer can ask questions and request approvals. A question or approval the bot was waiting on goes away in every app.
 
-In the web and desktop apps, the message box clears as soon as you send, and your message shows greyed with a spinner until the daemon takes it. If it has not gone through after 15 seconds, was refused, or the bot's answer to it failed, it shows a red **!** and **Not sent · Retry**; hover for the reason. Choose **Retry** or the **!** to send it again. When the bot's answer to your latest message failed, Retry takes that message back and sends it again, so the chat keeps one copy. Until the daemon takes a message, its text stays saved as the chat's draft, so reloading never loses it. Rooms show unsent messages the same way. The phone app shows an error under the chat instead.
+You can type as soon as you switch to a bot, while its chat still opens. In the web and desktop apps, a message sent then goes once the chat has opened.
 
-When an answer fails, the bot shows Stopped. In the web and desktop apps, Retry is available when the daemon can identify the input that failed. Older daemons offer no Retry for failed sends or answers. A failed send keeps its draft for you to check and send manually. Retry, or any new message you send in that chat, shows it as Working as soon as the answer starts, in every app. Work the bot starts on its own, such as a background result, leaves Stopped while it runs; any answer that finishes cleanly clears it. A room's failure stays until a room turn finishes. A bot shows Working only while it answers in its chat or a room; heartbeats, scheduled jobs, dreams and subagents run without it.
+In the web and desktop apps, the message box clears as soon as you send, and your message shows greyed with a spinner until the daemon takes it. If the daemon refuses a message, it shows **Not sent**. If the app loses the reply or waits 15 seconds for it, it shows **Delivery unconfirmed**. Hover for the reason. Choose **Retry** or the **!** to try again. The daemon recognizes a message it already received. If the bot got your message but could not answer, for example because its provider failed or is rate-limited, your message stays as sent and a **stopped** card under it says why. Its **Retry** takes that message back and sends it again, so the chat keeps one copy. Until the daemon takes a message, its text stays saved as the chat's draft, so reloading never loses it. Rooms show **Not sent** when a send fails. The phone app shows an error under the chat instead.
 
-A failed send or upload keeps the bot's current answer and Stop available, including with an older daemon. If the app cannot confirm whether your message was sent, Retry sends it again under the same key, and the daemon refuses a copy that already arrived.
+When an answer fails, the bot shows Stopped. In the web and desktop apps, Retry is available when the daemon can identify the input that failed. Older daemons offer no Retry for failed sends or answers. A failed send keeps its draft for you to check and send manually. Retry, or any new message you send in that chat, shows it as Working as soon as the answer starts, in every app. Work the bot starts on its own, such as a background result, leaves Stopped while it runs; any answer that finishes cleanly clears it. A room's failure stays until a room turn finishes. A bot shows Working only while it answers in its chat or a room, or uses the bots' computer; heartbeats, scheduled jobs, dreams and subagents otherwise run without it.
+
+A failed send or upload keeps the bot's current answer running, including with an older daemon. If the app cannot confirm whether your message was sent, Retry sends it again under the same key, and the daemon refuses a copy that already arrived.
 
 Close a Stopped card with its **×** once you have read it. If the bot shows Stopped for this chat, that clears too. On the phone, the error under the chat has the same button.
 
 ## Search a chat
 
-In the web and desktop apps, choose the search button at the top of a bot's side panel to search your whole chat with it: what you and the bot said, files you shared or it wrote, the visuals it drew, and its soul and memory. Choose a message or file to scroll the chat to it; a visual opens beside the chat, and soul or memory opens in its editor. In a room, the search button next to Room settings searches the room's messages and files. On the phone, the search button is at the top of the chat. Search looks at what the app has loaded: all of a bot's chat, and a room's recent messages (show earlier ones to search further back on the phone).
+In the web and desktop apps, choose the search button at the top of a bot's side panel to search your whole chat with it: what you and the bot said, files you or the bot shared, the visuals it drew, and its soul and memory. Choose a message or file to scroll the chat to it; a visual opens beside the chat, and soul or memory opens in its editor. In a room, the search button next to Room settings searches the room's messages and files. On the phone, the search button is at the top of the chat. Search looks at what the app has loaded: all of a bot's chat, and a room's recent messages (show earlier ones to search further back on the phone).
 
 ## Recall a message
 
@@ -131,8 +157,9 @@ In a [room](/docs/rooms/), everyone sees the shared conversation. With **Message
 **Delegate** creates an isolated subagent for a subtask and returns the result to the originating conversation. It is a separate capability from asking a named teammate. Both use model tokens and the daemon's usage limits.
 
 Saved chat links also resolve the daemon's current chat before you can send.
-On mobile, a waiting item in Pulse opens the conversation containing its question
-or approval, including a private conversation between bots.
+When a bot waits on you in a private conversation between bots, every app lists
+it at the top of your chats as "is waiting for you". **Review** opens that
+conversation with its question or approval. So does the notification.
 
 If an old Dream log was already imported into Pi with reports in its context,
 Hexbot starts a separate owner conversation using its original human dialogue.

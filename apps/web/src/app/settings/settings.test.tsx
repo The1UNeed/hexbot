@@ -2,17 +2,24 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { beforeEach, vi } from 'vitest'
 
 import {
+  approvalRulesAdd,
+  approvalRulesList,
+  approvalRulesRemove,
   connectRegisterPoll,
   connectRegisterStart,
   connectStatus,
   daemonInfo,
   modelsList,
   pairingCode,
+  providerModels,
+  providersList,
   updateRequest
 } from '../../lib/api'
 import type { UpdateState } from '../../lib/bridge'
 import { pairWithDaemon } from '../../lib/connection'
 import type { DaemonInfo } from '../../lib/types'
+import { useApprovalRules } from '../../stores/approval-rules'
+import { useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
 import { useMe } from '../../stores/me'
 import { useSettings } from '../../stores/settings'
@@ -31,8 +38,13 @@ import {
 
 vi.mock('../../lib/api', async importOriginal => ({
   ...(await importOriginal()),
-  daemonInfo: vi.fn().mockResolvedValue({ version: '0.1.5-alpha.1' }),
+  approvalRulesAdd: vi.fn(),
+  approvalRulesList: vi.fn().mockResolvedValue({ rules: [] }),
+  approvalRulesRemove: vi.fn().mockResolvedValue({ removed: true }),
+  daemonInfo: vi.fn().mockResolvedValue({ approval_rules: true, version: '0.1.5-alpha.1' }),
   modelsList: vi.fn(),
+  providerModels: vi.fn().mockResolvedValue([]),
+  providersList: vi.fn().mockRejectedValue(new Error('offline')),
   connectStatus: vi.fn(),
   connectRegisterStart: vi.fn(),
   connectRegisterPoll: vi.fn(),
@@ -333,6 +345,123 @@ describe('settings', () => {
     fireEvent.click(screen.getByRole('radio', { name: /^Bypass/ }))
     expect(patch).toHaveBeenCalledWith({ approval_mode: 'off' })
     expect(screen.queryByText(/approver model/i)).toBeNull()
+    // A daemon from before the review model offers no picker for it.
+    expect(screen.queryByRole('combobox', { name: 'Review model' })).toBeNull()
+  })
+
+  it("picks the model that reviews Auto steps, or each bot's own", async () => {
+    const patch = vi.fn().mockResolvedValue(undefined)
+    vi.mocked(providerModels).mockResolvedValueOnce([
+      { id: 'small', label: 'Small', provider: 'openai' }
+    ])
+    // The page loads the connected providers itself; nothing else has yet.
+    vi.mocked(providersList).mockResolvedValueOnce({
+      providers: [
+        {
+          auth_type: 'api_key',
+          configured: true,
+          id: 'openai',
+          label: 'OpenAI',
+          models_source: 'static'
+        }
+      ]
+    })
+    useSettings.setState({
+      patch,
+      providers: [],
+      refreshProviders: useSettings.getInitialState().refreshProviders,
+      refresh: vi.fn().mockResolvedValue(undefined),
+      settings: {
+        approval_mode: 'smart',
+        billing_notice_ack: false,
+        dream_enabled: true,
+        dream_time: '03:00',
+        lan_enabled: false,
+        review_model: null,
+        service_installed: false,
+        workspace_dir: ''
+      }
+    })
+    const { unmount } = render(<ApprovalsSettings />)
+    const picker = screen.getByRole('combobox', { name: 'Review model' })
+    expect(picker).toHaveTextContent("Each bot's own model")
+    fireEvent.click(picker)
+    const small = await screen.findByRole('option', { name: 'OpenAI · Small' })
+    // Base UI commits only a highlighted item, as a pointer over it would be.
+    fireEvent.mouseMove(small)
+    fireEvent.click(small)
+    expect(patch).toHaveBeenCalledWith({ review_model: 'openai/small' })
+    unmount()
+    // A saved model shows before its provider's models load, and can be cleared.
+    useSettings.setState(state => ({
+      providers: [],
+      settings: { ...state.settings!, review_model: 'openai/small' }
+    }))
+    render(<ApprovalsSettings />)
+    const saved = screen.getByRole('combobox', { name: 'Review model' })
+    expect(saved).toHaveTextContent('openai/small')
+    fireEvent.click(saved)
+    const own = await screen.findByRole('option', { name: "Each bot's own model" })
+    fireEvent.mouseMove(own)
+    fireEvent.click(own)
+    expect(patch).toHaveBeenLastCalledWith({ review_model: null })
+  })
+
+  it('lists, adds, and removes Allow automatically and Ask first rules', async () => {
+    useApprovalRules.getState().reset()
+    vi.mocked(approvalRulesList).mockResolvedValueOnce({
+      rules: [
+        {
+          created_at: 1,
+          id: 'r-card',
+          kind: 'allow',
+          source: 'card',
+          text: 'Allow pushing feature branches to GitHub'
+        }
+      ]
+    })
+    vi.mocked(approvalRulesAdd).mockResolvedValueOnce({
+      rule: {
+        created_at: 2,
+        id: 'r-ask',
+        kind: 'ask',
+        source: 'manual',
+        text: 'Before pushing to main'
+      }
+    })
+    useSettings.setState({
+      patch: vi.fn().mockResolvedValue(undefined),
+      refresh: vi.fn().mockResolvedValue(undefined),
+      settings: {
+        approval_mode: 'smart',
+        billing_notice_ack: false,
+        dream_enabled: true,
+        dream_time: '03:00',
+        lan_enabled: false,
+        review_model: null,
+        service_installed: false,
+        workspace_dir: ''
+      }
+    })
+
+    render(<ApprovalsSettings />)
+    expect(await screen.findByText('Allow pushing feature branches to GitHub')).toBeVisible()
+    expect(screen.getByText('Saved from Always allow')).toBeVisible()
+
+    const askInput = screen.getByLabelText('Add ask first rule')
+    fireEvent.change(askInput, { target: { value: 'Before pushing to main' } })
+    fireEvent.submit(askInput.closest('form')!)
+
+    await waitFor(() =>
+      expect(approvalRulesAdd).toHaveBeenCalledWith('ask', 'Before pushing to main')
+    )
+    expect(await screen.findByText('Before pushing to main')).toBeVisible()
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Remove rule Allow pushing feature branches to GitHub' })
+    )
+    await waitFor(() => expect(approvalRulesRemove).toHaveBeenCalledWith('r-card'))
+    expect(screen.queryByText('Allow pushing feature branches to GitHub')).toBeNull()
   })
 
   it.each([
@@ -689,6 +818,41 @@ describe('settings', () => {
     fireEvent.change(name, { target: { value: '  Alex ' } })
     fireEvent.blur(name)
     expect(rename).toHaveBeenCalledWith('Alex')
+  })
+
+  it('sets the default soul and memory limits and tells the bots', async () => {
+    const patch = vi.fn().mockResolvedValue(undefined)
+    const refreshBots = vi.fn().mockResolvedValue(undefined)
+    useBots.setState({ refresh: refreshBots })
+    useSettings.setState({
+      patch,
+      refresh: vi.fn().mockResolvedValue(undefined),
+      settings: { memory_char_limit: 2200, soul_char_limit: 4000 } as never
+    })
+    useMe.setState({ me: { display_name: 'Admin', id: 'local' } })
+    render(<MemorySettings />)
+    const soul = screen.getByLabelText('Soul limit')
+    expect(soul).toHaveValue('4000')
+    expect(screen.getByLabelText('Memory limit')).toHaveValue('2200')
+    // A default can't be emptied; the field goes back to the number.
+    fireEvent.change(soul, { target: { value: '' } })
+    fireEvent.blur(soul)
+    expect(soul).toHaveValue('4000')
+    fireEvent.change(soul, { target: { value: '6000' } })
+    fireEvent.blur(soul)
+    await waitFor(() => expect(refreshBots).toHaveBeenCalled())
+    expect(patch).toHaveBeenCalledTimes(1)
+    expect(patch).toHaveBeenCalledWith({ soul_char_limit: 6000 })
+  })
+
+  it('leaves the limits out on daemons that have none', () => {
+    useSettings.setState({
+      refresh: vi.fn().mockResolvedValue(undefined),
+      settings: { dream_enabled: true, dream_time: '03:00' } as never
+    })
+    useMe.setState({ me: { display_name: 'Admin', id: 'local' } })
+    render(<MemorySettings />)
+    expect(screen.queryByLabelText('Soul limit')).toBeNull()
   })
 
   it('hides the name editor on older daemons', () => {

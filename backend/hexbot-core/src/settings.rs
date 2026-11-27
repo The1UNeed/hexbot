@@ -8,7 +8,7 @@ use std::{
     path::Path,
 };
 
-pub const PLATFORM_HINT: &str = "You are chatting in Hexbot, a desktop app. Markdown renders with GitHub flavor: headings, lists, tables and fenced code. To hand over a file, give its absolute path or URL; the user opens it themselves. Scheduled jobs run on their own and their output is not delivered back into this conversation.";
+pub const PLATFORM_HINT: &str = "Hexbot renders GitHub-flavored Markdown. Hand over files by absolute path or URL. Scheduled job output doesn't come back to this chat.";
 
 pub fn defaults() -> Value {
     json!({
@@ -25,7 +25,10 @@ pub fn defaults() -> Value {
         "heartbeat_enabled": true,
         "default_model": null,
         "fallback_model": null,
-        "usage_data": false
+        "review_model": null,
+        "usage_data": false,
+        "soul_char_limit": crate::memory::DEFAULT_SOUL_CAP,
+        "memory_char_limit": crate::memory::DEFAULT_BOT_CAP
     })
 }
 
@@ -68,12 +71,21 @@ fn validate(patch: &Value) -> Result<()> {
             "default_model" | "fallback_model" => {
                 value.is_null() || value.as_str().is_some_and(|s| s.contains('/'))
             }
+            // Half a choice would send reviews to whatever model Pi picks.
+            "review_model" => {
+                value.is_null()
+                    || value
+                        .as_str()
+                        .and_then(|s| s.split_once('/'))
+                        .is_some_and(|(provider, model)| !provider.is_empty() && !model.is_empty())
+            }
             "dream_enabled" | "heartbeat_enabled" | "lan_enabled" | "service_installed"
             | "billing_notice_ack" | "usage_data" => value.is_boolean(),
             "workspace_dir" => value
                 .as_str()
                 .is_some_and(|s| !s.is_empty() && !s.contains('\0')),
             "dream_time" => value.as_str().is_some_and(clock),
+            "soul_char_limit" | "memory_char_limit" => crate::memory::valid_limit(value),
             "room_bot_turns_per_human_turn"
             | "room_budget_tokens_per_human_turn"
             | "bot_daily_token_budget" => value.is_null() || value.as_u64().is_some(),
@@ -190,6 +202,29 @@ pub fn update(home: &Path, caller: &str, patch: &Value) -> Result<Value> {
     Ok(settings)
 }
 
+/// Drops the default, fallback and review model when they ran on a provider
+/// the user just removed, so nothing still points at it; apps then ask for a
+/// new one, and Auto reviews go back to each bot's own model.
+pub fn forget_provider(home: &Path, caller: &str, provider: &str) -> Result<bool> {
+    let slug = crate::providers::canonical_provider(provider);
+    let settings = get(home)?;
+    let mut patch = serde_json::Map::new();
+    for key in ["default_model", "fallback_model", "review_model"] {
+        if settings[key]
+            .as_str()
+            .and_then(|choice| choice.split_once('/'))
+            .is_some_and(|(p, _)| crate::providers::canonical_provider(p) == slug)
+        {
+            patch.insert(key.into(), Value::Null);
+        }
+    }
+    if patch.is_empty() {
+        return Ok(false);
+    }
+    update(home, caller, &Value::Object(patch))?;
+    Ok(true)
+}
+
 fn routes(home: &Path, user: &str) -> Result<BTreeMap<String, BTreeSet<String>>> {
     let conn = db::open(home)?;
     let mut result: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -273,6 +308,155 @@ pub fn summary(home: &Path, caller: &str, since: f64) -> Result<Value> {
     Ok(
         json!({"input_tokens":totals.0,"output_tokens":totals.1,"estimated_cost_usd":totals.2,"by_bot":by_bot}),
     )
+}
+
+/// Leaves out the zeroed copies of earlier calls that copying a conversation
+/// makes: no tokens, no cost, and the exact time, bot and model of a call
+/// recorded before it in another conversation. The original stays, even one
+/// that reported no usage, as it has no earlier match.
+macro_rules! not_a_copy {
+    () => {
+        " AND NOT (u.input_tokens=0 AND u.output_tokens=0 AND u.cache_read_tokens=0
+ AND u.cache_write_tokens=0 AND u.cost=0 AND EXISTS(SELECT 1 FROM runtime.native_usage o
+ WHERE o.owner_id=u.owner_id AND o.timestamp=u.timestamp AND o.bot=u.bot AND o.model=u.model
+ AND o.session_id<>u.session_id AND o.id<u.id))"
+    };
+}
+
+/// Usage per bucket, bot, model and place. A call's bucket starts at the
+/// latest edge at or before it. The place comes from the session: a prefix
+/// for background work, the catalog for chats, threads and rooms.
+const REPORT: &str = concat!(
+    "SELECT (SELECT MAX(e.t) FROM temp.usage_edges e WHERE e.t<=u.timestamp) AS t,
+ u.bot,u.model,u.provider,
+ CASE WHEN u.session_id LIKE 'cron-%' THEN 'job'
+  WHEN u.session_id LIKE 'child-%' THEN 'subagent'
+  WHEN u.session_id LIKE 'heartbeat-%' OR u.session_id LIKE 'checkin%' THEN 'heartbeat'
+  WHEN u.session_id LIKE 'dream-%' THEN 'dream'
+  WHEN EXISTS(SELECT 1 FROM room_sessions r WHERE r.stored_session_id=u.session_id) THEN 'room'
+  WHEN s.peer_bot IS NOT NULL THEN 'thread'
+  WHEN s.purpose='checkins' THEN 'heartbeat'
+  WHEN s.id IS NOT NULL THEN 'chat'
+  ELSE 'other' END AS place,
+ COUNT(*) AS calls,SUM(u.input_tokens) AS input,SUM(u.cache_read_tokens) AS cache_read,
+ SUM(u.cache_write_tokens) AS cache_write,SUM(u.output_tokens) AS output,SUM(u.cost) AS cost
+ FROM runtime.native_usage u LEFT JOIN sections s ON s.id=u.session_id
+ WHERE u.owner_id=?1 AND u.timestamp>=?2 AND u.timestamp<?3",
+    not_a_copy!(),
+    " GROUP BY t,u.bot,u.model,u.provider,place ORDER BY t"
+);
+
+/// The window as long just before the report's, for comparison.
+const PREVIOUS: &str = concat!(
+    "SELECT COUNT(*),COALESCE(SUM(u.input_tokens+u.cache_read_tokens+u.cache_write_tokens+u.output_tokens),0),
+ COALESCE(SUM(u.cost),0) FROM runtime.native_usage u
+ WHERE u.owner_id=?1 AND u.timestamp>=?2 AND u.timestamp<?3",
+    not_a_copy!()
+);
+
+/// Enough daily edges for every day from 2020, where all time starts, to 2041.
+const MAX_EDGES: usize = 8000;
+
+fn edges_of(p: &Value) -> Result<Vec<f64>> {
+    let bad = || Error::new(4202, "edges must be 2 to 8000 ascending timestamps");
+    let edges = p["edges"]
+        .as_array()
+        .ok_or_else(bad)?
+        .iter()
+        .map(|v| {
+            v.as_f64()
+                .filter(|v| v.is_finite() && *v >= 0.0)
+                .ok_or_else(bad)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if !(2..=MAX_EDGES).contains(&edges.len()) || edges.windows(2).any(|w| w[0] >= w[1]) {
+        return Err(bad());
+    }
+    Ok(edges)
+}
+
+/// One bot's usage from before the native runtime: tokens and cost.
+fn legacy_total(path: &Path, sessions: &BTreeSet<String>) -> Result<(i64, f64)> {
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let sessions = sessions.iter().collect::<Vec<_>>();
+    let mut total = (0, 0.0);
+    for chunk in sessions.chunks(500) {
+        let marks = vec!["?"; chunk.len()].join(",");
+        let sql = format!(
+            "SELECT COALESCE(SUM(input_tokens+output_tokens),0),COALESCE(SUM(estimated_cost_usd),0) FROM session_model_usage WHERE session_id IN ({marks})"
+        );
+        let (tokens, cost): (i64, f64) =
+            conn.query_row(&sql, params_from_iter(chunk.iter()), |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })?;
+        total.0 += tokens;
+        total.1 += cost;
+    }
+    Ok(total)
+}
+
+/// Usage recorded before the native runtime. It kept one running total per
+/// session and model, with no time for each call, so it has no place on a
+/// day and is reported apart. A profile that can't be read is skipped, as in
+/// the summary.
+fn earlier_usage(home: &Path, user: &str) -> Result<(i64, f64)> {
+    let mut earlier = (0, 0.0);
+    for (bot, sessions) in routes(home, user)? {
+        let path = home.join("profiles").join(&bot).join("state.db");
+        if !path.exists() {
+            continue;
+        }
+        if let Ok((tokens, cost)) = legacy_total(&path, &sessions) {
+            earlier.0 += tokens;
+            earlier.1 += cost;
+        }
+    }
+    Ok(earlier)
+}
+
+/// What Settings, Usage charts. `edges` are the bucket starts the client
+/// chose, with the end of the window last, so days follow its own calendar
+/// across daylight-saving changes. Also totals the window as long just
+/// before the first edge, for comparison, and usage from before calls had
+/// times.
+pub fn report(home: &Path, caller: &str, p: &Value) -> Result<Value> {
+    common::user(home, caller)?;
+    let edges = edges_of(p)?;
+    let (since, until) = (edges[0], edges[edges.len() - 1]);
+    let mut rows = Vec::new();
+    let (mut calls, mut tokens, mut cost) = (0_i64, 0_i64, 0.0_f64);
+    if home.join("hexbot-runtime.db").exists() {
+        let conn = db::open(home)?;
+        crate::runtime_store::open(home)?;
+        conn.execute(
+            "ATTACH DATABASE ? AS runtime",
+            [home.join("hexbot-runtime.db").to_string_lossy().as_ref()],
+        )?;
+        conn.execute_batch("CREATE TEMP TABLE usage_edges(t REAL PRIMARY KEY)")?;
+        {
+            let tx = conn.unchecked_transaction()?;
+            let mut insert = tx.prepare("INSERT INTO temp.usage_edges(t) VALUES(?)")?;
+            for edge in &edges[..edges.len() - 1] {
+                insert.execute([edge])?;
+            }
+            drop(insert);
+            tx.commit()?;
+        }
+        rows = common::rows(&conn, REPORT, &[&caller, &since, &until])?;
+        (calls, tokens, cost) = conn.query_row(
+            PREVIOUS,
+            params![caller, since - (until - since), since],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+    }
+    let earlier = earlier_usage(home, caller)?;
+    Ok(json!({
+        "since": since,
+        "until": until,
+        "rows": rows,
+        "previous": {"calls": calls, "tokens": tokens, "cost": cost},
+        "earlier": {"tokens": earlier.0, "cost": earlier.1},
+    }))
 }
 
 fn ipv4_interfaces(interfaces: Vec<if_addrs::Interface>) -> BTreeSet<String> {
@@ -508,6 +692,7 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
                 .transpose();
             since.and_then(|s| summary(home, caller, s.unwrap_or(0.0)))
         }
+        "hexbot.usage.report" => report(home, caller, p),
         "hexbot.network.get" => common::user(home, caller).and_then(|_| network(home)),
         "hexbot.network.set" => update(home, caller, &json!({"lan_enabled":p["lan_enabled"]}))
             .and_then(|_| network(home)),

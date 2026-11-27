@@ -87,7 +87,7 @@ unsafe extern "C" fn trace(
         if update {
             p.removed = true;
         }
-        if p.removed && sql.starts_with(b"SELECT t.bot,s.live_session_id FROM room_turns") {
+        if p.removed && sql.starts_with(b"SELECT t.id,t.bot,s.live_session_id FROM room_turns") {
             p.snapshots += 1;
         }
         let hit = if p.before_decision {

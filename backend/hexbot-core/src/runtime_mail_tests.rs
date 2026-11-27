@@ -1,0 +1,744 @@
+use super::*;
+use axum::{Json as AxumJson, Router, routing::post};
+
+/// Holds a send with the subject "Slow" until the test lets it go.
+#[derive(Default)]
+struct Gate {
+    arrived: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+/// Gmail, as far as sending and saving drafts go; every body it got is kept.
+async fn gmail() -> (String, Arc<Mutex<Vec<(String, Value)>>>, Arc<Gate>) {
+    let got = Arc::new(Mutex::new(vec![]));
+    let gate = Arc::new(Gate::default());
+    let (a, b, held) = (got.clone(), got.clone(), gate.clone());
+    let app = Router::new()
+        .route(
+            "/gmail/v1/users/me/messages/send",
+            post(move |AxumJson(body): AxumJson<Value>| {
+                let (a, held) = (a.clone(), held.clone());
+                async move {
+                    // "Slow" waits for the test; "Refused" doesn't go at all.
+                    if raw_of(&body).contains("Subject: Slow\r\n") {
+                        held.arrived.notify_one();
+                        held.release.notified().await;
+                    }
+                    if raw_of(&body).contains("Subject: Refused\r\n") {
+                        return (
+                            axum::http::StatusCode::FORBIDDEN,
+                            AxumJson(json!({"error":{"message":"Delegation denied"}})),
+                        );
+                    }
+                    a.lock().unwrap().push(("send".into(), body));
+                    (axum::http::StatusCode::OK, AxumJson(json!({"id":"sent-1"})))
+                }
+            }),
+        )
+        // "m1" is Ana's message; Gmail is busy for "busy", calls "nope" a
+        // malformed id, and has no other message.
+        .route(
+            "/gmail/v1/users/me/messages/{id}",
+            axum::routing::get(
+                |axum::extract::Path(id): axum::extract::Path<String>| async move {
+                    use axum::{http::StatusCode, response::IntoResponse};
+                    match id.as_str() {
+                        "m1" => AxumJson(json!({"id":"m1","threadId":"t1","payload":{"headers":[
+                            {"name":"Subject","value":"Friday"},
+                            {"name":"Message-ID","value":"<m1@mail.example>"}
+                        ]}}))
+                        .into_response(),
+                        "busy" => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+                        "nope" => (
+                            StatusCode::BAD_REQUEST,
+                            AxumJson(json!({"error":{"message":"Invalid id value"}})),
+                        )
+                            .into_response(),
+                        _ => StatusCode::NOT_FOUND.into_response(),
+                    }
+                },
+            ),
+        )
+        .route(
+            "/gmail/v1/users/me/drafts",
+            post(move |AxumJson(body): AxumJson<Value>| {
+                let b = b.clone();
+                async move {
+                    b.lock().unwrap().push(("draft".into(), body));
+                    AxumJson(json!({"id":"draft-1"}))
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (origin, got, gate)
+}
+
+fn raw_of(body: &Value) -> String {
+    use base64::Engine;
+    let raw = body["raw"]
+        .as_str()
+        .or(body["message"]["raw"].as_str())
+        .unwrap();
+    String::from_utf8(
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(raw)
+            .unwrap(),
+    )
+    .unwrap()
+}
+
+/// The bot drafts, the user edits and sends, and what goes out is what the
+/// user left on the card. The card asks even in Bypass, a closed card sends
+/// nothing, and a malformed answer leaves the card waiting.
+#[tokio::test]
+async fn only_the_user_sends_a_draft_and_sends_what_they_left() {
+    let (home, runtime, hub) = setup();
+    let h = home.path();
+    let (origin, got, gate) = gmail().await;
+    let mut config = fs::read_to_string(h.join("config.yaml")).unwrap_or_default();
+    config.push_str(&format!("\naccounts:\n  google:\n    endpoint: {origin}\n"));
+    fs::write(h.join("config.yaml"), config).unwrap();
+    fs::create_dir_all(h.join("accounts")).unwrap();
+    fs::write(
+        h.join("accounts/gmail.json"),
+        json!({"email":"alice@example.com","client_id":"c","access_token":"tok","refresh_token":"r","expires_at":common::now() + 3600.0}).to_string(),
+    )
+    .unwrap();
+    fs::write(
+        h.join("profiles/owl/config.yaml"),
+        "model:\n  provider: openai\n  default: fixture\ntools:\n  enabled_toolsets: [google_workspace]\n",
+    )
+    .unwrap();
+    db::open(h)
+        .unwrap()
+        .execute("UPDATE bots SET approval_mode='off' WHERE name='owl'", [])
+        .unwrap();
+    let id = open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    assert!(s.tools.iter().any(|t| t["name"] == "hexbot_mail"));
+
+    let card = |hub: &EventHub| {
+        let mut events = hub.subscribe();
+        async move {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let event = events.recv().await.unwrap();
+                    if event.frame["params"]["type"] == "approval.request" {
+                        break event.frame["params"]["payload"].clone();
+                    }
+                }
+            })
+            .await
+            .unwrap()
+        }
+    };
+    let draft = |runtime: Arc<Runtime>, s: Arc<Live>| {
+        tokio::spawn(async move {
+            runtime
+                .tool(
+                    &s,
+                    "hexbot_mail",
+                    &json!({"action":"draft","to":["ana@example.com"],"subject":"Friday","body":"Hi Ana,\nFriday works."}),
+                )
+                .await
+        })
+    };
+    let respond = |runtime: Arc<Runtime>, request: Value, choice: &str, extra: Value| {
+        let mut p = json!({"session_id":id,"request_id":request,"choice":choice});
+        p.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        async move { runtime.call("alice", "approval.respond", &p).await.unwrap() }
+    };
+
+    let waiting = card(&hub);
+    let asked = draft(runtime.clone(), s.clone());
+    let shown = waiting.await;
+    assert_eq!(shown["command"], "Email to ana@example.com");
+    assert_eq!(shown["form"]["kind"], "email_draft");
+    assert_eq!(shown["form"]["from"], "alice@example.com");
+    assert_eq!(shown["form"]["service_name"], "Gmail");
+    assert_eq!(shown["form"]["body"], "Hi Ana,\nFriday works.");
+    let request = shown["request_id"].clone();
+    // A header smuggled into an address is refused, and the card keeps waiting.
+    let smuggled = json!({"mail_action":"send","draft":{"to":["ana@example.com\r\nBcc: spy@evil.example"],"subject":"Friday","body":"x"}});
+    assert_eq!(
+        respond(runtime.clone(), request.clone(), "once", smuggled)
+            .await
+            .unwrap_err()
+            .code,
+        4202
+    );
+    assert!(got.lock().unwrap().is_empty());
+    // Only once sends; an answer the card doesn't offer sends nothing.
+    let once_only = json!({"mail_action":"send","draft":{"to":["ana@example.com"],"subject":"Friday","body":"x"}});
+    assert_eq!(
+        respond(runtime.clone(), request.clone(), "session", once_only)
+            .await
+            .unwrap_err()
+            .code,
+        4202
+    );
+    // Gmail refuses it: the user hears why on the card, which stays open.
+    let refused = json!({"mail_action":"send","draft":{"to":["ana@example.com"],"subject":"Refused","body":"x"}});
+    let error = respond(runtime.clone(), request.clone(), "once", refused)
+        .await
+        .unwrap_err();
+    assert!(
+        error.message.contains("Delegation denied"),
+        "{}",
+        error.message
+    );
+    // Signed in as someone else now: it isn't sent from their mailbox.
+    let account = fs::read_to_string(h.join("accounts/gmail.json")).unwrap();
+    fs::write(
+        h.join("accounts/gmail.json"),
+        account.replace("alice@example.com", "mallory@example.com"),
+    )
+    .unwrap();
+    let ok = json!({"mail_action":"send","draft":{"to":["ana@example.com"],"subject":"Friday","body":"x"}});
+    let error = respond(runtime.clone(), request.clone(), "once", ok)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, 4210);
+    assert!(
+        error
+            .message
+            .contains("mallory@example.com now, not alice@example.com")
+    );
+    fs::write(h.join("accounts/gmail.json"), account).unwrap();
+    assert!(got.lock().unwrap().is_empty());
+    let mut events = hub.subscribe();
+    let edited = json!({"mail_action":"send","draft":{"to":["ana@example.com"],"cc":["bo@example.org"],"subject":"Friday at 6","body":"Hi Ana,\nFriday at 6 works.\nAlice"}});
+    respond(runtime.clone(), request, "once", edited)
+        .await
+        .unwrap();
+    let result = asked.await.unwrap().unwrap();
+    assert_eq!(result["sent"], true);
+    assert_eq!(result["subject"], "Friday at 6");
+    let (kind, body) = got.lock().unwrap()[0].clone();
+    assert_eq!(kind, "send");
+    let raw = raw_of(&body);
+    assert!(raw.contains("Subject: Friday at 6\r\n"), "{raw}");
+    assert!(raw.contains("Cc: bo@example.org\r\n"));
+    // Every app is told what went out, with the user's edits.
+    let resolved = loop {
+        let event = events.recv().await.unwrap();
+        if event.frame["params"]["type"] == "approval.resolved" {
+            break event.frame["params"]["payload"].clone();
+        }
+    };
+    assert_eq!(resolved["mail_action"], "send");
+    assert_eq!(resolved["draft"]["subject"], "Friday at 6");
+
+    // Answers from another app while it goes, Send or Discard, are refused:
+    // one email goes, and the bot is told it went.
+    let waiting = card(&hub);
+    let asked = draft(runtime.clone(), s.clone());
+    let request = waiting.await["request_id"].clone();
+    let slow = json!({"mail_action":"send","draft":{"to":["ana@example.com"],"subject":"Slow","body":"x"}});
+    let first = tokio::spawn(respond(
+        runtime.clone(),
+        request.clone(),
+        "once",
+        slow.clone(),
+    ));
+    gate.arrived.notified().await;
+    let second = respond(runtime.clone(), request.clone(), "once", slow)
+        .await
+        .unwrap_err();
+    assert_eq!(second.code, 4204);
+    assert!(second.message.contains("on its way"));
+    let discard = respond(runtime.clone(), request, "deny", json!({}))
+        .await
+        .unwrap_err();
+    assert_eq!(discard.code, 4204);
+    gate.release.notify_one();
+    first.await.unwrap().unwrap();
+    assert_eq!(asked.await.unwrap().unwrap()["sent"], true);
+    assert_eq!(got.lock().unwrap().len(), 2);
+
+    // Stop while it goes: the card isn't expired, and settles as sent.
+    let waiting = card(&hub);
+    let asked = draft(runtime.clone(), s.clone());
+    let request = waiting.await["request_id"].clone();
+    let mut events = hub.subscribe();
+    let slow = json!({"mail_action":"send","draft":{"to":["ana@example.com"],"subject":"Slow","body":"y"}});
+    let going = tokio::spawn(respond(runtime.clone(), request.clone(), "once", slow));
+    gate.arrived.notified().await;
+    runtime
+        .call("alice", "session.interrupt", &json!({"session_id":id}))
+        .await
+        .unwrap()
+        .unwrap();
+    gate.release.notify_one();
+    going.await.unwrap().unwrap();
+    // A tool still waiting hears it went, never that the user closed it.
+    assert_eq!(asked.await.unwrap().unwrap()["sent"], true);
+    assert_eq!(got.lock().unwrap().len(), 3);
+    let settled = loop {
+        let event = events.recv().await.unwrap();
+        let params = &event.frame["params"];
+        assert!(
+            !(params["type"] == "approval.expire" && params["payload"]["request_id"] == request),
+            "a card going out isn't expired"
+        );
+        if params["type"] == "approval.resolved" && params["payload"]["request_id"] == request {
+            break params["payload"].clone();
+        }
+    };
+    assert_eq!(settled["mail_action"], "send");
+    // A stopped section shows no card until Pi settles the stopped run, and
+    // Pi says so in its own time: the next draft waits for it, as the next
+    // turn would.
+    let mut ended = s.run_ended.subscribe();
+    while s.state.lock().unwrap().interrupted {
+        ended.changed().await.unwrap();
+    }
+
+    // Stop while a card from the bot's own call goes: Stop waits for the
+    // mailbox and the tool, which hands Pi what went, so the chat's history
+    // and the bot keep the email that went.
+    let waiting = card(&hub);
+    let call = json!({
+        "name": "hexbot_mail",
+        "args": {"action":"draft","to":["ana@example.com"],"subject":"Slow","body":"z"},
+        "id": "call-going",
+    });
+    runtime
+        .event(
+            &s,
+            json!({"type":"extension_ui_request","id":"probe:going","method":"input","title":format!("__HEXBOT_TOOL__{call}")}),
+        )
+        .unwrap();
+    let shown = waiting.await;
+    assert_eq!(shown["tool_id"], "call-going");
+    let slow = json!({"mail_action":"send","draft":{"to":["ana@example.com"],"subject":"Slow","body":"z"}});
+    let going = tokio::spawn(respond(
+        runtime.clone(),
+        shown["request_id"].clone(),
+        "once",
+        slow,
+    ));
+    gate.arrived.notified().await;
+    let stop = {
+        let runtime = runtime.clone();
+        let id = id.clone();
+        tokio::spawn(async move {
+            runtime
+                .call("alice", "session.interrupt", &json!({"session_id":id}))
+                .await
+        })
+    };
+    // Stop waits for the tool while the mailbox holds the email.
+    tokio::time::timeout(Duration::from_secs(5), s.stop_waiting.notified())
+        .await
+        .expect("Stop waits for the tool finishing the email");
+    assert!(s.state.lock().unwrap().finishing.contains("probe:going"));
+    gate.release.notify_one();
+    going.await.unwrap().unwrap();
+    stop.await.unwrap().unwrap().unwrap();
+    let replies = fs::read_to_string(h.join("dialogs.jsonl")).unwrap();
+    let reply = replies
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .find(|reply| reply["id"] == "probe:going")
+        .expect("the tool replied to Pi before the turn stopped");
+    let value: Value = serde_json::from_str(reply["value"].as_str().unwrap()).unwrap();
+    assert_eq!(value["result"]["sent"], true, "{value}");
+    assert_eq!(got.lock().unwrap().len(), 4);
+    let mut ended = s.run_ended.subscribe();
+    while s.state.lock().unwrap().interrupted {
+        ended.changed().await.unwrap();
+    }
+
+    // Stop after the mailbox took it, while the tool is still handing Pi what
+    // went: Stop waits for that reply too, and never cancels the tool.
+    {
+        let mut state = s.state.lock().unwrap();
+        state.tool_dialogs.insert("probe:replying".into());
+        state.finishing.insert("probe:replying".into());
+    }
+    let stop = {
+        let runtime = runtime.clone();
+        let id = id.clone();
+        tokio::spawn(async move {
+            runtime
+                .call("alice", "session.interrupt", &json!({"session_id":id}))
+                .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(5), s.stop_waiting.notified())
+        .await
+        .expect("Stop waits for the tool finishing the email");
+    {
+        let mut state = s.state.lock().unwrap();
+        state.tool_dialogs.remove("probe:replying");
+        state.finishing.remove("probe:replying");
+    }
+    s.tool_replied.notify_waiters();
+    stop.await.unwrap().unwrap().unwrap();
+    assert!(
+        !fs::read_to_string(h.join("dialogs.jsonl"))
+            .unwrap()
+            .contains("probe:replying"),
+        "Stop cancelled a tool handing Pi an email that went"
+    );
+    assert!(s.state.lock().unwrap().finishing.is_empty());
+    // The stopped run settles before the next card is answered, as above.
+    let mut ended = s.run_ended.subscribe();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while s.state.lock().unwrap().interrupted {
+            ended.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("the stopped run settles");
+
+    // Agreed on a sign-in card (or a plugin card): its tool now finishes the
+    // work, and Stop waits for it as for an email going out.
+    let (waiter, answered) = tokio::sync::oneshot::channel();
+    {
+        let mut state = s.state.lock().unwrap();
+        state.native_approvals.insert("signin".into(), waiter);
+        state.pending.insert(
+            "signin".into(),
+            json!({"kind":"approval","method":"native","dialog":"probe:signin","approval_payload":{"choices":["once","deny"],"form":{"kind":"sign_in","title":"Example","site":"example.com"}}}),
+        );
+    }
+    runtime
+        .call(
+            "alice",
+            "approval.respond",
+            &json!({"session_id":id,"request_id":"signin","choice":"once","username":"alex","password":"x"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(answered.await.unwrap().contains("alex"));
+    assert!(s.state.lock().unwrap().finishing.remove("probe:signin"));
+    let mut ended = s.run_ended.subscribe();
+    while s.state.lock().unwrap().interrupted {
+        ended.changed().await.unwrap();
+    }
+
+    // Saved to Drafts, not sent.
+    let waiting = card(&hub);
+    let asked = draft(runtime.clone(), s.clone());
+    let request = waiting.await["request_id"].clone();
+    let save = json!({"mail_action":"save","draft":{"to":["ana@example.com"],"subject":"Friday","body":"Later"}});
+    respond(runtime.clone(), request, "once", save)
+        .await
+        .unwrap();
+    assert_eq!(asked.await.unwrap().unwrap()["saved_to_drafts"], true);
+    assert_eq!(got.lock().unwrap()[4].0, "draft");
+
+    // A reply to a message that isn't there goes back to the bot, with no
+    // card the user couldn't send.
+    let error = runtime
+        .tool(
+            &s,
+            "hexbot_mail",
+            &json!({"action":"draft","to":["ana@example.com"],"subject":"Re: Friday","body":"x","reply_to":"nope"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, 4202, "{}", error.message);
+    assert!(error.message.contains("Pass reply_to"), "{}", error.message);
+    // A well-formed id that names nothing gets the same hint.
+    let error = runtime
+        .tool(
+            &s,
+            "hexbot_mail",
+            &json!({"action":"draft","to":["ana@example.com"],"subject":"Re: Friday","body":"x","reply_to":"m-gone"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, 4215, "{}", error.message);
+    assert!(error.message.contains("Pass reply_to"), "{}", error.message);
+    assert!(s.state.lock().unwrap().pending.is_empty());
+    // A passing failure doesn't tell the bot to drop the thread.
+    let error = runtime
+        .tool(
+            &s,
+            "hexbot_mail",
+            &json!({"action":"draft","to":["ana@example.com"],"subject":"Re: Friday","body":"x","reply_to":"busy"}),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        !error.message.contains("Pass reply_to"),
+        "{}",
+        error.message
+    );
+    assert!(s.state.lock().unwrap().pending.is_empty());
+
+    // A reply left without a subject keeps its message's, from a light read.
+    let waiting = card(&hub);
+    let asked = tokio::spawn({
+        let (runtime, s) = (runtime.clone(), s.clone());
+        async move {
+            runtime
+                .tool(&s, "hexbot_mail", &json!({"action":"draft","to":["ana@example.com"],"body":"Yes.","reply_to":"m1"}))
+                .await
+        }
+    });
+    let shown = waiting.await;
+    assert_eq!(shown["form"]["subject"], "Re: Friday");
+    assert_eq!(shown["form"]["reply_to"], "m1");
+    respond(
+        runtime.clone(),
+        shown["request_id"].clone(),
+        "deny",
+        json!({}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(asked.await.unwrap().unwrap_err().code, 4302);
+
+    // Closed: nothing goes out and the bot is told so.
+    let waiting = card(&hub);
+    let asked = draft(runtime.clone(), s.clone());
+    let request = waiting.await["request_id"].clone();
+    respond(runtime.clone(), request, "deny", json!({}))
+        .await
+        .unwrap();
+    let error = asked.await.unwrap().unwrap_err();
+    assert_eq!(error.code, 4302);
+    assert!(error.message.contains("without sending"));
+    assert_eq!(got.lock().unwrap().len(), 5);
+}
+
+/// IMAP mail works as Gmail does: the bot searches and drafts, the user
+/// sends from the card, and only from the mailbox the card showed.
+#[tokio::test]
+async fn imap_mail_sends_only_what_the_user_sends() {
+    use crate::imap::tests::{Seen, imap_server, smtp_server};
+    let (home, runtime, hub) = setup();
+    let h = home.path();
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let imap = imap_server(seen.clone()).await;
+    let smtp = smtp_server(seen.clone()).await;
+    let env = |address: &str| {
+        format!(
+            "IMAP_ADDRESS=\"{address}\"\nIMAP_PASSWORD=\"secret\"\nIMAP_HOST=\"{imap}\"\nSMTP_HOST=\"{smtp}\"\n"
+        )
+    };
+    fs::write(h.join(".env"), env("me@example.org")).unwrap();
+    fs::write(
+        h.join("profiles/owl/config.yaml"),
+        "model:\n  provider: openai\n  default: fixture\ntools:\n  enabled_toolsets: [imap]\n",
+    )
+    .unwrap();
+    let id = open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    assert!(s.tools.iter().any(|t| t["name"] == "hexbot_mail"));
+
+    let found = runtime
+        .tool(
+            &s,
+            "hexbot_mail",
+            &json!({"action":"search","query":"is:unread"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(found["account"], "imap");
+    assert_eq!(found["messages"][0]["subject"], "Café");
+    // Gmail isn't connected, so asking for it says so.
+    let error = runtime
+        .tool(
+            &s,
+            "hexbot_mail",
+            &json!({"action":"search","account":"google"}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, 4210);
+
+    let mut events = hub.subscribe();
+    let asked = tokio::spawn({
+        let (runtime, s) = (runtime.clone(), s.clone());
+        async move {
+            runtime
+                .tool(&s, "hexbot_mail", &json!({"action":"draft","to":["bo@example.net"],"subject":"Menu","body":"Looks good."}))
+                .await
+        }
+    });
+    let shown = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = events.recv().await.unwrap();
+            if event.frame["params"]["type"] == "approval.request" {
+                break event.frame["params"]["payload"].clone();
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(shown["form"]["service"], "imap");
+    assert_eq!(shown["form"]["service_name"], "IMAP mail");
+    assert_eq!(shown["form"]["from"], "me@example.org");
+    assert!(
+        seen.lock().unwrap().sent.is_empty(),
+        "a card sends nothing yet"
+    );
+    let respond = |draft: Value| {
+        let runtime = runtime.clone();
+        let p = json!({"session_id":id,"request_id":shown["request_id"],"choice":"once","mail_action":"send","draft":draft});
+        async move { runtime.call("alice", "approval.respond", &p).await.unwrap() }
+    };
+    // Set up for another mailbox since: not sent from it.
+    fs::write(h.join(".env"), env("mallory@example.org")).unwrap();
+    let error = respond(json!({"to":["bo@example.net"],"subject":"Menu","body":"x"}))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, 4210);
+    assert!(
+        error.message.contains("mallory@example.org"),
+        "{}",
+        error.message
+    );
+    fs::write(h.join(".env"), env("me@example.org")).unwrap();
+    respond(json!({"to":["bo@example.net"],"subject":"Menu","body":"Looks good. See you Friday."}))
+        .await
+        .unwrap();
+    let result = asked.await.unwrap().unwrap();
+    assert_eq!(result["sent"], true);
+    assert_eq!(result["account"], "imap");
+    {
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.sent.len(), 1);
+        assert_eq!(seen.sent[0].0, ["bo@example.net"]);
+        assert_eq!(seen.appended[0].0, "Sent Items");
+    }
+
+    // A reply's card keeps its thread, and the reply goes in it.
+    let original = crate::imap::tests::reply_target();
+    let mut events = hub.subscribe();
+    let asked = tokio::spawn({
+        let (runtime, s, original) = (runtime.clone(), s.clone(), original.clone());
+        async move {
+            runtime
+                .tool(&s, "hexbot_mail", &json!({"action":"draft","to":["bo@example.net"],"body":"Yes.","reply_to":original}))
+                .await
+        }
+    });
+    let shown = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = events.recv().await.unwrap();
+            if event.frame["params"]["type"] == "approval.request" {
+                break event.frame["params"]["payload"].clone();
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(shown["form"]["subject"], "Re: Café");
+    assert_eq!(shown["form"]["thread"]["message_id"], "<m2@example.net>");
+    let p = json!({"session_id":id,"request_id":shown["request_id"],"choice":"once","mail_action":"send","draft":{"to":["bo@example.net"],"subject":"Re: Café","body":"Yes.","reply_to":original}});
+    runtime
+        .call("alice", "approval.respond", &p)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(asked.await.unwrap().unwrap()["sent"], true);
+    let seen = seen.lock().unwrap();
+    assert!(seen.sent[1].1.contains("In-Reply-To: <m2@example.net>\r\n"));
+}
+
+/// Rooms, threads between bots and heartbeats never get the mailbox.
+#[tokio::test]
+async fn mail_stays_in_the_bots_own_chat_and_jobs() {
+    let (home, runtime, _) = setup();
+    let h = home.path();
+    fs::create_dir_all(h.join("accounts")).unwrap();
+    fs::write(
+        h.join("accounts/gmail.json"),
+        json!({"email":"alice@example.com","client_id":"c","access_token":"t","refresh_token":"r","expires_at":common::now() + 3600.0}).to_string(),
+    )
+    .unwrap();
+    fs::write(
+        h.join("profiles/owl/config.yaml"),
+        "model:\n  provider: openai\n  default: fixture\ntools:\n  enabled_toolsets: [google_workspace]\n",
+    )
+    .unwrap();
+    let names = |tools: Vec<Value>| {
+        tools
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(str::to_owned))
+            .collect::<Vec<_>>()
+    };
+    let own = names(
+        runtime
+            .fresh_tools("alice", "owl", "first", None, None)
+            .unwrap()
+            .0,
+    );
+    assert!(own.iter().any(|n| n == "hexbot_mail"));
+    let job = names(
+        runtime
+            .fresh_tools("alice", "owl", "first", None, Some(&json!({"job":"j1"})))
+            .unwrap()
+            .0,
+    );
+    assert!(job.iter().any(|n| n == "hexbot_mail"));
+    for overrides in [json!({"heartbeat":"h1"}), json!({"parent_session":"p"})] {
+        let tools = names(
+            runtime
+                .fresh_tools("alice", "owl", "first", None, Some(&overrides))
+                .unwrap()
+                .0,
+        );
+        assert!(!tools.iter().any(|n| n == "hexbot_mail"), "{overrides}");
+    }
+    // Signed out: the tool goes at the next rebuild.
+    fs::remove_file(h.join("accounts/gmail.json")).unwrap();
+    let own = names(
+        runtime
+            .fresh_tools("alice", "owl", "first", None, None)
+            .unwrap()
+            .0,
+    );
+    assert!(!own.iter().any(|n| n == "hexbot_mail"));
+}
+
+/// The apps show a closed or failed card again from history by the words its
+/// tool returned (`apps/web/src/lib/settled-cards.ts`). Rewording them here
+/// without there would quietly drop those cards on every reload.
+#[test]
+fn the_apps_know_the_words_a_closed_or_failed_card_returns() {
+    let apps = include_str!("../../../apps/web/src/lib/settled-cards.ts");
+    for (daemon, words) in [
+        (
+            include_str!("runtime_mail.rs"),
+            "The user closed the draft without sending it.",
+        ),
+        (
+            include_str!("runtime_passwords.rs"),
+            "The user closed the sign-in card.",
+        ),
+        (include_str!("runtime_plugins.rs"), "The user said no."),
+        (
+            include_str!("runtime.rs"),
+            "The user agreed on the card, but it didn't work:",
+        ),
+    ] {
+        assert!(
+            daemon.contains(&format!("\"{words} ")),
+            "the daemon no longer says {words:?}"
+        );
+        assert!(
+            apps.contains(&format!("'{words}'")) || apps.contains(&format!("\"{words}\"")),
+            "the apps don't match {words:?}"
+        );
+    }
+    // The plugin card's "no" (`ask_card`) and the one for turning off or
+    // removing (`ask_plugin`) share their words; both must keep them.
+    assert_eq!(
+        include_str!("runtime_plugins.rs")
+            .matches("\"The user said no. ")
+            .count(),
+        2
+    );
+}

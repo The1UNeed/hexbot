@@ -41,7 +41,9 @@ impl Identity {
             json!({})
         }
     }
-    fn fragment_fields(&self) -> Value {
+    /// The turn and the assistant fragment Pi is on. While a tool runs that
+    /// is the fragment that called it, so a card the tool shows names it.
+    pub fn fragment_fields(&self) -> Value {
         let mut fields = self.turn_fields();
         if let Some(fragment) = self.active.as_ref().and_then(|op| op.fragment.as_ref()) {
             fields["message_id"] = json!(fragment);
@@ -175,7 +177,12 @@ impl Identity {
                 .filter(|_| event.get("parentToolCallId").is_none())
                 .and_then(Clone::clone)
                 .unwrap_or_else(|| self.turn_fields())
-        } else if matches!(kind, "message_update" | "message_end") {
+        } else if matches!(
+            kind,
+            "message_update" | "message_end" | "extension_ui_request"
+        ) {
+            // A dialog comes from a running tool, so its card follows the
+            // fragment that called the tool and keeps that place in history.
             self.fragment_fields()
         } else {
             self.turn_fields()
@@ -352,6 +359,32 @@ mod tests {
                 .get("message_id")
                 .is_none()
         );
+    }
+    #[test]
+    fn a_dialog_names_the_fragment_whose_tool_asked() {
+        let mut ids = Identity::default();
+        let turn = start(&mut ids, "input");
+        see(
+            &mut ids,
+            json!({"type":"message_start","message":{"role":"assistant"}}),
+        );
+        let asked = see(
+            &mut ids,
+            json!({"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tool"}]}}),
+        )
+        .fields;
+        see(
+            &mut ids,
+            json!({"type":"message_start","message":{"role":"toolResult"}}),
+        );
+        let card = see(
+            &mut ids,
+            json!({"type":"extension_ui_request","method":"input","title":"__HEXBOT_CLARIFY__{}"}),
+        )
+        .fields;
+        assert_eq!(card["message_id"], asked["message_id"]);
+        assert_eq!(card["turn_id"], turn["turn_id"]);
+        assert_eq!(ids.fragment_fields(), card);
     }
     #[test]
     fn initial_slot_only_and_queued_acks_never_bind_users() {

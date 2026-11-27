@@ -29,7 +29,7 @@ export interface ModelValue {
 export type Models = (provider: string) => Promise<ModelList>
 
 /** The bot's own model, from its provider's list. */
-function useCurrentModel(models: Models, value: ModelValue) {
+export function useCurrentModel(models: Models, value: ModelValue) {
   const [loaded, setLoaded] = useState<{ provider: string; models: ModelOption[] } | null>(null)
   useEffect(() => {
     if (!value.provider) return

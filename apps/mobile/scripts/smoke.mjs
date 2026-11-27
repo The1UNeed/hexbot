@@ -35,7 +35,30 @@ const textOf = value =>
     : Array.isArray(value)
       ? value.map(p => p.text || '').join('\n')
       : ''
+const gmailSent = []
 const model = createServer(async (req, res) => {
+  // Gmail and Microsoft's sign-in, as far as the draft card and the account
+  // panel need them.
+  const reply = (status, body) => {
+    res.writeHead(status, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(body))
+  }
+  if (req.method === 'POST' && req.url === '/gmail/v1/users/me/messages/send') {
+    const chunks = []
+    for await (const chunk of req) chunks.push(chunk)
+    gmailSent.push(JSON.parse(Buffer.concat(chunks).toString()))
+    return reply(200, { id: 'sent-1' })
+  }
+  if (req.method === 'POST' && req.url === '/common/oauth2/v2.0/devicecode')
+    return reply(200, {
+      device_code: 'device-1',
+      user_code: 'HXBT-4821',
+      verification_uri: 'https://microsoft.com/devicelogin',
+      expires_in: 900,
+      interval: 5
+    })
+  if (req.method === 'POST' && req.url === '/common/oauth2/v2.0/token')
+    return reply(400, { error: 'authorization_pending' })
   if (req.method === 'GET' && req.url.endsWith('/models')) {
     res.writeHead(200, { 'content-type': 'application/json' })
     res.end(
@@ -92,10 +115,20 @@ const model = createServer(async (req, res) => {
                   name: 'hexbot_passwords',
                   args: { action: 'ask', title: 'Northfield School', url: 'https://school.example/login' }
                 }
-            : !toolAnswered && prompt.includes('Set up Home Assistant')
+            : !toolAnswered && prompt.includes('Draft an email to Ana')
+              ? {
+                  name: 'hexbot_mail',
+                  args: {
+                    action: 'draft',
+                    to: ['Lima, Ana <ana@example.com>'],
+                    subject: 'Launch review',
+                    body: 'Hi Ana,\n\nFriday at 4 works for me.\n\nAlex'
+                  }
+                }
+            : !toolAnswered && prompt.includes('Set up X search')
               ? {
                   name: 'hexbot_plugins',
-                  args: { action: 'setup', id: 'connector:home_assistant' }
+                  args: { action: 'setup', id: 'connector:x_search' }
                 }
             : !toolAnswered && prompt.startsWith('Read the other app attachment')
               ? { name: 'read', args: { path: retainedUploadPath } }
@@ -123,8 +156,10 @@ const model = createServer(async (req, res) => {
                   ? 'The mobile approval reached Pi.'
                   : prompt.includes('Sign in to the school site')
                     ? 'The school sign-in is saved.'
-                  : prompt.includes('Set up Home Assistant')
-                    ? 'Home Assistant has its token.'
+                  : prompt.includes('Draft an email to Ana')
+                    ? 'Sent. Ana has your reply.'
+                  : prompt.includes('Set up X search')
+                    ? 'X search has its token.'
                   : 'Your daemon received this from mobile. The connection is working.'
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' })
     const frame = (delta, finish_reason = null) =>
@@ -188,13 +223,30 @@ try {
   const modelBase = `http://127.0.0.1:${model.address().port}/v1`
   await writeFile(
     path.join(home, 'config.yaml'),
-    `model:\n  provider: lmstudio\n  default: mobile-test\n  base_url: ${modelBase}\n  api_key: test-key\nmodel_overrides:\n  lmstudio:\n    mobile-test:\n      supports_reasoning: true\n    mobile-live:\n      supports_reasoning: false\n`
+    `model:\n  provider: lmstudio\n  default: mobile-test\n  base_url: ${modelBase}\n  api_key: test-key\nmodel_overrides:\n  lmstudio:\n    mobile-test:\n      supports_reasoning: true\n    mobile-live:\n      supports_reasoning: false\naccounts:\n  google:\n    endpoint: http://127.0.0.1:${model.address().port}\n  microsoft:\n    endpoint: http://127.0.0.1:${model.address().port}\n`
+  )
+  // Signed in to Google already; Microsoft signs in with the user's own client.
+  await writeFile(path.join(home, '.env'), 'MICROSOFT_OAUTH_CLIENT_ID="mobile-test"\n')
+  await mkdir(path.join(home, 'accounts'), { recursive: true })
+  await writeFile(
+    path.join(home, 'accounts/gmail.json'),
+    JSON.stringify({
+      email: 'alex@example.com',
+      client_id: 'c',
+      access_token: 'tok',
+      refresh_token: 'r',
+      expires_at: Date.now() / 1000 + 86400,
+      connected_at: 1
+    }),
+    { mode: 0o600 }
   )
   await mkdir(path.join(home, 'users/local'), { recursive: true })
   await writeFile(path.join(home, 'users/local/user.md'), '')
   const env = {
     ...process.env,
     HEXBOT_HOME: home,
+    // Nothing answers here, so X search's test fails fast and stays offline.
+    HEXBOT_X_API_BASE_URL: 'http://127.0.0.1:9',
     // The vault key stays in the temporary home, not the login keychain.
     HEXBOT_PASSWORD_KEY_STORE: 'file',
     HEXBOT_PI_EXECUTABLE: piPath,
@@ -353,6 +405,36 @@ try {
   await page.getByTestId('connection-pair').click()
   await expect(page.getByTestId('bot-row-owl')).toBeVisible({ timeout: 30000 })
   await page.screenshot({ path: path.join(artifacts, 'bots.png') })
+  // A long press on a chat opens its menu beside it: pin it, then rename it from its face.
+  const longPress = async locator => {
+    const box = await locator.boundingBox()
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+    await page.mouse.down()
+    await page.waitForTimeout(600)
+    await page.mouse.up()
+  }
+  const owlName = (await rpc('hexbot.bots.get', { name: 'owl' })).bot.display_name
+  await longPress(page.getByTestId('bot-row-owl'))
+  await expect(page.getByTestId('row-menu-rename')).toBeVisible()
+  await settle()
+  await shot('row-menu')
+  await page.getByTestId('row-menu-pin').click()
+  await expect(page.getByTestId('pinned-bot-owl')).toBeVisible()
+  await expect
+    .poll(async () => (await rpc('hexbot.bots.get', { name: 'owl' })).bot.pinned_at)
+    .not.toBe(null)
+  await shot('pinned')
+  await longPress(page.getByTestId('pinned-bot-owl'))
+  await page.getByTestId('row-menu-rename').click()
+  await page.getByTestId('rename-name').fill('Night Owl')
+  await page.getByTestId('rename-sheet-action').click()
+  await expect(page.getByTestId('pinned-bot-owl')).toContainText('Night Owl')
+  await expect
+    .poll(async () => (await rpc('hexbot.bots.get', { name: 'owl' })).bot.display_name)
+    .toBe('Night Owl')
+  await rpc('hexbot.bots.update', { name: 'owl', display_name: owlName })
+  await rpc('hexbot.bots.pin', { name: 'owl', pinned: false })
+  await expect(page.getByTestId('bot-row-owl')).toBeVisible()
   const device = (await rpc('hexbot.devices.list')).devices.find(
     d => d.name === 'Hexbot on Android'
   )
@@ -409,13 +491,23 @@ try {
       exact: true
     })
   ).toBeVisible({ timeout: 30000 })
+  // Read as it landed on screen, so the daemon does not wake this phone about it.
+  await expect
+    .poll(async () => (await owl()).sections_recent?.[0]?.done_at ?? null, { timeout: 10000 })
+    .toBe(null)
   await page.screenshot({ path: path.join(artifacts, 'chat.png') })
   await page.getByTestId('chat-input').fill('Ask two questions')
   await page.getByTestId('chat-send').click()
   await expect(page.getByTestId('question-choice-Morning')).toBeVisible({ timeout: 30000 })
   await page.getByTestId('question-sheet-close').click()
   const answerFile = page.waitForEvent('filechooser')
+  // The + offers the phone's photos, its camera, and its files.
   await page.getByTestId('chat-attach').click()
+  for (const source of ['library', 'camera', 'files'])
+    await expect(page.getByTestId(`chat-attach-${source}`)).toBeVisible()
+  await settle()
+  await shot('chat-attach-menu')
+  await page.getByTestId('chat-attach-files').click()
   await (
     await answerFile
   ).setFiles({
@@ -460,6 +552,7 @@ try {
   await shot('chat-visual')
   const chooser = page.waitForEvent('filechooser')
   await page.getByTestId('chat-attach').click()
+  await page.getByTestId('chat-attach-files').click()
   await (
     await chooser
   ).setFiles({
@@ -488,7 +581,9 @@ try {
   // Exact selection keeps the other app's upload available, with its bytes intact.
   const retainedText = await readFile(left.path, 'utf8')
   assert.equal(retainedText, 'Not for this message.')
-  await expect(page.getByText('brief.txt', { exact: true })).not.toBeVisible()
+  // The composer lets the file go; your message keeps it, as a card.
+  await expect(page.getByTestId(/^chat-attachment-remove-/)).toHaveCount(0)
+  await expect(page.getByText('brief.txt', { exact: true })).toHaveCount(1)
   await expect
     .poll(async () => (await rpc('session.status', { session_id: live })).status)
     .toBe('idle')
@@ -548,8 +643,19 @@ try {
   assert.equal(await readFile(path.join(workspace, 'mobile-approval.txt'), 'utf8'), 'approved')
   await expect(page.locator('[data-testid^="chat-tool"]')).toHaveCount(0)
   await shot('chat-approved')
-  // With Computer use, the bot asks for a sign-in on a card. What is typed
-  // there is saved in Passwords and never reaches the model.
+  // With Computer Use, the bot asks for a sign-in on a card. What is typed
+  // there is saved in Passwords and never reaches the model. Computer Use is
+  // a plugin acting on a bot's environments: here the bots' computer, which
+  // runs once the daemon names a Cua command, given to owl as Settings,
+  // Computers would, with Computer Use on as Settings, Plugins would.
+  const daemonConfig = await readFile(path.join(home, 'config.yaml'), 'utf8')
+  if (!daemonConfig.includes('\ncomputer_use:'))
+    await writeFile(
+      path.join(home, 'config.yaml'),
+      `${daemonConfig.trimEnd()}\ncomputer_use:\n  command: ${process.execPath}\n`
+    )
+  await rpc('hexbot.computers.grant', { bot: 'owl', capability: 'terminal', computer: 'vm', on: true })
+  await rpc('hexbot.connectors.set_for_bot', { bot: 'owl', enabled: true, id: 'computer_use' })
   await writeFile(
     path.join(home, 'profiles/owl/config.yaml'),
     `model:\n  provider: lmstudio\n  default: mobile-test\n  base_url: ${modelBase}\n  api_key: test-key\ntools:\n  enabled_toolsets: [file]\ncomputer_use:\n  command: ${process.execPath}\napproval_mode: manual\n`
@@ -583,24 +689,53 @@ try {
     path.join(home, 'profiles/owl/config.yaml'),
     `model:\n  provider: lmstudio\n  default: mobile-test\n  base_url: ${modelBase}\n  api_key: test-key\ntools:\n  enabled_toolsets: [file, hexbot]\napproval_mode: manual\n`
   )
-  await page.getByTestId('chat-input').fill('Set up Home Assistant')
+  await page.getByTestId('chat-input').fill('Set up X search')
   await page.getByTestId('chat-send').click()
   const connect = page.locator('[data-testid^="plugin-"][data-testid$="-open"]')
   await expect(connect).toBeVisible({ timeout: 30000 })
-  await expect(page.getByText('Home Assistant', { exact: true })).toBeVisible()
+  await expect(page.getByText('X search', { exact: true })).toBeVisible()
   await shot('plugin-card')
   await connect.click()
-  await page.locator('[data-testid^="plugin-"][data-testid$="-HASS_URL"]').fill('http://127.0.0.1:9')
-  await page.locator('[data-testid^="plugin-"][data-testid$="-HASS_TOKEN"]').fill('mobile-ha-token-42')
+  // The subscription comes first and needs a sign-in, not a key.
+  await expect(page.locator('[data-testid^="plugin-"][data-testid$="-sign-in"]')).toBeVisible()
+  await page.screenshot({ path: path.join(artifacts, 'plugin-card-sign-in.png') })
+  await page.locator('[data-testid^="plugin-"][data-testid$="-provider-x_api"]').click()
+  await page.locator('[data-testid^="plugin-"][data-testid$="-X_BEARER_TOKEN"]').fill('mobile-x-token-42')
   await page.screenshot({ path: path.join(artifacts, 'plugin-card-open.png') })
   await page.locator('[data-testid^="plugin-"][data-testid$="-submit"]').click()
-  await expect(message('Home Assistant has its token.', { exact: true })).toBeVisible({
+  await expect(message('X search has its token.', { exact: true })).toBeVisible({
     timeout: 30000
   })
   const connectors = (await rpc('hexbot.connectors.list')).connectors
-  assert.equal(connectors.find(c => c.id === 'home_assistant').ready, true)
-  assert.doesNotMatch(JSON.stringify(modelRequests), /mobile-ha-token-42/)
+  assert.equal(connectors.find(c => c.id === 'x_search').ready, true)
+  assert.doesNotMatch(JSON.stringify(modelRequests), /mobile-x-token-42/)
   await shot('chat-plugin-saved')
+  // The bot drafts an email; the user edits it on the card and sends it.
+  // A name holding a comma stays one person.
+  await writeFile(
+    path.join(home, 'profiles/owl/config.yaml'),
+    `model:\n  provider: lmstudio\n  default: mobile-test\n  base_url: ${modelBase}\n  api_key: test-key\ntools:\n  enabled_toolsets: [file, hexbot, gmail]\napproval_mode: manual\n`
+  )
+  await page.getByTestId('chat-input').fill('Draft an email to Ana about the launch review')
+  await page.getByTestId('chat-send').click()
+  const subject = page.locator('[data-testid^="email-draft-"][data-testid$="-subject"]')
+  await expect(subject).toBeVisible({ timeout: 30000 })
+  await expect(page.locator('[data-testid^="email-draft-"][data-testid$="-to"]')).toHaveValue(
+    'Lima, Ana <ana@example.com>'
+  )
+  await subject.fill('Launch review, Friday 4pm')
+  await settle()
+  await shot('email-draft-card')
+  assert.equal(gmailSent.length, 0, 'nothing is sent before Send')
+  await page.locator('[data-testid^="email-draft-"][data-testid$="-send"]').click()
+  await expect(message('Sent. Ana has your reply.', { exact: true })).toBeVisible({
+    timeout: 30000
+  })
+  assert.equal(gmailSent.length, 1)
+  const sentMime = Buffer.from(gmailSent[0].raw, 'base64url').toString()
+  assert.match(sentMime, /^To: "Lima, Ana" <ana@example.com>\r\n/)
+  assert.match(sentMime, /\r\nSubject: Launch review, Friday 4pm\r\n/)
+  await shot('chat-email-sent')
   await page.getByTestId('chat-settings').click()
   await expect(page.getByTestId('fingerprint-soul')).toBeVisible()
   await settle()
@@ -616,6 +751,56 @@ try {
   await expect
     .poll(async () => (await rpc('hexbot.bots.get', { name: 'owl' })).bot.persona)
     .toBe('You are Owl. Give short, clear answers.')
+  await expect(page.getByTestId('fingerprint-soul')).toBeVisible()
+  // The face has its own page behind Change face. A pick is saved at once,
+  // with the picture of it this phone drew.
+  await page.getByTestId('action-change-face').click()
+  await expect(page.getByTestId('face-stage')).toBeVisible()
+  await expect(page.getByTestId('face-picker').getByRole('radio')).toHaveCount(40)
+  await page.getByTestId('face-picker-shape-star').click()
+  await page.getByTestId('face-picker-color-yellow').click()
+  await expect
+    .poll(async () => (await rpc('hexbot.bots.get', { name: 'owl' })).bot.face)
+    .toEqual({ color: 'yellow', shape: 'star' })
+  const faced = (await rpc('hexbot.bots.get', { name: 'owl' })).bot
+  assert.equal(faced.avatar?.mime, 'image/png', 'a picked face is saved with its picture')
+  const picture = Buffer.from(faced.avatar.data.replace(/^data:[^,]*,/, ''), 'base64')
+  assert.deepEqual(
+    [picture.readUInt32BE(16), picture.readUInt32BE(20)],
+    [512, 512],
+    'the picture is 512 pixels square'
+  )
+  await writeFile(path.join(artifacts, 'face-picture.png'), picture)
+  // The name of each pick shows beside its heading.
+  await expect(page.getByTestId('face-picker')).toContainText('Star')
+  await expect(page.getByTestId('face-picker')).toContainText('Lemon')
+  await settle()
+  await shot('face')
+  // A photo takes the face's place and puts it aside; one button brings it back.
+  const photoChooser = page.waitForEvent('filechooser')
+  await page.getByTestId('action-choose-bot-picture').click()
+  await (await photoChooser).setFiles({
+    name: 'me.png',
+    mimeType: 'image/png',
+    // A one-pixel PNG: a picture, but no face this app drew.
+    buffer: Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+      'base64'
+    )
+  })
+  await expect(page.getByTestId('face-photo')).toBeVisible()
+  const withPhoto = (await rpc('hexbot.bots.get', { name: 'owl' })).bot
+  assert.equal(withPhoto.face, null, 'a photo puts the face aside')
+  assert.deepEqual(withPhoto.kept_face, { color: 'yellow', shape: 'star' })
+  await expect(page.getByTestId('face-picker')).not.toContainText('Star')
+  await settle()
+  await shot('face-photo')
+  await page.getByTestId('action-use-generated-face').click()
+  await expect
+    .poll(async () => (await rpc('hexbot.bots.get', { name: 'owl' })).bot.face)
+    .toEqual({ color: 'yellow', shape: 'star' })
+  await expect(page.getByTestId('action-shuffle-face')).toBeVisible()
+  await page.getByTestId('management-sheet-back').click()
   await expect(page.getByTestId('fingerprint-soul')).toBeVisible()
   await page.getByTestId('field-title').fill('Unsaved role on my phone')
   await page.getByTestId('fingerprint-memory').click()
@@ -751,8 +936,51 @@ try {
       await page.getByTestId('management-sheet-back').click()
     }
     if (area === 'plugins') {
+      // Gmail's panel says who is signed in, and Disconnect shows it at once.
+      await page.getByTestId('plugin-connector:gmail').click()
+      await expect(page.getByTestId('management-loading')).not.toBeVisible({ timeout: 30000 })
+      await expect(page.getByTestId('manage-connector')).toContainText('Account')
+      await page.getByTestId('manage-connector').click()
+      await expect(page.getByText('Signed in as alex@example.com', { exact: true })).toBeVisible()
+      await settle()
+      await shot('google-account')
+      page.once('dialog', dialog => void dialog.accept())
+      await page.getByTestId('action-disconnect').click()
+      await expect(page.getByText('Not connected', { exact: true })).toBeVisible()
+      await expect(page.getByTestId('action-disconnect')).toHaveCount(0)
+      // Not connected, it offers the account's other connectors to connect
+      // with the same sign-in, and the bots that get it.
+      await expect(page.getByTestId('account-also-google_calendar-row')).toBeVisible()
+      await page.getByTestId('management-sheet-back').click()
+      await page.getByTestId('management-sheet-back').click()
+      // Microsoft shows its code first, and opens its page only when asked.
+      const opened = []
+      const popups = popup => {
+        opened.push(popup.url())
+        void popup.close()
+      }
+      page.on('popup', popups)
+      await page.getByTestId('plugin-connector:outlook').click()
+      await expect(page.getByTestId('management-loading')).not.toBeVisible({ timeout: 30000 })
+      await expect(page.getByTestId('manage-connector')).toContainText('Connect')
+      await page.getByTestId('manage-connector').click()
+      await page.getByTestId('account-microsoft-sign-in').click()
+      await expect(page.getByTestId('account-code')).toContainText('HXBT-4821')
+      await expect(
+        page.getByText('Copy the code, then sign in on the Microsoft page.')
+      ).toBeVisible()
+      await settle()
+      assert.deepEqual(opened, [])
+      await shot('microsoft-code')
+      await page.getByTestId('action-copy-code-and-open-microsoft').click()
+      await expect.poll(() => opened.length).toBe(1)
+      await page.getByTestId('action-stop-signing-in').click()
+      await expect(page.getByTestId('account-code')).toHaveCount(0)
+      page.off('popup', popups)
+      await page.getByTestId('management-sheet-back').click()
+      await page.getByTestId('management-sheet-back').click()
       // One plugin card chooses the bots that get it.
-      await page.getByTestId('plugin-skill:github').click()
+      await page.getByTestId('plugin-skill:pdf').click()
       await expect(page.getByTestId('management-loading')).not.toBeVisible({ timeout: 30000 })
       await settle()
       await shot('plugin')
@@ -760,7 +988,7 @@ try {
       await expect
         .poll(async () =>
           (await rpc('hexbot.plugins.list')).skills
-            .find(p => p.id === 'github')
+            .find(p => p.id === 'pdf')
             .bots.includes('owl')
         )
         .toBe(false)
@@ -797,11 +1025,10 @@ try {
       await page.getByTestId('management-sheet-back').click()
       await page.getByTestId('manage-skill-create').click()
       await page.getByTestId('field-name').fill('mobile-update')
+      await page.getByTestId('field-description').fill('Send brief updates from your phone')
       await page
-        .getByTestId('field-content')
-        .fill(
-          '---\ndescription: Send brief updates from your phone\n---\n\nSend a short update when the work is ready.'
-        )
+        .getByTestId('field-instructions')
+        .fill('Send a short update when the work is ready.')
       await settle()
       await shot('skill-editor')
       await page.getByTestId('management-sheet-action').click()
@@ -867,11 +1094,28 @@ try {
   await page.getByTestId('management-sheet-close').click()
   await expect(page.getByTestId('management-sheet')).not.toBeVisible()
   await page.getByTestId('bot-row-owl').click()
-  await expect(
+  // The chat opens at its newest message, and the list draws only the
+  // messages near it: scroll up to the first reply and the visual.
+  const scrolledTo = async locator => {
+    await expect(page.getByTestId('chat-input')).toBeVisible({ timeout: 30000 })
+    await expect
+      .poll(
+        async () => {
+          if (await locator.isVisible()) return true
+          await page.mouse.move(196, 400)
+          await page.mouse.wheel(0, -1500)
+          return false
+        },
+        { timeout: 30000 }
+      )
+      .toBe(true)
+  }
+  await scrolledTo(
     message('Your daemon received this from mobile. The connection is working.', {
       exact: true
     })
-  ).toBeVisible({ timeout: 30000 })
+  )
+  await scrolledTo(page.locator('[data-testid^="visual-open-"]').first())
   await page.locator('[data-testid^="visual-open-"]').first().click()
   await expect(page.frameLocator('iframe').getByText('42 completed tasks')).toBeVisible()
   await page.getByTestId('visual-sheet-close').click()
@@ -909,11 +1153,15 @@ try {
       'attachment-only send delivered to Pi, clears chips after acceptance, and leaves out a file staged by another app',
       'retained paired-app upload keeps its bytes and submits exactly once without the mobile file',
       'approval gates a real file write',
+      'email draft card the user edits and sends, with a comma in a name',
+      'Gmail and Outlook account panels: disconnect, connect with others, and a code before the page',
       'chat list, and one chat per bot opened from its row',
+      'a long press pins a chat and renames it from its face',
       'model menu lists connected providers from their live lists and shows the level the model runs at',
       'tool card',
       'heartbeat checklist, a run the card follows to its end, and its message in the chat',
       'soul editing',
+      'a face picked on its page and saved with its picture',
       'isolated bot memory',
       'About you',
       'daemon management panels and unlimited room turn budget',

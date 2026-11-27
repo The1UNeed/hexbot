@@ -117,29 +117,24 @@ async fn configured_web_search_extract_headers_payload_and_artifacts() {
     server.abort();
 }
 #[tokio::test]
-async fn vision_and_speech_execute_configured_http_services() {
+async fn vision_executes_the_configured_http_service() {
     let requests: Requests = Default::default();
     let records = requests.clone();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let router = Router::new()
-        .route(
-            "/chat/completions",
-            post(move |headers: HeaderMap, Json(payload): Json<Value>| {
-                let records = records.clone();
-                async move {
-                    records.lock().unwrap().push((headers, payload));
-                    Json(json!({"choices":[{"message":{"content":"A red square"}}]}))
-                }
-            }),
-        )
-        .route(
-            "/audio/speech",
-            post(|| async { b"ID3generated-test-audio".to_vec() }),
-        );
+    let router = Router::new().route(
+        "/chat/completions",
+        post(move |headers: HeaderMap, Json(payload): Json<Value>| {
+            let records = records.clone();
+            async move {
+                records.lock().unwrap().push((headers, payload));
+                Json(json!({"choices":[{"message":{"content":"A red square"}}]}))
+            }
+        }),
+    );
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let h = home(
-        json!({"tools":{"enabled_toolsets":["vision","tts"]},"auxiliary":{"vision":{"provider":"openai","model":"vision-test","base_url":format!("http://{address}")}},"tts":{"provider":"openai","openai":{"base_url":format!("http://{address}")}}}),
+        json!({"tools":{"enabled_toolsets":["vision"]},"auxiliary":{"vision":{"provider":"openai","model":"vision-test","base_url":format!("http://{address}")}}}),
     );
     std::fs::write(h.path().join(".env"), "OPENAI_API_KEY=private-test-key\n").unwrap();
     let vision = call(
@@ -150,33 +145,56 @@ async fn vision_and_speech_execute_configured_http_services() {
     .await
     .unwrap();
     assert_eq!(vision["analysis"], "A red square");
-    let speech = call(h.path(), "text_to_speech", json!({"text":"Hello"}))
-        .await
-        .unwrap();
-    assert_eq!(
-        std::fs::read(speech["file_path"].as_str().unwrap()).unwrap(),
-        b"ID3generated-test-audio"
-    );
     assert_eq!(requests.lock().unwrap()[0].1["model"], "vision-test");
     server.abort();
 }
+#[cfg(unix)]
+#[tokio::test]
+async fn a_cloud_voice_saved_before_speaks_with_the_built_in_voice() {
+    let h = home(json!({"tools":{"enabled_toolsets":["tts"]},"tts":{"provider":"elevenlabs"}}));
+    // Stands in for edge-tts: writes the file named after --write-media.
+    let edge = script(
+        h.path(),
+        "edge.py",
+        "import sys\nopen(sys.argv[sys.argv.index('--write-media')+1],'wb').write(b'ID3edge-audio')\n",
+    );
+    let mut cfg = common::read_config(h.path()).unwrap();
+    cfg["tts"]["edge"] = json!({"command": edge});
+    common::write_config(h.path(), &cfg).unwrap();
+    assert!(
+        native_tools::descriptors(h.path(), "tester")
+            .unwrap()
+            .iter()
+            .any(|t| t["name"] == "text_to_speech")
+    );
+    let audio = call(h.path(), "text_to_speech", json!({"text":"Hello"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read(audio["file_path"].as_str().unwrap()).unwrap(),
+        b"ID3edge-audio"
+    );
+}
+
+#[cfg(unix)]
 #[tokio::test]
 async fn speech_checks_the_requested_provider_instead_of_the_default() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let router = Router::new().route(
-        "/audio/speech",
-        post(|| async { b"ID3test-audio".to_vec() }),
-    );
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let h = home(json!({"tools":{"enabled_toolsets":["tts"]},"tts":{
-        "provider":"edge","edge":{"command": "/missing/hexbot-edge-tts"},
-        "openai":{"base_url":format!("http://{address}")}
+        "provider":"edge","edge":{"command": "/missing/hexbot-edge-tts"}
     }}));
+    let say = script(
+        h.path(),
+        "say.py",
+        "import sys\nopen(sys.argv[1],'wb').write(b'ID3test-audio')\n",
+    );
+    let mut cfg = common::read_config(h.path()).unwrap();
+    cfg["tts"]["providers"]["say"] =
+        json!({"type":"command","command":say,"args":["{output_path}"]});
+    common::write_config(h.path(), &cfg).unwrap();
     let audio = call(
         h.path(),
         "text_to_speech",
-        json!({"text":"Hello","provider":"openai"}),
+        json!({"text":"Hello","provider":"say"}),
     )
     .await
     .unwrap();
@@ -184,9 +202,7 @@ async fn speech_checks_the_requested_provider_instead_of_the_default() {
         std::fs::read(audio["file_path"].as_str().unwrap()).unwrap(),
         b"ID3test-audio"
     );
-    let mut cfg = common::read_config(h.path()).unwrap();
-    cfg["tts"]["provider"] = json!("openai");
-    common::write_config(h.path(), &cfg).unwrap();
+    // Cloud voices went with the Premium voice connector.
     let denied = call(
         h.path(),
         "text_to_speech",
@@ -196,11 +212,10 @@ async fn speech_checks_the_requested_provider_instead_of_the_default() {
     .unwrap_err();
     assert_eq!(denied.code, 4302);
     assert!(denied.message.contains("not set up"));
-    server.abort();
 }
 
 #[tokio::test]
-async fn vision_crop_and_openai_image_edit_send_actual_image_bytes() {
+async fn vision_crop_sends_actual_image_bytes() {
     use base64::Engine;
     let image = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
         4,
@@ -212,15 +227,21 @@ async fn vision_crop_and_openai_image_edit_send_actual_image_bytes() {
     let png = png.into_inner();
     let records: Requests = Default::default();
     let vision_records = records.clone();
-    let png_reply = png.clone();
-    let edit_body: Arc<Mutex<Vec<u8>>> = Default::default();
-    let saved_edit = edit_body.clone();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let router=Router::new().route("/chat/completions",post(move|headers:HeaderMap,Json(payload):Json<Value>|{let records=vision_records.clone();async move{records.lock().unwrap().push((headers,payload));Json(json!({"choices":[{"message":{"content":"Cropped image"}}]}))}})).route("/images/edits",post(move|body:axum::body::Bytes|{let saved=saved_edit.clone();let png=png_reply.clone();async move{*saved.lock().unwrap()=body.to_vec();Json(json!({"data":[{"b64_json":base64::engine::general_purpose::STANDARD.encode(png)}]}))}}));
+    let router = Router::new().route(
+        "/chat/completions",
+        post(move |headers: HeaderMap, Json(payload): Json<Value>| {
+            let records = vision_records.clone();
+            async move {
+                records.lock().unwrap().push((headers, payload));
+                Json(json!({"choices":[{"message":{"content":"Cropped image"}}]}))
+            }
+        }),
+    );
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let h = home(
-        json!({"tools":{"enabled_toolsets":["vision","image_gen"]},"auxiliary":{"vision":{"provider":"openai","base_url":format!("http://{address}")}},"image_gen":{"provider":"openai","base_url":format!("http://{address}")}}),
+        json!({"tools":{"enabled_toolsets":["vision"]},"auxiliary":{"vision":{"provider":"openai","base_url":format!("http://{address}")}}}),
     );
     std::fs::create_dir_all(h.workspace()).unwrap();
     let input = h.workspace().join("input.png");
@@ -257,18 +278,6 @@ async fn vision_crop_and_openai_image_edit_send_actual_image_bytes() {
         .code,
         4202
     );
-    let result = call(
-        h.path(),
-        "image_generate",
-        json!({"prompt":"Make it blue","image_url":input}),
-    )
-    .await
-    .unwrap();
-    let saved = result["images"][0]["path"].as_str().unwrap();
-    assert_eq!(std::fs::read(saved).unwrap(), png);
-    let body = edit_body.lock().unwrap();
-    assert!(body.windows(png.len()).any(|part| part == png));
-    assert!(String::from_utf8_lossy(&body).contains("name=\"image[]\""));
     server.abort();
 }
 #[cfg(unix)]
@@ -280,7 +289,8 @@ fn script(home: &Path, name: &str, code: &str) -> std::path::PathBuf {
     path
 }
 /// A stand-in for the `cua` CLI: a sandbox recorded in a file, `cua mcp`
-/// answering the computer tools, and a viewer link to `upstream.txt`.
+/// answering the computer tools, and a viewer link to `upstream.txt`. While
+/// `engine-down` exists Docker does not answer: the sandbox reads as missing.
 #[cfg(unix)]
 const FAKE_CUA: &str = r#"import json,sys,pathlib,os,base64
 here=pathlib.Path(__file__).parent
@@ -290,11 +300,24 @@ def log(row):
     with (here/'cua.log').open('a') as f: f.write(json.dumps(row)+'\n')
 args=sys.argv[1:]
 log({'argv':args})
+down=(here/'engine-down').exists()
+if args[:2]==['runtime','doctor']:
+    print(json.dumps({'backends':[{'backend':'container','ready':not down}]})); sys.exit(0)
+if args[:2]==['sb','info'] and (here/'info-fails-once').exists():
+    (here/'info-fails-once').unlink(); print('cua: the daemon did not answer',file=sys.stderr); sys.exit(1)
+if args[:2]==['sb','info'] and (here/'turn-off-during-info').exists():
+    (here/'turn-off-during-info').unlink()
+    saved=json.loads((here/'computer.json').read_text()); saved['on']=False
+    (here/'computer.json').write_text(json.dumps(saved))
 if args[:2]==['sb','info']:
     if not state.exists(): print('cua: not found: sandbox',file=sys.stderr); sys.exit(3)
-    if (here/'docker-down').exists():
-        print(json.dumps({'name':json.loads(state.read_text())['name'],'state':'missing','status':'missing'})); sys.exit(0)
+    if down: print(json.dumps({'name':args[2],'state':'missing','status':'missing'})); sys.exit(0)
     print(state.read_text()); sys.exit(0)
+if args[:2]==['sb','resume']:
+    if down: print('cua: local runtime: instance not found',file=sys.stderr); sys.exit(1)
+    state.write_text(json.dumps({'name':args[2],'state':'running','status':'ready'})); sys.exit(0)
+if args[:2]==['sb','suspend']:
+    state.write_text(json.dumps({'name':args[2],'state':'stopped','status':'stopped'})); sys.exit(0)
 if args[:2]==['sb','create']:
     if (here/'slow').exists():
         (here/'creating').write_text('1'); import time; time.sleep(60)
@@ -368,7 +391,7 @@ async fn bots_share_one_computer_and_take_turns() {
     )
     .await
     .unwrap();
-    // While the user has control, the bot's actions wait.
+    // While the user has paused the bots, their actions are refused.
     computers::call(
         h.path(),
         "hexbot.computer.control",
@@ -384,7 +407,7 @@ async fn bots_share_one_computer_and_take_turns() {
     )
     .await
     .unwrap_err();
-    assert!(refused.message.contains("taken over"));
+    assert!(refused.message.contains("paused"));
     computers::call(
         h.path(),
         "hexbot.computer.control",
@@ -432,6 +455,8 @@ async fn bots_share_one_computer_and_take_turns() {
     assert_eq!(
         tools,
         vec![
+            // The bot's Cua session starts once, before its first action is checked.
+            ("computer_get_screen_size", json!({})),
             ("computer_screenshot", json!({})),
             ("computer_click", json!({"x":10,"y":20,"button":"left"})),
             ("computer_hotkey", json!({"keys":"ctrl+l"})),
@@ -507,55 +532,52 @@ async fn bots_share_one_computer_and_take_turns() {
     hexbot_core::connectors::close_bot(h.path(), "tester").await;
     hexbot_core::connectors::close_bot(h.path(), "helper").await;
 }
+/// Docker stops and its engine will not start: a bot's action fails at once
+/// and says why, the computer is kept, and the error clears once Docker is
+/// back, whether the user looks first or a bot acts first.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_computer_docker_cannot_find_fails_at_once_and_is_kept() {
     use hexbot_core::computers;
-    let h = home(json!({"tools":{"enabled_toolsets":["computer_use"]}}));
-    let cua = script(h.path(), "cua-test", FAKE_CUA);
-    std::fs::write(
-        h.path().join(".env"),
-        format!("HEXBOT_CUA_CMD={}\n", cua.display()),
-    )
-    .unwrap();
-    call(h.path(), "computer_use", json!({"action":"screenshot"}))
-        .await
-        .unwrap();
-    // Docker stops: Cua still knows the computer but finds no container.
-    std::fs::write(h.path().join("docker-down"), "1").unwrap();
+    let h = running_computer().await;
+    let down = |down: bool| {
+        for marker in ["engine-down", "engine-broken"] {
+            if down {
+                std::fs::write(h.path().join(marker), "").unwrap();
+            } else {
+                std::fs::remove_file(h.path().join(marker)).unwrap();
+            }
+        }
+    };
+    down(true);
     let started = std::time::Instant::now();
     let error = call(h.path(), "computer_use", json!({"action":"screenshot"}))
         .await
         .unwrap_err();
     assert!(started.elapsed() < std::time::Duration::from_secs(10));
-    assert!(error.message.contains("Start Docker"), "{}", error.message);
-    let status = computers::call(h.path(), "hexbot.computer.status", &json!({}))
-        .await
-        .unwrap()
-        .unwrap();
+    assert!(
+        error.message.starts_with("Docker is not running"),
+        "{}",
+        error.message
+    );
+    let status = computer_status(h.path()).await;
     assert_eq!(status["state"], "error");
-    assert!(status["error"].as_str().unwrap().contains("Start Docker"));
+    assert_eq!(status["error"], error.message.as_str());
     // Nothing on it is lost: the computer is not made again.
-    let steps = std::fs::read_to_string(h.path().join("cua.log"))
-        .unwrap()
+    let steps = cua_log(h.path())
         .lines()
         .filter(|line| line.contains("\"create\"") || line.contains("\"rm\""))
         .count();
     assert_eq!(steps, 1);
-    // Docker is back, and so is the computer, without the old error, whether
-    // the user looks first or a bot acts first.
-    std::fs::remove_file(h.path().join("docker-down")).unwrap();
-    let status = computers::call(h.path(), "hexbot.computer.status", &json!({}))
-        .await
-        .unwrap()
-        .unwrap();
+    down(false);
+    let status = computer_status(h.path()).await;
     assert_eq!(status["state"], "running");
     assert!(status["error"].is_null());
-    std::fs::write(h.path().join("docker-down"), "1").unwrap();
+    down(true);
     call(h.path(), "computer_use", json!({"action":"screenshot"}))
         .await
         .unwrap_err();
-    std::fs::remove_file(h.path().join("docker-down")).unwrap();
+    down(false);
     let events = hexbot_core::events::EventHub::new();
     computers::attach(h.path(), events.clone());
     let mut changes = events.subscribe();
@@ -606,6 +628,10 @@ async fn computer_screen_is_served_through_the_daemon_and_embeddable() {
         .route(
             "/cua.env.v1.StreamService/SetPreferences",
             axum::routing::post(|| async { "resized" }),
+        )
+        .route(
+            "/cua.env.v1.PresenceService/{method}",
+            axum::routing::post(|| async { "present" }),
         );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -669,6 +695,32 @@ async fn computer_screen_is_served_through_the_daemon_and_embeddable() {
     )
     .await;
     assert_eq!(resize.status(), 403);
+    // Hexbot draws the bots' cursors. The viewer is kept out of presence, so
+    // it draws no second one, watching or in control.
+    let control = computers::call(h.path(), "hexbot.computer.view", &json!({"control": true}))
+        .await
+        .unwrap()
+        .unwrap();
+    let control = control["path"].as_str().unwrap().split_once('#').unwrap().0;
+    let control = control
+        .strip_prefix("/hexbot/computer/")
+        .unwrap()
+        .strip_suffix("/viewer/")
+        .unwrap();
+    for token in [token, control] {
+        for method in ["Join", "UpdateCursor", "Leave"] {
+            let presence = computers::proxy(
+                token.to_owned(),
+                Request::post(format!(
+                    "/hexbot/computer/{token}/cua.env.v1.PresenceService/{method}"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await;
+            assert_eq!(presence.status(), 403, "{method}");
+        }
+    }
     // A link may fix the screen's quality; an unknown one is refused.
     let fixed = computers::call(
         h.path(),
@@ -753,7 +805,7 @@ async fn a_bot_action_under_way_keeps_the_turn_until_it_ends() {
     second.await.unwrap().unwrap();
     let after = log();
     assert!(after.find(r#""done""#).unwrap() < after.find("computer_double_click").unwrap());
-    // Taking control waits for a click under way, too.
+    // Pausing the bots waits for a click under way, too.
     std::fs::write(&hold, "").unwrap();
     let home = h.path().to_owned();
     let click = tokio::spawn(async move {
@@ -777,7 +829,7 @@ async fn a_bot_action_under_way_keeps_the_turn_until_it_ends() {
             .unwrap()
     });
     let waited = tokio::time::timeout(std::time::Duration::from_secs(1), &mut take).await;
-    assert!(waited.is_err(), "control was granted during the click");
+    assert!(waited.is_err(), "the bots paused during the click");
     std::fs::remove_file(&hold).unwrap();
     click.await.unwrap().unwrap();
     assert_eq!(take.await.unwrap().unwrap()["control"], "user");
@@ -823,9 +875,373 @@ async fn a_bot_stopped_while_the_computer_starts_leaves_it_free() {
         .unwrap();
     assert!(started.is_ok(), "the computer is no longer busy");
 }
+/// Starts the fake engine: Docker answers again, unless `engine-broken` exists.
+#[cfg(unix)]
+const FAKE_ENGINE: &str = r#"import sys,pathlib
+here=pathlib.Path(__file__).parent
+with (here/'cua.log').open('a') as f: f.write('{"engine":"start"}\n')
+if (here/'engine-broken').exists():
+    print('time="2026-10-30T10:09:00+08:00" level=fatal msg="vz: the virtual machine could not start"',file=sys.stderr); sys.exit(1)
+(here/'engine-down').unlink(missing_ok=True)
+"#;
+/// A home whose computer runs, made by a bot's first action, with a fake
+/// engine Hexbot starts when Docker does not answer.
+#[cfg(unix)]
+async fn running_computer() -> support::TestHome {
+    let h = home(json!({"tools":{"enabled_toolsets":["computer_use"]}}));
+    let engine = script(h.path(), "engine-start", FAKE_ENGINE);
+    let mut cfg = common::read_config(h.path()).unwrap();
+    cfg["computer_use"] = json!({"engine_start":[engine]});
+    common::write_config(h.path(), &cfg).unwrap();
+    let cua = script(h.path(), "cua-test", FAKE_CUA);
+    std::fs::write(
+        h.path().join(".env"),
+        format!("HEXBOT_CUA_CMD={}\n", cua.display()),
+    )
+    .unwrap();
+    call(h.path(), "computer_use", json!({"action":"screenshot"}))
+        .await
+        .unwrap();
+    h
+}
+#[cfg(unix)]
+async fn computer_status(home: &Path) -> Value {
+    hexbot_core::computers::call(home, "hexbot.computer.status", &json!({}))
+        .await
+        .unwrap()
+        .unwrap()
+}
+/// Runs a lifecycle step, which reports by event, and waits for it to end.
+#[cfg(unix)]
+async fn computer_step(home: &Path, step: &str) -> Value {
+    hexbot_core::computers::call(home, &format!("hexbot.computer.{step}"), &json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let status = computer_status(home).await;
+            if ![
+                "starting",
+                "repairing",
+                "stopping",
+                "restarting",
+                "resetting",
+            ]
+            .contains(&status["state"].as_str().unwrap_or(""))
+            {
+                return status;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap()
+}
+#[cfg(unix)]
+fn cua_log(home: &Path) -> String {
+    std::fs::read_to_string(home.join("cua.log")).unwrap()
+}
+/// The daemon's computer restarted, for an update: the engine and the
+/// computer are down, and the watchdog brings both back, files and all.
 #[cfg(unix)]
 #[tokio::test]
-async fn giving_the_computer_back_closes_an_open_control_screen() {
+async fn a_computer_lost_with_its_engine_comes_back_by_itself() {
+    use hexbot_core::computers;
+    let h = running_computer().await;
+    let sandbox = h.path().join("sandbox.json");
+    std::fs::write(
+        &sandbox,
+        json!({"name":computers::sandbox(h.path()),"state":"stopped","status":"stopped"})
+            .to_string(),
+    )
+    .unwrap();
+    std::fs::write(h.path().join("engine-down"), "").unwrap();
+    let status = computer_status(h.path()).await;
+    assert_eq!(status["state"], "error");
+    assert_eq!(
+        status["error"],
+        "Docker is not running on the daemon's computer. Turn the computer on to start the container engine and the computer."
+    );
+    computers::check(h.path()).await;
+    let status = computer_status(h.path()).await;
+    assert_eq!(status["state"], "running");
+    assert!(status["error"].is_null());
+    let log = cua_log(h.path());
+    assert!(log.contains(r#"{"engine":"start"}"#));
+    assert!(log.contains(r#""resume""#));
+    // The same computer: not made again.
+    assert_eq!(log.matches(r#""create""#).count(), 1);
+    assert!(!log.contains(r#""rm""#));
+    // Turned off on purpose, it stays off.
+    assert_eq!(computer_step(h.path(), "stop").await["state"], "stopped");
+    std::fs::write(h.path().join("engine-down"), "").unwrap();
+    let before = cua_log(h.path()).len();
+    computers::check(h.path()).await;
+    assert_eq!(cua_log(h.path()).len(), before);
+}
+/// The engine will not start: the primary bot tells the user once, in its
+/// chat and on their devices, and Turn on repairs it once the engine can start.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_computer_that_cannot_come_back_is_reported_once() {
+    use hexbot_core::{computers, events::EventHub};
+    let h = running_computer().await;
+    db::open(h.path())
+        .unwrap()
+        .execute("UPDATE bots SET is_primary=1 WHERE name='tester'", [])
+        .unwrap();
+    let events = EventHub::new();
+    let mut heard = events.subscribe();
+    computers::attach(h.path(), events);
+    std::fs::write(h.path().join("engine-down"), "").unwrap();
+    std::fs::write(h.path().join("engine-broken"), "").unwrap();
+    computers::check(h.path()).await;
+    let reason = "Docker is not running on the daemon's computer, and the container engine would not start: vz: the virtual machine could not start. Start it there, then turn the computer on.";
+    assert_eq!(computer_status(h.path()).await["error"], reason);
+    let notices = || {
+        common::rows(
+            &db::open(h.path()).unwrap(),
+            "SELECT bot,text FROM heartbeat_messages WHERE heartbeat_id IS NULL",
+            &[],
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        notices(),
+        vec![
+            json!({"bot":"tester","text":format!("Your bots' computer is down, and I could not bring it back. {reason}")})
+        ]
+    );
+    let told = loop {
+        let event = heard.recv().await.unwrap();
+        if event.frame["params"]["type"] == "hexbot.heartbeat.message" {
+            break event;
+        }
+    };
+    assert_eq!(told.owner, "local");
+    assert!(
+        told.frame["params"]["payload"]["text"]
+            .as_str()
+            .unwrap()
+            .ends_with(reason)
+    );
+    // Still down a minute later: no second message.
+    computers::check(h.path()).await;
+    assert_eq!(notices().len(), 1);
+    std::fs::remove_file(h.path().join("engine-broken")).unwrap();
+    let status = computer_step(h.path(), "start").await;
+    assert_eq!(status["state"], "running");
+    assert!(status["error"].is_null());
+    let saved: Value =
+        serde_json::from_str(&std::fs::read_to_string(h.path().join("computer.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        (saved["on"].clone(), saved["told"].clone()),
+        (json!(true), json!(false))
+    );
+}
+/// A repair failed, then the user starts Docker themselves: the watchdog's
+/// next look clears the outage from open screens, without waiting to retry.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_watchdog_shows_a_computer_that_came_back_on_its_own() {
+    use hexbot_core::{computers, events::EventHub};
+    let h = running_computer().await;
+    let events = EventHub::new();
+    computers::attach(h.path(), events.clone());
+    std::fs::write(h.path().join("engine-down"), "").unwrap();
+    std::fs::write(h.path().join("engine-broken"), "").unwrap();
+    computers::check(h.path()).await;
+    std::fs::remove_file(h.path().join("engine-down")).unwrap();
+    std::fs::remove_file(h.path().join("engine-broken")).unwrap();
+    let mut changes = events.subscribe();
+    computers::check(h.path()).await;
+    let mut last = Value::Null;
+    while let Ok(event) = changes.try_recv() {
+        if event.frame["params"]["type"] == "hexbot.computer.changed" {
+            last = event.frame["params"]["payload"].clone();
+        }
+    }
+    assert_eq!(last["state"], "running");
+    assert!(last["error"].is_null(), "{last}");
+    assert_eq!(
+        cua_log(h.path()).matches(r#"{"engine":"start"}"#).count(),
+        1
+    );
+}
+/// A computer Cua reports failed is left as it is, files and all, and the
+/// primary bot says so once; with no one to tell, the outage stays untold.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_failed_computer_is_reported_once_and_never_remade_unattended() {
+    use hexbot_core::{computers, events::EventHub};
+    let failed = |h: &Path| {
+        std::fs::write(
+            h.join("sandbox.json"),
+            json!({"name":computers::sandbox(h),"state":"failed","status":"failed"}).to_string(),
+        )
+        .unwrap()
+    };
+    let told = |h: &Path| {
+        serde_json::from_str::<Value>(&std::fs::read_to_string(h.join("computer.json")).unwrap())
+            .unwrap()["told"]
+            .clone()
+    };
+    let h = running_computer().await;
+    db::open(h.path())
+        .unwrap()
+        .execute("UPDATE bots SET is_primary=1 WHERE name='tester'", [])
+        .unwrap();
+    computers::attach(h.path(), EventHub::new());
+    failed(h.path());
+    let before = cua_log(h.path()).len();
+    computers::check(h.path()).await;
+    let log = cua_log(h.path())[before..].to_owned();
+    assert!(!log.contains(r#""rm""#) && !log.contains(r#""create""#));
+    let notices = common::rows(
+        &db::open(h.path()).unwrap(),
+        "SELECT text FROM heartbeat_messages WHERE heartbeat_id IS NULL",
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        notices,
+        vec![
+            json!({"text":"Your bots' computer is down, and I could not bring it back. The computer failed to start. Turn it on to make a new one."})
+        ]
+    );
+    assert_eq!(told(h.path()), true);
+    // No primary bot to say it: not marked told, so a later failure tries again.
+    let quiet = running_computer().await;
+    failed(quiet.path());
+    computers::check(quiet.path()).await;
+    assert_eq!(computer_status(quiet.path()).await["state"], "error");
+    assert_ne!(told(quiet.path()), true);
+}
+/// Docker comes back and the computer turns out to have failed: the watchdog
+/// reports it and leaves it, files and all, for the user or a bot to remake.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_computer_failed_behind_a_stopped_engine_is_remade_only_when_asked() {
+    use hexbot_core::computers;
+    let h = running_computer().await;
+    std::fs::write(
+        h.path().join("sandbox.json"),
+        json!({"name":computers::sandbox(h.path()),"state":"failed","status":"failed"}).to_string(),
+    )
+    .unwrap();
+    std::fs::write(h.path().join("engine-down"), "").unwrap();
+    let events = hexbot_core::events::EventHub::new();
+    computers::attach(h.path(), events.clone());
+    let mut changes = events.subscribe();
+    let before = cua_log(h.path()).len();
+    computers::check(h.path()).await;
+    let log = cua_log(h.path())[before..].to_owned();
+    assert!(log.contains(r#"{"engine":"start"}"#));
+    assert!(!log.contains(r#""rm""#) && !log.contains(r#""create""#));
+    // Open screens show it down at once, not as it was before.
+    let mut last = Value::Null;
+    while let Ok(event) = changes.try_recv() {
+        if event.frame["params"]["type"] == "hexbot.computer.changed" {
+            last = event.frame["params"]["payload"].clone();
+        }
+    }
+    assert_eq!(last["state"], "error", "{last}");
+    assert_eq!(
+        last["error"],
+        "Docker is back, but the computer failed to start. Turn it on to make a new one."
+    );
+    // Turn on, asked for, makes a new one behind the same stopped engine.
+    std::fs::write(h.path().join("engine-down"), "").unwrap();
+    let before = cua_log(h.path()).len();
+    let status = computer_step(h.path(), "start").await;
+    assert_eq!(status["state"], "running", "{status}");
+    let log = cua_log(h.path())[before..].to_owned();
+    assert!(log.contains(r#"{"engine":"start"}"#));
+    assert!(log.contains(r#""rm""#) && log.contains(r#""create""#));
+}
+/// Cua's first answer fails and only the second says the computer failed:
+/// the watchdog still does not make a new one.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_watchdog_never_remakes_a_computer_found_failed_on_a_second_look() {
+    use hexbot_core::computers;
+    let h = running_computer().await;
+    std::fs::write(
+        h.path().join("sandbox.json"),
+        json!({"name":computers::sandbox(h.path()),"state":"failed","status":"failed"}).to_string(),
+    )
+    .unwrap();
+    std::fs::write(h.path().join("info-fails-once"), "").unwrap();
+    let before = cua_log(h.path()).len();
+    computers::check(h.path()).await;
+    let log = cua_log(h.path())[before..].to_owned();
+    assert!(log.matches(r#""info""#).count() >= 2);
+    assert!(!log.contains(r#""rm""#) && !log.contains(r#""create""#));
+    assert_eq!(
+        computer_status(h.path()).await["error"],
+        "The computer failed to start. Turn it on to make a new one."
+    );
+}
+/// Turned off while the watchdog waited on Cua: it does not turn the computer
+/// back on.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_watchdog_respects_a_turn_off_made_while_it_looked() {
+    use hexbot_core::computers;
+    let h = running_computer().await;
+    std::fs::write(
+        h.path().join("sandbox.json"),
+        json!({"name":computers::sandbox(h.path()),"state":"stopped","status":"stopped"})
+            .to_string(),
+    )
+    .unwrap();
+    std::fs::write(h.path().join("turn-off-during-info"), "").unwrap();
+    let before = cua_log(h.path()).len();
+    computers::check(h.path()).await;
+    assert!(!cua_log(h.path())[before..].contains(r#""resume""#));
+    let saved: Value =
+        serde_json::from_str(&std::fs::read_to_string(h.path().join("computer.json")).unwrap())
+            .unwrap();
+    assert_eq!(saved["on"], false);
+}
+/// Docker answers but the container is gone: its files are too, so only Reset,
+/// which the user chooses, makes a new computer.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_removed_container_is_not_made_again_without_reset() {
+    use hexbot_core::computers;
+    let h = running_computer().await;
+    std::fs::write(
+        h.path().join("sandbox.json"),
+        json!({"name":computers::sandbox(h.path()),"state":"missing","status":"missing"})
+            .to_string(),
+    )
+    .unwrap();
+    let action = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        call(h.path(), "computer_use", json!({"action":"screenshot"})),
+    )
+    .await
+    .expect("a removed computer fails at once instead of waiting for it");
+    let removed = "The computer's container was removed. Reset makes a new computer.";
+    assert_eq!(action.unwrap_err().message, removed);
+    let status = computer_status(h.path()).await;
+    assert_eq!(
+        (status["state"].clone(), status["error"].clone()),
+        (json!("error"), json!(removed))
+    );
+    let log = cua_log(h.path());
+    assert_eq!(log.matches(r#""create""#).count(), 1);
+    assert!(!log.contains(r#""rm""#) && !log.contains(r#"{"engine":"start"}"#));
+    let status = computer_step(h.path(), "reset").await;
+    assert_eq!(status["state"], "running");
+    assert!(status["error"].is_null());
+}
+#[cfg(unix)]
+#[tokio::test]
+async fn the_user_and_the_bots_use_the_screen_at_once() {
     use axum::{
         extract::{Path as UrlPath, Request, WebSocketUpgrade, ws::Message},
         routing::{any, get},
@@ -876,11 +1292,49 @@ async fn giving_the_computer_back_closes_an_open_control_screen() {
     let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{served}{media}media"))
         .await
         .unwrap();
-    socket.send("click".into()).await.unwrap();
-    assert_eq!(
-        socket.next().await.unwrap().unwrap().into_text().unwrap(),
-        "click"
-    );
+    // The user's screen takes clicks while the bots keep working.
+    let clicks = async |socket: &mut tokio_tungstenite::WebSocketStream<_>| {
+        socket.send("click".into()).await.unwrap();
+        assert_eq!(
+            socket.next().await.unwrap().unwrap().into_text().unwrap(),
+            "click"
+        );
+    };
+    clicks(&mut socket).await;
+    let status = computers::call(h.path(), "hexbot.computer.status", &json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(status["control"], "bot");
+    call(
+        h.path(),
+        "computer_use",
+        json!({"action":"click","coordinate":[10,20]}),
+    )
+    .await
+    .unwrap();
+    clicks(&mut socket).await;
+    // Pausing the bots refuses their actions and leaves the screen as it is.
+    let paused = computers::call(
+        h.path(),
+        "hexbot.computer.control",
+        &json!({"holder": "user"}),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(paused["control"], "user");
+    let refused = call(
+        h.path(),
+        "computer_use",
+        json!({"action":"click","coordinate":[1,2]}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(refused.code, 4302);
+    assert!(refused.message.contains("paused"), "{}", refused.message);
+    clicks(&mut socket).await;
+    // Resuming them keeps the user's screen open too.
     computers::call(
         h.path(),
         "hexbot.computer.control",
@@ -889,18 +1343,15 @@ async fn giving_the_computer_back_closes_an_open_control_screen() {
     .await
     .unwrap()
     .unwrap();
-    // The bots have it again, so the screen that could type is shut.
-    let ended = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        loop {
-            match socket.next().await {
-                None | Some(Err(_)) => break,
-                Some(Ok(message)) if message.is_close() => break,
-                Some(Ok(_)) => {}
-            }
-        }
-    })
-    .await;
-    assert!(ended.is_ok(), "the control screen stayed open");
+    clicks(&mut socket).await;
+    call(
+        h.path(),
+        "computer_use",
+        json!({"action":"click","coordinate":[3,4]}),
+    )
+    .await
+    .unwrap();
+    hexbot_core::connectors::close_bot(h.path(), "tester").await;
     server.abort();
     upstream.abort();
 }
@@ -984,21 +1435,19 @@ async fn every_screen_reports_when_its_picture_is_up() {
     upstream.abort();
 }
 #[tokio::test]
-async fn keenable_mistral_and_krea_use_selected_vendor_contracts() {
-    use base64::Engine;
+async fn keenable_uses_its_vendor_contract() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let generated_url = format!("http://{address}/generated.png");
     let records: Requests = Default::default();
     let web_records = records.clone();
-    let speech_records = records.clone();
-    let image_records = records.clone();
-    let router=Router::new().route("/v1/search",post(move|headers:HeaderMap,Json(body):Json<Value>|{let records=web_records.clone();async move{records.lock().unwrap().push((headers,body));Json(json!({"results":[{"url":"https://example.test","title":"Keenable","snippet":"Search snippet"}]}))}})).route("/v1/fetch",axum::routing::get(||async{Json(json!({"content":"Extracted page","title":"Page"}))})).route("/v1/audio/speech",post(move|headers:HeaderMap,Json(body):Json<Value>|{let records=speech_records.clone();async move{records.lock().unwrap().push((headers,body));Json(json!({"audio_data":base64::engine::general_purpose::STANDARD.encode(b"ID3mistral-audio")}))}})).route("/generate/image/krea/krea-2/medium",post(move|headers:HeaderMap,Json(body):Json<Value>|{let records=image_records.clone();async move{records.lock().unwrap().push((headers,body));Json(json!({"job_id":"image-job"}))}})).route("/jobs/image-job",axum::routing::get(move||{let url=generated_url.clone();async move{Json(json!({"status":"completed","result":{"urls":[url]}}))}})).route("/generated.png",axum::routing::get(||async{b"\x89PNG\r\n\x1a\nfake-image".to_vec()}));
+    let router=Router::new().route("/v1/search",post(move|headers:HeaderMap,Json(body):Json<Value>|{let records=web_records.clone();async move{records.lock().unwrap().push((headers,body));Json(json!({"results":[{"url":"https://example.test","title":"Keenable","snippet":"Search snippet"}]}))}})).route("/v1/fetch",axum::routing::get(||async{Json(json!({"content":"Extracted page","title":"Page"}))}));
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let h = home(
-        json!({"tools":{"enabled_toolsets":["web","tts","image_gen"]},"web":{"backend":"keenable"},"tts":{"provider":"mistral","mistral":{"base_url":format!("http://{address}")}},"image_gen":{"provider":"krea","model":"krea-2-medium"}}),
-    );
-    std::fs::write(h.path().join(".env"),format!("KEENABLE_API_KEY=web-secret\nKEENABLE_BASE_URL=http://{address}\nMISTRAL_API_KEY=voice-secret\nKREA_API_KEY=image-secret\nKREA_BASE_URL=http://{address}\n")).unwrap();
+    let h = home(json!({"tools":{"enabled_toolsets":["web"]},"web":{"backend":"keenable"}}));
+    std::fs::write(
+        h.path().join(".env"),
+        format!("KEENABLE_API_KEY=web-secret\nKEENABLE_BASE_URL=http://{address}\n"),
+    )
+    .unwrap();
     let search = call(h.path(), "web_search", json!({"query":"selected backend"}))
         .await
         .unwrap();
@@ -1011,80 +1460,10 @@ async fn keenable_mistral_and_krea_use_selected_vendor_contracts() {
     .await
     .unwrap();
     assert_eq!(extracted["results"][0]["content"], "Extracted page");
-    let audio = call(h.path(), "text_to_speech", json!({"text":"Hello"}))
-        .await
-        .unwrap();
-    assert_eq!(
-        std::fs::read(audio["file_path"].as_str().unwrap()).unwrap(),
-        b"ID3mistral-audio"
-    );
-    let image=call(h.path(),"image_generate",json!({"prompt":"Test image","aspect_ratio":"landscape","reference_image_urls":["data:image/png;base64,aW1hZ2U="]})).await.unwrap();
-    assert!(std::fs::metadata(image["images"][0]["path"].as_str().unwrap()).is_ok());
     let saved = records.lock().unwrap();
     assert_eq!(saved[0].0["x-keenable-title"], "hexbot");
-    assert_eq!(saved[1].1["response_format"], "mp3");
-    assert_eq!(saved[2].1["aspect_ratio"], "16:9");
-    assert_eq!(saved[2].1["image_style_references"][0]["strength"], 0.6);
     server.abort();
 }
-#[tokio::test]
-async fn fal_edits_route_to_model_edit_endpoint_and_translate_references() {
-    use base64::Engine;
-    let records: Requests = Default::default();
-    let saved = records.clone();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let output_url = format!("http://{address}/output.png");
-    let router = Router::new()
-        .route(
-            "/fal-ai/flux-2/klein/9b/edit",
-            post(move |headers: HeaderMap, Json(body): Json<Value>| {
-                let saved = saved.clone();
-                let url = output_url.clone();
-                async move {
-                    saved.lock().unwrap().push((headers, body));
-                    Json(json!({"images":[{"url":url}]}))
-                }
-            }),
-        )
-        .route(
-            "/output.png",
-            axum::routing::get(|| async { b"\x89PNG\r\n\x1a\nimage".to_vec() }),
-        );
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let h =
-        home(json!({"tools":{"enabled_toolsets":["image_gen"]},"image_gen":{"provider":"fal"}}));
-    std::fs::write(
-        h.path().join(".env"),
-        format!("FAL_KEY=fal-secret\nFAL_BASE_URL=http://{address}\n"),
-    )
-    .unwrap();
-    std::fs::create_dir_all(h.workspace()).unwrap();
-    let source = h.workspace().join("source.png");
-    std::fs::write(&source, b"\x89PNG\r\n\x1a\nsource").unwrap();
-    call(
-        h.path(),
-        "image_generate",
-        json!({"prompt":"Change the color","image_url":source}),
-    )
-    .await
-    .unwrap();
-    let requests = records.lock().unwrap();
-    assert_eq!(requests[0].0["authorization"], "Key fal-secret");
-    let body = &requests[0].1;
-    assert_eq!(body["num_inference_steps"], 4);
-    assert!(body.get("image_size").is_none());
-    assert!(body.get("image_url").is_none());
-    assert_eq!(
-        body["image_urls"][0],
-        format!(
-            "data:image/png;base64,{}",
-            base64::engine::general_purpose::STANDARD.encode(b"\x89PNG\r\n\x1a\nsource")
-        )
-    );
-    server.abort();
-}
-
 #[test]
 fn missing_explicit_optional_commands_are_not_advertised() {
     let h = home(
@@ -1126,4 +1505,32 @@ fn tools_are_offered_only_once_set_up() {
     let missing = native_tools::not_set_up(h.path(), "tester").unwrap();
     assert!(!missing.contains(&"tts") && !missing.contains(&"vision"));
     assert!(offered("text_to_speech") && offered("vision_analyze"));
+}
+/// A computer from before Hexbot kept whether it should be on: the watchdog
+/// takes a running one as on, so it comes back after the next restart, and a
+/// stopped one as turned off.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_watchdog_learns_whether_a_computer_from_before_should_be_on() {
+    use hexbot_core::computers;
+    let h = running_computer().await;
+    let saved = h.path().join("computer.json");
+    let on = || {
+        serde_json::from_str::<Value>(&std::fs::read_to_string(&saved).unwrap()).unwrap()["on"]
+            .clone()
+    };
+    std::fs::write(&saved, r#"{"size":"small"}"#).unwrap();
+    computers::check(h.path()).await;
+    assert_eq!(on(), true);
+    std::fs::write(h.path().join("engine-down"), "").unwrap();
+    computers::check(h.path()).await;
+    assert_eq!(computer_status(h.path()).await["state"], "running");
+    // Stopped before `on` was kept: left off, and not looked at again.
+    assert_eq!(computer_step(h.path(), "stop").await["state"], "stopped");
+    std::fs::write(&saved, r#"{"size":"small"}"#).unwrap();
+    computers::check(h.path()).await;
+    assert_eq!(on(), false);
+    let before = cua_log(h.path()).len();
+    computers::check(h.path()).await;
+    assert_eq!(cua_log(h.path()).len(), before);
 }

@@ -8,13 +8,25 @@ export interface TrayMenuActions {
   openWindow(): void
   startDaemon(): void
   stopDaemon(): void
+  /** Stop bots using this computer (computer.ts); left out before computers. */
+  stopComputer?(): void
   quit(): void
+}
+
+/** Whether bots may use this computer, and whether one is acting on it now. */
+export interface ComputerActivity {
+  active: boolean
+  allowed: boolean
 }
 
 export function trayMenuTemplate(
   status: DaemonStatus,
   actions: TrayMenuActions,
-  { appName = 'Hexbot', hasRuntime = runtimeAvailable } = {}
+  {
+    appName = 'Hexbot',
+    hasRuntime = runtimeAvailable,
+    computer = { active: false, allowed: false }
+  }: { appName?: string; hasRuntime?: boolean; computer?: ComputerActivity } = {}
 ): MenuItemConstructorOptions[] {
   const daemon = (): MenuItemConstructorOptions[] => {
     if (!hasRuntime) return [{ label: 'Client-only app', enabled: false }]
@@ -27,16 +39,35 @@ export function trayMenuTemplate(
         : { label: 'Start daemon', click: actions.startDaemon }
     ]
   }
+  // While bots may use this computer, the menu says so and stops them.
+  const bots = (): MenuItemConstructorOptions[] =>
+    computer.allowed && actions.stopComputer
+      ? [
+          { type: 'separator' },
+          { label: computer.active ? 'A bot is using this computer' : 'Bots can use this computer', enabled: false },
+          { label: 'Stop bots on this computer', click: actions.stopComputer }
+        ]
+      : []
   return [
     { label: `Open ${appName}`, click: actions.openWindow },
     ...daemon(),
+    ...bots(),
     { type: 'separator' },
     { label: 'Quit', click: actions.quit }
   ]
 }
 
 let tray: Tray | undefined
-export function createTray(manager: DaemonManager, openWindow: () => void): Tray {
+let rebuildMenu: (() => void) | undefined
+const activity: ComputerActivity = { active: false, allowed: false }
+/** The tray follows what bots may do on this computer and whether one acts now. */
+export function setComputerActivity(change: Partial<ComputerActivity>): void {
+  Object.assign(activity, change)
+  if (!activity.allowed) activity.active = false
+  tray?.setToolTip(activity.active ? `${app.name}: a bot is using this computer` : app.name)
+  rebuildMenu?.()
+}
+export function createTray(manager: DaemonManager, openWindow: () => void, stopComputer?: () => void): Tray {
   const icon = nativeImage.createFromPath(
     join(
       app.getAppPath(),
@@ -51,10 +82,14 @@ export function createTray(manager: DaemonManager, openWindow: () => void): Tray
     openWindow,
     startDaemon: () => void manager.start(),
     stopDaemon: () => void manager.stop(),
+    stopComputer,
     quit: () => app.quit()
   }
   const rebuild = (status: DaemonStatus): void =>
-    tray?.setContextMenu(Menu.buildFromTemplate(trayMenuTemplate(status, actions, { appName: app.name })))
+    tray?.setContextMenu(
+      Menu.buildFromTemplate(trayMenuTemplate(status, actions, { appName: app.name, computer: { ...activity } }))
+    )
+  rebuildMenu = () => rebuild(manager.status())
   rebuild(manager.status())
   manager.on('status', rebuild)
   tray.on('double-click', openWindow)

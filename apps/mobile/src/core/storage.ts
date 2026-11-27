@@ -71,3 +71,9 @@ export async function loadComputerQuality(): Promise<ComputerQuality> {
 }
 export const saveComputerQuality = (quality: ComputerQuality) =>
   AsyncStorage.setItem('hexbot.computer-quality', quality)
+
+/** Experimental, on this phone only: Settings, Plugins opens as a table. Off until switched on. */
+export const loadPluginsTable = async () =>
+  (await AsyncStorage.getItem('hexbot.plugins-table')) === 'on'
+export const savePluginsTable = (on: boolean) =>
+  AsyncStorage.setItem('hexbot.plugins-table', on ? 'on' : 'off')

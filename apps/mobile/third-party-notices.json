@@ -697,10 +697,22 @@
      "source": "https://www.npmjs.com/package/expo-asset/v/58.0.16"
     },
     {
+     "name": "expo-audio",
+     "version": "58.0.9",
+     "license": "MIT",
+     "source": "https://www.npmjs.com/package/expo-audio/v/58.0.9"
+    },
+    {
      "name": "expo-blur",
      "version": "58.0.4",
      "license": "MIT",
      "source": "https://www.npmjs.com/package/expo-blur/v/58.0.4"
+    },
+    {
+     "name": "expo-clipboard",
+     "version": "58.0.4",
+     "license": "MIT",
+     "source": "https://www.npmjs.com/package/expo-clipboard/v/58.0.4"
     },
     {
      "name": "expo-constants",
@@ -737,6 +749,18 @@
      "version": "58.0.4",
      "license": "MIT",
      "source": "https://www.npmjs.com/package/expo-glass-effect/v/58.0.4"
+    },
+    {
+     "name": "expo-image-loader",
+     "version": "58.0.3",
+     "license": "MIT",
+     "source": "https://www.npmjs.com/package/expo-image-loader/v/58.0.3"
+    },
+    {
+     "name": "expo-image-picker",
+     "version": "58.0.10",
+     "license": "MIT",
+     "source": "https://www.npmjs.com/package/expo-image-picker/v/58.0.10"
     },
     {
      "name": "expo-keep-awake",
@@ -803,6 +827,12 @@
      "version": "58.0.6",
      "license": "MIT",
      "source": "https://www.npmjs.com/package/expo-system-ui/v/58.0.6"
+    },
+    {
+     "name": "expo-video",
+     "version": "58.0.12",
+     "license": "MIT",
+     "source": "https://www.npmjs.com/package/expo-video/v/58.0.12"
     },
     {
      "name": "expo-web-browser",

@@ -222,6 +222,8 @@ async function send(view: Awaited<ReturnType<typeof mount>>, names = ['plan.txt'
     target: { files: names.map(name => new File([`${name} bytes`], name, { type: 'text/plain' })) }
   })
   fireEvent.change(field, { target: { value: 'Read my plan' } })
+  // Files upload as they are attached, and Send waits for them.
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled())
   fireEvent.click(screen.getByRole('button', { name: 'Send' }))
 }
 
@@ -436,7 +438,7 @@ async function proveAccepted(inputId: string, turnId: string) {
 }
 
 it.each([4002, 5200])(
-  'keeps all newer-run state and Stop after late manual Retry error %s',
+  'keeps all newer-run state after late manual Retry error %s',
   async code => {
     answers = [refused(), new JsonRpcGatewayError('Late request failed', { code })]
     const view = await mount()
@@ -511,7 +513,7 @@ it.each([4002, 5200])(
     })
     const before = useTranscripts.getState().bySession.chat!
     const current = before.messages.find(row => row.id === before.streamingMessageId)!
-    expect(screen.getByRole('button', { name: 'Stop' })).toBeVisible()
+    expectWorkingButton()
     expect(before.approvals).toHaveLength(1)
     expect(before.clarifies).toHaveLength(1)
     expect(
@@ -537,14 +539,14 @@ it.each([4002, 5200])(
       expect(after[field]).toEqual(before[field])
     }
 
-    expect(screen.getByRole('button', { name: 'Stop' })).toBeVisible()
+    expectWorkingButton()
     expect(userRows()[0]!.submission?.status).toBe(code === 4002 ? 'rejected' : 'unknown')
 
     if (code === 4002) {
       expect(cards().find(card => card.textContent?.includes('Late request failed'))).toBeVisible()
     } else {
       // An unknown outcome is told on its bubble, not a card.
-      expect(screen.getByText('Not sent')).toHaveAttribute('title', 'Late request failed')
+      expect(screen.getByText('Delivery unconfirmed')).toHaveAttribute('title', 'Late request failed')
     }
   }
 )
@@ -905,8 +907,8 @@ it('keeps a newer stream after an actual accepted retry loses its title-save res
   expect(delivered[0]!.files).toEqual(['plan.txt'])
   expect(after.streamingMessageId).toBe(before.streamingMessageId)
   expect(after.turnActive).toBe(true)
-  expect(screen.getByRole('button', { name: 'Stop' })).toBeVisible()
-  expect(screen.getByText('Not sent')).toBeVisible()
+  expectWorkingButton()
+  expect(screen.getByText('Delivery unconfirmed')).toBeVisible()
   // Retry under the same key is refused as reserved: nothing is taken twice,
   // the send stays unconfirmed until history shows it, and the newer stream
   // is left alone.
@@ -917,7 +919,7 @@ it('keeps a newer stream after an actual accepted retry loses its title-save res
   expect(useTranscripts.getState().bySession.chat!.streamingMessageId).toBe(
     before.streamingMessageId
   )
-  expect(screen.getByRole('button', { name: 'Stop' })).toBeVisible()
+  expectWorkingButton()
 })
 
 const opens = () =>
@@ -977,7 +979,7 @@ const historyRead = () =>
     await read.catch(() => undefined)
   })
 
-// Enter sends while a turn runs, when the button shows Stop.
+// Enter sends while a turn runs.
 async function sendNow(view: Awaited<ReturnType<typeof mount>>, text: string, names: string[]) {
   const field = screen.getByRole('textbox', { name: 'Message' })
   await waitFor(() => expect(field).toBeEnabled())
@@ -988,6 +990,8 @@ async function sendNow(view: Awaited<ReturnType<typeof mount>>, text: string, na
         files: names.map(name => new File([`${name} bytes`], name, { type: 'text/plain' }))
       }
     })
+    // Files upload as they are attached; Enter waits for them.
+    await waitFor(() => expect(screen.queryAllByRole('progressbar')).toHaveLength(0))
   }
 
   fireEvent.change(field, { target: { value: text } })
@@ -1031,7 +1035,7 @@ function runTurn(identified: boolean) {
   expect(before.approvals).toHaveLength(1)
   expect(before.clarifies).toHaveLength(1)
   expect(before.checking).toBe('Checking this step')
-  expect(screen.getByRole('button', { name: 'Stop' })).toBeVisible()
+  expectWorkingButton()
 
   return () => {
     const after = useTranscripts.getState().bySession.chat!
@@ -1055,12 +1059,28 @@ function runTurn(identified: boolean) {
     }
 
     expect(after.turnActive).toBe(true)
-    expect(screen.getByRole('button', { name: 'Stop' })).toBeVisible()
+    expectWorkingButton()
+  }
+}
+
+/**
+ * A running turn in a bot's chat offers no Stop: Recall takes a message back.
+ * Send waits for a message, which cuts the reply off.
+ */
+function expectWorkingButton() {
+  const draft = (screen.getByRole('textbox', { name: 'Message' }) as HTMLTextAreaElement).value
+  const files = screen.queryAllByRole('button', { name: /^Remove / }).length
+  const send = screen.getByRole('button', { name: 'Send' })
+  expect(send).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull()
+
+  if (!draft.trim() && !files) {
+    expect(send).toBeDisabled()
   }
 }
 
 it.each([true, false])(
-  'keeps the running turn, its cards and Stop when an upload fails, transcript identity %s',
+  'keeps the running turn and its cards when an upload fails, transcript identity %s',
   async identified => {
     if (!identified) {
       useConnection.setState({ daemon: { one_chat: true, install_id: 'home' } as DaemonInfo })
@@ -1081,10 +1101,15 @@ it.each([true, false])(
     expect(await screen.findByText('Earlier reply')).toBeVisible()
     const unchanged = runTurn(identified)
     await sendNow(view, 'Also look at this', ['photo.bmp'])
-    const card = await screen.findByText('payload is not a supported PNG, JPEG, GIF, or WebP image')
+    // The failure stays on the file; the message waits, and the turn is untouched.
+    expect(
+      await screen.findByText(
+        'Not uploaded: payload is not a supported PNG, JPEG, GIF, or WebP image'
+      )
+    ).toBeVisible()
     unchanged()
-    // Nothing was sent, so nothing can be sent again from the card.
-    expect(retryOn(card.closest<HTMLElement>('[data-testid=stopped-card]')!)).toBeNull()
+    expect(cards()).toHaveLength(0)
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
     expect(submits()).toHaveLength(0)
     expect(userRows().map(row => row.text)).toEqual(['Earlier question'])
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Also look at this')
@@ -1102,10 +1127,11 @@ it('sends only the uploads of the files still selected after an upload fails', a
   const view = await mount()
   expect(await screen.findByText('Earlier reply')).toBeVisible()
   await sendNow(view, 'Read my plan', ['plan.txt', 'photo.bmp'])
-  expect(await screen.findByText('payload is not a supported image')).toBeVisible()
-  // plan.txt reached the daemon before photo.bmp failed; that upload stays unnamed.
+  expect(await screen.findByText('Not uploaded: payload is not a supported image')).toBeVisible()
+  // plan.txt is staged; the message waits for photo.bmp to be retried or removed.
   expect([...staged.keys()]).toEqual(['srv-1'])
   expect(submits()).toHaveLength(0)
+  expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
   fireEvent.click(screen.getByRole('button', { name: 'Remove photo.bmp' }))
   fireEvent.click(screen.getByRole('button', { name: 'Send' }))
   await waitFor(() => expect(delivered).toHaveLength(1))
@@ -1113,18 +1139,20 @@ it('sends only the uploads of the files still selected after an upload fails', a
     session_id: 'chat',
     text: 'Read my plan',
     input_id: expect.any(String),
-    attachments: ['srv-2']
+    attachments: ['srv-1'],
+    interrupt: true
   })
   expect(delivered[0]!.files).toEqual(['plan.txt'])
-  expect(staged.has('srv-1')).toBe(true)
-  expect(userRows().map(row => row.attachments.map(item => item.id))).toEqual([['srv-2']])
+  // Uploaded once, as it was attached.
+  expect(call.mock.calls.filter(([method]) => method === 'file.attach')).toHaveLength(2)
+  expect(userRows().map(row => row.attachments.map(item => item.id))).toEqual([['srv-1']])
   await waitFor(() => expect(screen.queryByRole('button', { name: 'Remove plan.txt' })).toBeNull())
 })
 
 it.each([
   new JsonRpcGatewayError('session is already working', { code: 4002 }),
   new Error('Transport failed')
-])('keeps a newer stream and Stop after a manual legacy resend fails: %s', async failure => {
+])('keeps a newer stream after a manual legacy resend fails: %s', async failure => {
   useConnection.setState({ daemon: { one_chat: true, install_id: 'home' } as DaemonInfo })
   const view = await mount()
   await send(view)
@@ -1202,7 +1230,7 @@ it.each([4002, 4200, 4202, 5201])(
     expect(retryOn(card)).toBeNull()
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Read my plan')
     expect(useDrafts.getState().byId.chat).toBe('Read my plan')
-    expect(screen.getByRole('button', { name: 'Remove plan.txt' })).toBeVisible()
+    expect(await screen.findByRole('button', { name: 'Remove plan.txt' })).toBeVisible()
     expect(submits()).toEqual([{ session_id: 'chat', text: 'Read my plan' }])
     expect(delivered).toHaveLength(0)
     expect(staged.has('srv-1')).toBe(true)
@@ -1225,7 +1253,7 @@ it.each([
     expect(delivered).toHaveLength(0)
     expect(staged.has('srv-1')).toBe(true)
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Read my plan')
-    expect(screen.getByRole('button', { name: 'Remove plan.txt' })).toBeVisible()
+    expect(await screen.findByRole('button', { name: 'Remove plan.txt' })).toBeVisible()
   }
 )
 
@@ -1289,7 +1317,8 @@ it.each(['message.complete', 'error'] as const)(
       session_id: 'chat',
       text: 'Read my plan',
       input_id: expect.any(String),
-      attachments: []
+      attachments: [],
+      interrupt: true
     })
     expect(submits()[1]!.input_id).not.toBe(original.inputId)
     expect(delivered[1]!.files).toEqual([])
@@ -1399,7 +1428,7 @@ it.each([
         expect(current.activeTurnId).toBe('remote-run')
         expect(current.turnActive).toBe(true)
         expect(current.messages.find(row => row.id === stream!.id)).toEqual(stream)
-        expect(screen.getByRole('button', { name: 'Stop' })).toBeVisible()
+        expectWorkingButton()
       }
     }
 
@@ -1511,7 +1540,7 @@ it('keeps a newer run that starts before the read, and binds the failed card', a
     streaming: true,
     text: 'Answer for the phone'
   })
-  expect(screen.getByRole('button', { name: 'Stop' })).toBeVisible()
+  expectWorkingButton()
   const bound = after.messages.filter(row => row.retryRow)
   expect(bound).toEqual([
     expect.objectContaining({ error: 'Provider overloaded', turnId: 'own-run' })
@@ -1734,7 +1763,8 @@ it('keeps a refused request on its own row and uploads across the read for an ea
     session_id: 'chat',
     text: 'Also read my notes',
     input_id: expect.any(String),
-    attachments: [upload]
+    attachments: [upload],
+    interrupt: true
   })
   expect(submits()[2]!.input_id).not.toBe(submits()[1]!.input_id)
   expect(delivered[1]!.files).toEqual(['notes.txt'])
@@ -1746,19 +1776,21 @@ it('keeps a refused request on its own row and uploads across the read for an ea
   expect(userRows().filter(row => row.text === 'Also read my notes')).toHaveLength(1)
 })
 
-it('offers no Retry for an empty-text refusal, which the same send cannot pass', async () => {
-  answers = [new JsonRpcGatewayError('missing parameter: text', { code: 4200 })]
+it('sends files without words with the prompt the bubble shows', async () => {
   const view = await mount()
   expect(await screen.findByText('Earlier reply')).toBeVisible()
   fireEvent.change(view.container.querySelector('input[type=file]')!, {
     target: { files: [new File(['plan'], 'plan.txt', { type: 'text/plain' })] }
   })
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled())
   fireEvent.click(screen.getByRole('button', { name: 'Send' }))
-  expect(await screen.findByTestId('stopped-card')).toHaveTextContent('missing parameter: text')
-  expect(retries()).toHaveLength(0)
-  expect(submits()[0]).toMatchObject({ text: '', attachments: ['srv-1'] })
-  expect(staged.has('srv-1')).toBe(true)
-  expect(screen.getByRole('button', { name: 'Remove plan.txt' })).toBeVisible()
+  expect(await screen.findByText('Please review the attached files.')).toBeVisible()
+  await waitFor(() =>
+    expect(submits()).toEqual([
+      expect.objectContaining({ text: 'Please review the attached files.', attachments: ['srv-1'] })
+    ])
+  )
+  expect(cards()).toHaveLength(0)
 })
 
 it.each(['accepted', 'unknown', 'refused'] as const)(
@@ -1914,3 +1946,31 @@ it.each([
     expect(screen.getByRole('button', { name: 'Remove follow-up.txt' })).toBeVisible()
   }
 )
+
+it('offers no Stop while the bot works, and a message sent then cuts the reply off', async () => {
+  await mount()
+  expect(await screen.findByText('Earlier reply')).toBeVisible()
+  const field = screen.getByRole('textbox', { name: 'Message' })
+  await waitFor(() => expect(field).toBeEnabled())
+  act(() => {
+    const ids = { turn_id: 'running', message_id: 'running-fragment' }
+    routeEvent({ type: 'message.start', session_id: 'chat', payload: ids } as GatewayEvent)
+    routeEvent({
+      type: 'tool.start',
+      session_id: 'chat',
+      payload: { ...ids, tool_id: 'running-tool', name: 'read_file', args: { path: 'a.txt' } }
+    } as GatewayEvent)
+  })
+  expectWorkingButton()
+  fireEvent.change(field, { target: { value: 'Use b.txt instead' } })
+  expectWorkingButton()
+  fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+  await waitFor(() => expect(submits()).toHaveLength(1))
+  expect(submits()[0]).toEqual({
+    session_id: 'chat',
+    text: 'Use b.txt instead',
+    input_id: expect.any(String),
+    attachments: [],
+    interrupt: true
+  })
+})

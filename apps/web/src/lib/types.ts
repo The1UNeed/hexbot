@@ -9,10 +9,23 @@
  * docs/client-architecture.md.
  */
 
-/** `always` comes only from daemons before Always allow was removed. */
+/** `always`: Always allow on Auto-reviewed cards and per-app desktop cards. */
 export type ApprovalChoice = 'always' | 'deny' | 'once' | 'session'
 
 export type ApprovalMode = 'manual' | 'off' | 'smart'
+
+export type ApprovalRuleKind = 'allow' | 'ask'
+
+/** One saved Auto-mode approval rule, created via Always allow or Settings, Approvals. */
+export interface ApprovalRule {
+  computer?: null | string
+  created_at: number
+  id: string
+  kind: ApprovalRuleKind
+  source: 'card' | 'manual'
+  text: string
+  tool?: null | string
+}
 
 /** One question a bot asks through the clarify tool. */
 export interface ClarifyQuestion {
@@ -63,6 +76,72 @@ export interface SignInForm {
   username?: string
 }
 
+/**
+ * The draft card a bot shows with `hexbot_mail`: an email the user edits,
+ * then sends or saves to Drafts themselves. A bot can't send on its own.
+ */
+export interface EmailDraftForm {
+  bcc: string[]
+  body: string
+  cc: string[]
+  /** The signed-in address it goes out from. */
+  from: string
+  kind: 'email_draft'
+  /** The message it answers, by its id. */
+  reply_to?: null | string
+  service: MailService
+  /** Gmail, Outlook, or the IMAP mailbox's service, such as iCloud Mail. */
+  service_name: string
+  subject: string
+  to: string[]
+}
+
+/** The draft as the user left it on the card. */
+export interface EmailDraft {
+  bcc: string[]
+  body: string
+  cc: string[]
+  reply_to?: null | string
+  subject: string
+  to: string[]
+}
+
+/** What the draft card answers with. */
+export interface EmailDraftAnswer {
+  draft: EmailDraft
+  mail_action: 'save' | 'send'
+}
+
+/** The account a connector signs in to: Google or Microsoft. */
+export type AccountProvider = 'google' | 'microsoft'
+
+/**
+ * The account a draft goes out from; the draft card names its mail by it.
+ * `imap` is IMAP mail: any other mailbox, set up with an app password.
+ */
+export type MailService = 'imap' | AccountProvider
+
+/** A sign-in to Google or Microsoft from Settings, Plugins. */
+export interface AccountSignIn {
+  /** Microsoft's device code. */
+  code?: string
+  /** The connectors it connected, once done. Older daemons leave it out. */
+  connected?: string[]
+  email?: null | string
+  login_id: string
+  message: string
+  /** `device`: enter a code; `browser`: Google returns to the daemon. */
+  mode: 'browser' | 'device'
+  /** Where Google returns: a browser elsewhere can't load it, so its address is pasted back. */
+  redirect_uri?: string
+  /** The connector it was started for. */
+  service: string
+  /** Connectors asked for whose permissions the user left unticked. */
+  skipped?: string[]
+  status: 'cancelled' | 'done' | 'error' | 'pending'
+  url: string
+}
+
 /** A key a plugin card asks for: never its value, only whether one is saved. */
 export interface PluginFormField {
   help?: null | string
@@ -72,6 +151,8 @@ export interface PluginFormField {
   label: string
   /** Where an MCP server takes it. */
   place?: 'env' | 'headers'
+  /** True when it may be left empty, as with a free provider's optional key. */
+  optional?: boolean
   /** The provider it belongs to, for a connector with several. */
   provider?: null | string
   secret?: boolean
@@ -105,7 +186,17 @@ export interface PluginForm {
   kind: 'plugin'
   name: string
   provider?: null | string
-  providers?: { id: string; label: string }[] | null
+  providers?:
+    | {
+        /** Signed in already, for a provider with `sign_in`. */
+        configured?: boolean
+        description?: null | string
+        id: string
+        label: string
+        /** The model provider whose browser sign-in it uses instead of a key. */
+        sign_in?: null | string
+      }[]
+    | null
 }
 
 /** What a plugin card answers with. */
@@ -138,13 +229,23 @@ export interface ApprovalRequest {
   choices: ApprovalChoice[]
   /** Present once the user answered; the card stays in the transcript. */
   decision?: ApprovalChoice
+  /** The user agreed, but what the card was for didn't work. */
+  failed?: boolean
   /** The command or action, rendered in monospace. */
   command?: string
-  form?: PluginForm | SignInForm
+  form?: EmailDraftForm | PluginForm | SignInForm
+  /** What a draft card did once the mailbox took it, and the email as it went. */
+  outcome?: EmailDraftAnswer
   reason?: string
   receivedAt: number
   requestId: string
+  /** Reusable rule text saved when the user clicks Always allow. */
+  rule?: string
   sessionId: string
+  /** Plain-English summary shown as the card heading instead of raw commands. */
+  title?: string
+  /** The tool call that showed the card, when the daemon names it. */
+  toolId?: string
   toolName?: string
 }
 
@@ -156,10 +257,13 @@ export interface Attachment {
   name: string
   /** Gateway-local path returned by `file.attach`. */
   path?: string
-  size: number
+  /** Unknown for a file read back from history. */
+  size?: number
+  /** An object URL for a file this page still holds (a PDF just sent), to open beside the chat. */
+  url?: string
 }
 
-export type AttachmentKind = 'file' | 'image' | 'pdf'
+export type AttachmentKind = 'audio' | 'file' | 'image' | 'pdf' | 'video'
 
 export interface Avatar {
   data: string
@@ -177,6 +281,12 @@ export interface BotStatusDetail {
    * the bot's chat shows it. Older daemons leave it out.
    */
   in_chat?: boolean
+  /**
+   * Set while the bot works or waits in a thread: the bot that asked it.
+   * Threads have no roster row, so this is how the app opens one. Older
+   * daemons leave it out.
+   */
+  peer_bot?: null | string
   room_id: null | string
   section_id: null | string
   session_id: null | string
@@ -191,24 +301,37 @@ export interface Bot {
   avatar: Avatar | null
   /** The face picked in an app, drawn live instead of `avatar`; older daemons leave it out. */
   face?: BotFace | null
+  /** The bot's own face, put aside while it shows a photo; it comes back when the photo goes. */
+  kept_face?: BotFace | null
   created_at: null | number
   description: string
   display_name: string
   last_activity_at: null | number
   model: null | string
   dream_enabled: boolean
-  /** Native notifications when the bot stops or needs the user. */
+  /** Notifications when the bot replies, stops or needs the user, on every device. */
   notify?: boolean
   name: string
   owner_id: string
   persona: string
   /** When SOUL.md last changed, in Unix seconds; null before it exists. Older daemons leave it out. */
   persona_updated_at?: null | number
+  /** When you pinned its chat in the list; null when not pinned. Older daemons leave it out. */
+  pinned_at?: null | number
   /** The one bot that looks after the others; it can't be deleted. Older daemons leave it out. */
   primary?: boolean
+  /** Discord is on for it in Plugins, so its settings show Discord. Older daemons leave it out. */
+  discord?: boolean
   provider: null | string
+  /**
+   * Whether `provider` has a key or sign-in right now; null without a provider.
+   * False means the chat asks for a new model before the next message. Older daemons leave it out.
+   */
+  provider_connected?: boolean | null
   /** How hard the model thinks; null means Pi's default, medium. */
   reasoning_effort?: null | ReasoningEffort
+  /** Fast mode, where the model offers it (`ModelOption.fast`). Older daemons leave it out. */
+  fast?: boolean
   sections_recent: Section[]
   sections_total: number
   skills: string[]
@@ -221,11 +344,26 @@ export interface Bot {
   updated_at: null | number
   /** Per-bot working directory; null means the deployment workspace. */
   workdir?: null | string
+  /** The bot's own soul and memory limits in characters; null follows Settings. Older daemons leave them out. */
+  soul_char_limit?: null | number
+  memory_char_limit?: null | number
+  /** The limits in effect: the bot's own, else the setting. Older daemons leave them out. */
+  soul_cap?: number
+  memory_cap?: number
 }
 
 /** The bots' computer, one Cua sandbox per daemon (docs/api.md, "Computer"). */
+/** `repairing`: the daemon brings back a computer lost with its container engine. */
 export type ComputerState =
-  'absent' | 'error' | 'resetting' | 'restarting' | 'running' | 'starting' | 'stopped' | 'stopping'
+  | 'absent'
+  | 'error'
+  | 'repairing'
+  | 'resetting'
+  | 'restarting'
+  | 'running'
+  | 'starting'
+  | 'stopped'
+  | 'stopping'
 
 export type ComputerSize = 'large' | 'medium' | 'small'
 /**
@@ -244,13 +382,58 @@ export interface ComputerCursor {
   y: number
 }
 
+/** Terminal or desktop on one computer: whether it can be used now, and the bots that may. */
+export interface ComputerCapability {
+  available: boolean
+  bots: string[]
+  /** This computer's desktop: shared with the bots, and set up for Cua. */
+  on?: boolean
+  ready?: boolean
+  /** Why it can't be offered, when it can't. */
+  note?: null | string
+  /** This computer's terminal runs in the OS sandbox (not on Windows). */
+  sandboxed?: boolean
+}
+
+/**
+ * One place bots can act (`machines.rs`): the bots' computer (`vm`), the
+ * daemon's own (`host`), or one of the user's computers (`device:<id>`),
+ * online while Hexbot is open there and allowed.
+ */
+export interface Computer {
+  /** Apps a bot may always use there, by bot. */
+  apps: Record<string, string[]>
+  available: boolean
+  desktop: ComputerCapability
+  id: string
+  kind: 'device' | 'host' | 'vm'
+  name: string
+  /** The bots' computer is in use; the others are always on. */
+  on: boolean
+  online: boolean
+  os: string
+  terminal: ComputerCapability
+}
+
+/** Work the daemon sends this app's own computer (`hexbot.computers.request`). */
+export interface ComputerRequest {
+  args?: Record<string, unknown>
+  command?: string
+  /** The action the daemon last checked: only an already running Cua may send it. */
+  final?: boolean
+  kind: 'desktop' | 'terminal'
+  request_id: string
+  timeout?: number
+  tool?: string
+}
+
 export interface ComputerStatus {
   /** The action in progress, such as `click`, and the bot doing it. */
   activity: null | string
   actor: null | string
   /** Whether the daemon's computer has Cua; events leave it out. */
   available?: boolean
-  /** Who is using the computer: the bots, or the user who took over. */
+  /** `user` while the user has paused the bots; their actions wait for `bot`. */
   control: 'bot' | 'user'
   cursors: ComputerCursor[]
   error: null | string
@@ -299,11 +482,14 @@ export type BotUpdatePatch = Partial<Omit<BotCreateInput, 'avatar' | 'name'>> & 
   approval_mode?: BotApprovalMode
   avatar?: null | string
   dream_enabled?: boolean
+  fast?: boolean
   notify?: boolean
   workdir?: null | string
+  soul_char_limit?: null | number
+  memory_char_limit?: null | number
 }
 
-export type ConnectorGroup = 'mcp' | 'media' | 'search' | 'social_home' | 'work'
+export type ConnectorGroup = 'computer' | 'mcp' | 'search' | 'social_home' | 'work'
 
 export type ConnectorState = 'error' | 'not_set_up' | 'ready'
 
@@ -314,6 +500,8 @@ export interface ConnectorField {
   hint: null | string
   key: string
   label: string
+  /** Leaving it empty is fine, as with a free provider's optional key. */
+  optional?: boolean
   /** Provider this field belongs to; null when every provider needs it. */
   provider?: null | string
   secret: boolean
@@ -323,19 +511,44 @@ export interface ConnectorField {
 
 export interface ConnectorProviderOption {
   configured: boolean
+  /** What to know before choosing it, such as needing no key. */
+  description?: null | string
   id: string
   label: string
+  /**
+   * The model provider whose browser sign-in it uses instead of a key, such
+   * as `xai-oauth` for SuperGrok. Older daemons leave it out.
+   */
+  sign_in?: null | string
 }
 
 /** One row of the connector catalog, with daemon and per-bot state. */
+/** A Google or Microsoft connector's sign-in. */
+export interface ConnectorAccount {
+  email: null | string
+  /** Google or Microsoft. Daemons from before the connectors split leave it out. */
+  provider?: AccountProvider
+  /** What a sign-in and a sign-out name: the connector. */
+  service: string
+  signed_in: boolean
+}
+
 export interface Connector {
+  /** What a bot can do with it, a few words each. */
+  abilities?: null | string[]
+  /** Google and Microsoft: set up by signing in, not with a key. */
+  account?: ConnectorAccount | null
   description: string
+  /** Discord: each bot it is on for, with its own Discord app's state. */
+  discord?: Record<string, DiscordBotState>
   enabled_bots: string[]
   /** Null when the list was fetched without a bot. */
   enabled_for_bot: boolean | null
+  /** The account its connectors share, which groups them: Google's sit together. */
+  family?: AccountProvider | null
   fields: ConnectorField[]
   group: ConnectorGroup
-  /** A Simple Icons slug, or `glyph:<name>` for a neutral icon. */
+  /** A `BRAND_ICONS` key, or `glyph:<name>` for a neutral icon. */
   icon: string
   id: string
   last_error: null | { at: number; text: string }
@@ -350,6 +563,12 @@ export interface Connector {
   name: string
   provider?: null | string
   providers?: ConnectorProviderOption[]
+  /** Set up, so it can be given to a bot. Older daemons omit it. */
+  ready?: boolean
+  /** The bots it is set up for, as through a key in a bot's own settings. */
+  ready_bots?: string[]
+  /** On for these bots but waiting for setup: kept when the bots change, and given once set up. */
+  waiting_bots?: string[]
   scope: 'bot' | 'daemon'
   state: ConnectorState
   state_text: string
@@ -383,8 +602,9 @@ export interface PluginsList {
   connectors: (Connector & {
     bots: string[]
     kind: 'connector'
-    ready?: boolean
     server?: PluginServer
+    /** The skills it comes with: a bot has them while it has the connector. */
+    skills?: { description: string; disabled_globally?: boolean; name: string }[]
   })[]
   /** Absent on daemons from before packages. */
   packages?: {
@@ -397,6 +617,10 @@ export interface PluginsList {
     kind: 'package'
     name: string
     ready: boolean
+    /** A package of skills alone: the bots it is set up for, as through a key in a bot's own settings. */
+    ready_bots?: string[]
+    /** On for these bots but waiting for setup: kept when the bots change, and given once set up. */
+    waiting_bots?: string[]
     server: null | PluginServer
     skills: { description: string; name: string }[]
     state: ConnectorState
@@ -407,6 +631,9 @@ export interface PluginsList {
     disabled_globally?: boolean
     id: string
     kind: 'skill'
+    ready_bots?: string[]
+    /** On for these bots but waiting for setup: kept when the bots change, and given once set up. */
+    waiting_bots?: string[]
     source?: string
   })[]
 }
@@ -423,6 +650,8 @@ export interface Plugin {
   description: string
   /** A skill switched off in Settings for every bot. */
   disabled_globally?: boolean
+  /** Discord: each bot it is on for, with its own Discord app's state. */
+  discord?: Record<string, DiscordBotState>
   icon: string
   id: string
   installed_by?: null | string
@@ -430,8 +659,12 @@ export interface Plugin {
   name: string
   /** It can be given to a bot now; one that isn't can still be taken away. */
   ready: boolean
+  /** The bots it can be given to while it is not set up for every bot. */
+  ready_bots?: string[]
+  /** On for these bots but waiting for setup: kept when the bots change, and given once set up. */
+  waiting_bots?: string[]
   server?: null | PluginServer
-  skills?: { description: string; name: string }[]
+  skills?: { description: string; disabled_globally?: boolean; name: string }[]
   source?: string
   state: ConnectorState
   state_text: string
@@ -440,6 +673,8 @@ export interface Plugin {
 /** Something a skill needs before bots can use it. */
 export type SkillRequirement =
   | { kind: 'command'; name: string }
+  /** One of these connectors on for the bot, by name: the skill comes with them. */
+  | { kind: 'connector'; name: string[] }
   | { kind: 'env'; name: string }
   | { kind: 'platform'; name: string[] }
 
@@ -476,6 +711,8 @@ export interface DaemonInfo {
   sandbox?: 'bubblewrap' | 'sandbox-exec' | null
   /** `sandbox` once the daemon has sandboxed approvals; absent on older daemons. */
   approvals?: 'sandbox'
+  /** True once `hexbot.approvals.rules.*` remembers Always allow and Ask first rules. */
+  approval_rules?: true
   /**
    * True once `hexbot.sections.create` returns the bot's one chat; an older
    * daemon makes a new section every time.
@@ -483,11 +720,25 @@ export interface DaemonInfo {
   one_chat?: true
   /** True once `session.recall` takes back your latest message in a chat; absent on older daemons. */
   recall?: true
+  /** True once `hexbot.reactions.*` keeps an emoji on a message in a bot's chat; absent on older daemons. */
+  reactions?: true
+  /** True once `hexbot.sections.history` reads a chat without starting its bot; absent on older daemons. */
+  section_history?: true
   /** Input, run and assistant fragment correlation metadata; absent on older daemons. */
   transcript_identity?: boolean
   /** How the daemon can update itself when asked; absent on older daemons. */
   update_capability?: 'desktop' | 'service' | null
   version: string
+}
+
+/** The last service update's result, by its id (docs/channels.md, "Trial and rollback"). */
+export interface DaemonUpdateOutcome {
+  at: string
+  from: string
+  id: string
+  reason: null | string
+  status: 'committed' | 'failed' | 'rolled-back' | 'superseded'
+  to: string
 }
 
 /** `hexbot.update.status` (docs/api.md, "Updates"). */
@@ -506,6 +757,9 @@ export interface DaemonUpdateStatus {
     | 'requested'
     | 'restarting'
     | 'up-to-date'
+  /** Older daemons leave these out. */
+  update_id?: null | string
+  outcome?: DaemonUpdateOutcome | null
   version: null | string
 }
 
@@ -516,6 +770,8 @@ export interface Device {
   last_seen_at: null | number
   name: string
   platform: string
+  /** A phone that takes pushes. Older daemons leave it out. */
+  push?: boolean
 }
 
 export interface Message {
@@ -539,6 +795,12 @@ export interface Message {
    * a `checking` status line); an empty `checking` line clears it.
    */
   checking?: string
+  /**
+   * Cards this message's tools showed, restored from history and already
+   * answered: a draft card, sign-in card or plugin card. Live cards are on
+   * the transcript instead.
+   */
+  approvals?: ApprovalRequest[]
   /**
    * Questions this message asked, restored from history and already settled.
    * Live questions are cards on the transcript instead.
@@ -579,8 +841,35 @@ export interface Message {
 
 export type MessageRole = 'assistant' | 'system' | 'tool' | 'user'
 
+/**
+ * One emoji left on a message in a bot's chat (`hexbot.reactions.*`): yours on
+ * what the bot said, the bot's on what you said. Each side leaves at most one
+ * on a message.
+ */
+export interface Reaction {
+  /** When it was left, in Unix seconds. */
+  at: number
+  /** The bot that left it, when `by` is `bot`. */
+  bot?: string
+  by: 'bot' | 'user'
+  emoji: string
+  /** The history row it is on (`row_id`). */
+  message_id: string
+}
+
+/** `hexbot.reactions.changed`, and the reply to `hexbot.reactions.set`: one message's reactions now. */
+export interface ReactionsChanged {
+  /** The input your message was sent as, so a copy not yet read from history is found. */
+  input_id?: string
+  message_id: string
+  reactions: Reaction[]
+  section_id: string
+}
+
 export interface ModelOption {
   context?: number
+  /** The model can run in fast mode: the same model, faster, at a higher price. */
+  fast?: boolean
   id: string
   input_cost?: number
   label: string
@@ -669,6 +958,8 @@ export interface Settings {
   default_model?: null | string
   /** `provider/model` bots fall back to when their own provider fails. */
   fallback_model?: null | string
+  /** `provider/model` that reviews Auto mode's steps; null is each bot's own model. */
+  review_model?: null | string
   billing_notice_ack: boolean
   lan_enabled: boolean
   bot_daily_token_budget?: null | number
@@ -682,6 +973,9 @@ export interface Settings {
   heartbeat_enabled?: boolean
   /** Anonymous usage data from this daemon (docs/usage-data.md). Absent on older daemons. */
   usage_data?: boolean
+  /** Default soul and memory limits in characters for bots without their own. Absent on older daemons. */
+  soul_char_limit?: number
+  memory_char_limit?: number
 }
 
 export interface HeartbeatRun {
@@ -788,6 +1082,35 @@ export interface DiagnosticsFailureGroup {
   count: number
   first: number
   last: number
+}
+
+/** One file in `<home>/logs` (`hexbot.diagnostics.logs`). */
+export interface DiagnosticsLogFile {
+  name: string
+  size: number
+  /** Unix milliseconds of the last change. */
+  modified: null | number
+}
+
+export interface DiagnosticsLogLine {
+  /** Byte offset of the line in its file. */
+  offset: number
+  text: string
+  /** The daemon's guess from the words in the line. */
+  level: 'error' | 'warning' | null
+}
+
+/** `hexbot.diagnostics.logs`: one page of a log file, read from the end. */
+export interface DiagnosticsLogs {
+  files: DiagnosticsLogFile[]
+  /** The file read, or null when the folder is empty. */
+  file: null | string
+  /** Oldest first. */
+  lines: DiagnosticsLogLine[]
+  size: number
+  /** Pass as `before` for the page before this one. */
+  before: number
+  more: boolean
 }
 
 /** `hexbot.diagnostics.get`: what the daemon measured since it started. */
@@ -912,6 +1235,40 @@ export interface UsageSummary {
       }>
 }
 
+/** Where a model call happened: a bot's chat, a room, a background run. */
+export type UsagePlace =
+  'chat' | 'dream' | 'heartbeat' | 'job' | 'other' | 'room' | 'subagent' | 'thread'
+
+/** One bucket, bot, model and place from `hexbot.usage.report`. */
+export interface UsageReportRow {
+  /** Start of the bucket, Unix seconds. */
+  t: number
+  bot: string
+  model: string
+  provider: string
+  place: UsagePlace
+  calls: number
+  input: number
+  cache_read: number
+  cache_write: number
+  output: number
+  cost: number
+}
+
+export interface UsageReport {
+  since: number
+  until: number
+  /** `t` is the edge each row's bucket starts at. */
+  rows: UsageReportRow[]
+  /** The window as long just before `since`. */
+  previous: { calls: number; cost: number; tokens: number }
+  /**
+   * Usage from before the native runtime, which kept running totals with no
+   * time per call, so it has no day.
+   */
+  earlier: { cost: number; tokens: number }
+}
+
 export interface RoomMember {
   added_at: number
   added_by: string
@@ -931,10 +1288,64 @@ export interface RoomLimits {
   [key: string]: unknown
 }
 
+/** The Discord channel a room mirrors (`discord_channels`). */
+export interface RoomDiscord {
+  channel_id: string
+  channel_name: null | string
+  guild_id: string
+  guild_name: null | string
+  /** Opens the channel in Discord. */
+  url: string
+}
+
+/**
+ * How a bot acts in a Discord server: answers mentions and sees only them,
+ * answers mentions and reads along, joins in as an active member, or answers
+ * every message.
+ */
+export type DiscordMode = 'active' | 'everyone' | 'mentions' | 'reads'
+
+/** A Discord server a bot's app is in. */
+export interface DiscordServer {
+  id: string
+  /** Its own mode; null follows the bot's. */
+  mode: DiscordMode | null
+  name: string
+}
+
+/** A bot's own Discord app (`hexbot.discord.*`); null when it has none. */
+export interface DiscordStatus {
+  application_id: string
+  bot: string
+  connected_at: null | number
+  /** What went wrong, in words, when `status` is `error`. */
+  error: null | string
+  /** Adds the bot's Discord app to a server. */
+  invite_url: string
+  /** How it acts in a server that has no mode of its own. Older daemons leave it out. */
+  mode?: DiscordMode
+  /** The Discord rooms the bot is in. */
+  rooms: { channel_name: null | string; guild_name: null | string; id: string }[]
+  /** The servers its app is in. Older daemons leave it out. */
+  servers?: DiscordServer[]
+  status: 'connecting' | 'error' | 'online'
+  user_id: null | string
+  username: null | string
+}
+
+/** A bot's Discord app as Plugins shows it; `not_connected` before its token. */
+export interface DiscordBotState {
+  error: null | string
+  status: 'connecting' | 'error' | 'not_connected' | 'online'
+  username: null | string
+}
+
 export interface Room {
   approval_mode: BotApprovalMode | null
   archived_at: null | number
   created_at: number
+  /** Set when the room is a Discord channel; older daemons leave it out. */
+  discord?: null | RoomDiscord
   id: string
   last_activity_at: number
   limits: RoomLimits
@@ -942,8 +1353,10 @@ export interface Room {
   members: RoomMember[]
   name: string
   owner_id: string
+  /** When you pinned it in the list; null when not pinned. Older daemons leave it out. */
+  pinned_at?: null | number
   /** Bots with a turn running now; older daemons leave it out. */
-  turns?: Pick<RoomTurn, 'bot' | 'live_session_id'>[]
+  turns?: Pick<RoomTurn, 'asks' | 'bot' | 'id' | 'live_session_id' | 'pending_requests' | 'turn_id'>[]
   updated_at: number
 }
 
@@ -960,21 +1373,47 @@ export type RoomEventKind =
 
 export interface RoomEvent {
   actor_id: null | string
-  actor_kind: null | 'bot' | 'human' | 'system'
+  /** `discord`: someone in the Discord channel, named in `payload.author`. */
+  actor_kind: null | 'bot' | 'discord' | 'human' | 'system'
   created_at: number
   kind: RoomEventKind
-  payload: Record<string, unknown> & { attachments?: unknown[]; bot?: string; text?: string }
+  payload: Record<string, unknown> & {
+    attachments?: unknown[]
+    author?: { id?: string; name?: string }
+    bot?: string
+    text?: string
+  }
   room_id: string
   seq: number
 }
 
+export interface RoomTurnAsk {
+  args?: unknown
+  context?: string
+  message_id?: string
+  occurrence_id?: string
+  parent_occurrence_id?: string
+  parent_tool_call_id?: string
+  result?: unknown
+  section_id?: null | string
+  status: 'error' | 'ok' | 'running'
+  tool_id: string
+  turn_id?: string
+}
+
 export interface RoomTurn {
+  /** Active or settled `message_bot` calls in this running turn; older daemons leave it out. */
+  asks?: RoomTurnAsk[]
   bot: string
+  /** Room-turn row identifier from `room_turns`, when the daemon reports it. */
+  id?: string
   live_session_id: null | string
   /** Cards the running turn still waits on, at this read; older daemons leave it out. */
   pending_requests?: string[]
   room_id: string
   status: string
+  /** Active Pi turn identifier, when the daemon reports it. */
+  turn_id?: string
 }
 
 export interface StatusLine {
@@ -985,7 +1424,19 @@ export interface StatusLine {
 export interface ToolCall {
   /** Assistant fragment that issued this call, when the daemon proves it. */
   messageId?: string
+  /** Stable per-call occurrence identifier shared by events, snapshots, and history. */
+  occurrenceId?: string
   parentToolCallId?: string
+  /** Occurrence ID of the enclosing parent tool call, distinguishing reused parent call IDs. */
+  parentOccurrenceId?: string
+  /** True once this call has matched a live or replayed `tool.start` in this session. */
+  liveStarted?: boolean
+  /** True once this call has matched a live or replayed `tool.complete` in this session. */
+  liveCompleted?: boolean
+  /** Error payload absorbed by an untagged settled ask while an identical sibling was still running. */
+  absorbedError?: unknown
+  /** Outcome counts from ambiguous colliding completions while multiple sibling calls ran. */
+  ambiguousOutcomes?: { error?: unknown; failed: number; ok: number }
   args: unknown
   durationS: number | null
   name: string
@@ -996,7 +1447,7 @@ export interface ToolCall {
   toolId: string
 }
 
-export type ToolCallStatus = 'error' | 'ok' | 'running'
+export type ToolCallStatus = 'error' | 'ok' | 'running' | 'unresolved'
 
 export interface Usage {
   cost?: number

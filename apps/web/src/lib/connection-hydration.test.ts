@@ -120,6 +120,13 @@ it.each([false, true])(
   }
 )
 
+it('loads the roster even when info fails, so startup never waits on it for good', async () => {
+  await supervisor(Promise.reject(new Error('Info unavailable'))).hydrate()
+
+  expect(useBots.getState().refresh).toHaveBeenCalled()
+  expect(useMe.getState().refresh).toHaveBeenCalled()
+})
+
 it.each(['target', 'epoch', 'client'] as const)(
   'discards info after %s changes even if hydration failed first',
   async boundary => {

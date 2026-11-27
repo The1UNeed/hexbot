@@ -13,14 +13,16 @@ The **workspace** is the bot's working directory (`~/Hexbot` by default) plus it
 Auto is the default. Bots work freely inside the workspace, and only risky steps outside it ask.
 
 - Shell commands run in a sandbox with no internet access and no access to local service sockets, and can write only inside the workspace. They cannot signal your other programs, and they can start only a few hundred processes, so a runaway loop stops there. Shell profiles and login items stay read-only even there; on Linux, a profile that does not exist yet is not protected when the workspace holds your home folder, and a service socket inside your home folder stays reachable (the ones in `/run` and `/tmp` are hidden).
-- When a command needs the internet or must write outside the workspace, the bot says why in one sentence. Before it runs, the bot's model reviews the step against what you asked. File changes outside the workspace, connected tools that change something, and browser page scripts get the same review.
+- When a command needs the internet or must write outside the workspace, the bot says why in one sentence. Before it runs, a model reviews the step against what you asked: the bot's own, unless you chose a review model. File changes outside the workspace, connected tools that change something, and browser page scripts get the same review.
 - Routine work toward what you asked runs without a card: reading or downloading public pages, saving into the workspace or a temp folder, installing packages, builds and tests, pushing a feature branch.
 - Risky steps show a card with the step, the bot's reason and why it asks: deleting or overwriting data outside the workspace, force pushes or pushes to main, running downloaded code, sending private data or credentials anywhere, changing system settings, deploying, publishing, sending messages or paying. Approve covers that one step; Allow for now is not offered.
+- What you approve counts for the rest of that turn. The reviewer reads the steps you approved since your last message, so the same kind of step, such as the next edit to the same Notion page, can run without another card. It still reviews each step, and a different kind of step asks.
 - The review also asks when it fails or takes over a minute, when the step is over 20,000 characters (a connected-tool call with longer arguments always shows a card), when your messages cannot be read, and when you write or queue a message while it runs. Changing the mode or working directory while it runs stops the step. While it runs, the chat shows "Checking this step".
 - The reviewer reads your own messages, in the bot's chat and in rooms, not other people's. In a long chat it reads your most recent messages up to its limit and is told that earlier ones are missing; then only a step it rates low risk runs without a card, since an earlier message might have ruled it out.
-- **The review is your bot's model making a judgment, not a sandbox.** In Auto, internet access and changes outside the workspace depend on it. The step it reads is written by the bot, and a web page or file the bot read can plant instructions in it that talk the reviewer into allowing a harmful step. A small or local model judges less well. Choose Manual when you want to see every step outside the sandbox.
+- **The review is a model making a judgment, not a sandbox.** In Auto, internet access and changes outside the workspace depend on it. The step it reads is written by the bot, and a web page or file the bot read can plant instructions in it that talk the reviewer into allowing a harmful step. A small or local model judges less well. Choose Manual when you want to see every step outside the sandbox.
 - File-tool changes to shell profiles and login items ask you instead of being reviewed; Allow for now can cover them. A full-access command that changes them is reviewed and can run without a card when you asked for that exact change. File and browser steps a code run asks for through Hexbot's tools always ask.
 - The reviewer loads no project instructions, skills or tools. Its usage counts toward chat, room and daily totals.
+- By default each bot's own model does the review. To use one model for every bot, such as a faster one, choose it under Review model in Settings, Approvals. If that model cannot answer, Auto shows a card for the step. Removing its provider puts reviews back on each bot's own model.
 - File tools change files inside the workspace without asking.
 - Python code and scheduled scripts run in the same workspace sandbox without asking. Scheduling a script by an absolute path asks.
 - Reads are free everywhere except credential files, which stay private.
@@ -43,6 +45,18 @@ Manual is for work you want to watch closely. Reads are free; every change asks.
 - Every file change asks. Every code run asks, then runs in the workspace sandbox.
 - Browser page scripts and absolute-path scheduled scripts ask.
 
+## Other computers
+
+The sandbox above is this computer's. On the bots' own computer and on your other computers ([Computers](/docs/tools-and-skills/#computers)), the mode works this way:
+
+| | Auto | Manual | Bypass |
+| --- | --- | --- | --- |
+| Commands on the bots' computer | Run without a sandbox; ones that install, reach the network or delete broadly are checked first | Each asks | Run |
+| Commands on your computers | Each is checked first | Each asks | Run |
+| A new app on this computer's desktop or yours | Asks the first time in each conversation: Allow for now, or Always allow | Asks the same way | Runs |
+
+Terminals (and apps with one of their own, such as Docker Desktop), editors, coding agents, script and launcher apps, remote desktops, a browser's developer tools and Hexbot itself never take a bot's input, in any mode (see [Computers](/docs/tools-and-skills/#computers)). Scheduled jobs and heartbeats cannot ask, so a step that would ask is refused.
+
 ## Bypass
 
 Bypass is plain Pi, the agent runtime: no prompts, no sandbox, no credential checks. Bots can read and change anything the daemon's user account can, including Hexbot's own credential files and provider keys. Scheduled jobs and their delegates run in Auto instead, including scheduled scripts. HexBot, your primary bot, still asks before it deletes a bot, room, or job, changes an approval mode or a working folder, or changes a setting, skill, or connector. Reserve it for a machine you can rebuild.
@@ -52,7 +66,10 @@ Bypass is plain Pi, the agent runtime: no prompts, no sandbox, no credential che
 Bots call connected tools from short scripts they run. Manual
 asks for every connected-tool call. Auto runs tools marked read-only freely and
 reviews the others first, asking only when a call looks risky or its arguments
-are over 20,000 characters. Bypass never asks. Reading a resource needs no approval.
+are over 20,000 characters. Adding or editing content that fits what you asked
+runs; deleting, sharing, and anything that notifies other people asks. The
+reviewer cannot check which page or file an id names, so use Manual when an
+edit to the wrong one would matter. Bypass never asks. Reading a resource needs no approval.
 In Manual, Allow for now covers that server while the bot's agent process runs.
 Auto reviews each changing call again; its cards offer Approve and Deny only.
 Shell and file calls inside a script still follow their usual approval rules.
@@ -103,6 +120,8 @@ Read the command and the reason before approving. A familiar tool can still do d
 In Manual and Auto, shell commands, Python code, and scheduled scripts cannot read Hexbot credential files, including device tokens in `desktop-data/`. They cannot write the Hexbot home except the artifact and attachment folders. Hexbot refuses a workspace or bot working directory inside its home, symlinks included. The default workspace at `~/Hexbot` stays writable. On macOS the sandbox is `sandbox-exec`; if the operating system cannot apply the profile, the command fails. Linux uses bubblewrap after a successful startup probe.
 
 If bubblewrap is missing or cannot start, Hexbot has no OS sandbox: a shell command, Python code, or a script can read any file you can, including credentials. Hexbot logs a warning at startup and Settings, Approvals shows a notice. Manual and Auto then require your approval for shell commands and code runs, including full-access commands; model review cannot replace that approval. Allow for now can quiet the shell prompt until the bot's agent process restarts. Scheduled scripts refuse to run until you install bubblewrap. Hexbot checks for bubblewrap when the daemon and each conversation start, so restart the daemon after installing it. On Ubuntu 24.04 and later, the package alone is not enough: bubblewrap also needs the AppArmor profile from [Install](/docs/install/#ubuntu-2404-and-later).
+
+On Windows the sandbox is an AppContainer, the app sandbox built into Windows, with one container for each combination of mode, working folder and bot, which that bot's conversations share. Shell commands and scheduled scripts run in it with no network access at all, not even to your own computer. They see the workspace, the bot's output folders, Hexbot's Python and shell, Git for Windows, and what Windows lets every sandboxed app read, such as Program Files; your user folder and the Hexbot home stay out of reach. Auto writes the workspace and the output folders; Manual writes only the output folders. Shell commands and `.sh` and `.bash` scripts run in the POSIX shell (ash) of [BusyBox for Windows](https://frippery.org/busybox/), which ships with Hexbot. It is not Bash: arrays and brace expansion such as `{a,b}` do not work. `.py` scripts run with Hexbot's Python and `.exe` scripts run as themselves. Bypass runs commands in Git Bash, so install [Git for Windows](https://gitforwindows.org/) to use it. The same credential stores stay private, along with Windows' own: browser profiles under AppData, the Windows credential, vault and DPAPI folders, `_netrc` and `pgpass.conf`. The file tools refuse network, device and stream paths, and write and edit go through the daemon, which follows no link or junction and does not change files in OneDrive or other cloud-synced folders. Windows has no full access: a command that needs the internet or a file outside the workspace cannot run in Manual or Auto, so use Bypass for it. Code runs (`execute_code`) refuse in Manual and Auto, and Copilot is not available on Windows. If the sandbox cannot start, Manual and Auto refuse shell commands and file tools instead of asking, scheduled scripts do not run, and Settings, Approvals says so; restart Hexbot to try again.
 
 Credential stores stay private in Manual and Auto: `~/.netrc`, `~/.pgpass`, `~/.npmrc`, `~/.pypirc`, `~/.git-credentials`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`, `~/.azure`, `~/.config/gh` and `~/.config/gcloud`. The file tools neither read nor write them, and the workspace sandbox hides them from every program a command starts. A command you approve for full access can read them, since tools like `aws` or `gh` need their keys, but it still cannot write them. macOS protects these names even before they exist and keeps `~/.config` in place so a nested store cannot be renamed out of reach. Linux protects stores that exist when a command or code run starts; a store that does not exist yet can be created by a full-access command, or by any command when the workspace holds your home folder, and one created later stays visible to a code run that is still going.
 

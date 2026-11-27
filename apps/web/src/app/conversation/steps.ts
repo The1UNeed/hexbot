@@ -1,4 +1,6 @@
-import type { Message, ToolCall, ToolCallStatus } from '../../lib/types'
+import { type Ask, ASKING_TOOL, asksOf } from '../../lib/asks'
+import type { Message, ToolCall } from '../../lib/types'
+import { phaseLabel, stepLabel, stepMood, type WorkLabel, workspaceLabel } from '../../lib/work-label'
 import { useConnectors } from '../../stores/connectors'
 
 /** Present and past phrasing per built-in tool; unknown tools fall back to their name. */
@@ -11,9 +13,11 @@ const VERBS: Record<string, [live: string, done: string]> = {
   delegate_task: ['Delegating', 'Delegated'],
   codemode: ['Running code', 'Ran code'],
   execute_code: ['Running code', 'Ran code'],
+  hexbot_discord: ['Reading the Discord server', 'Read the Discord server'],
   hexbot_rename_section: ['Naming the chat', 'Named the chat'],
   hexbot_passwords: ['Using a saved password', 'Used a saved password'],
   hexbot_plugins: ['Checking plugins', 'Checked plugins'],
+  hexbot_share_file: ['Sharing a file', 'Shared a file'],
   hexbot_show_html: ['Drawing', 'Drew'],
   hexbot_soul: ['Updating soul', 'Updated soul'],
   image_generate: ['Generating an image', 'Generated an image'],
@@ -59,6 +63,24 @@ const COMPUTER: Record<string, [live: string, done: string]> = {
   windows: ['Checking windows', 'Checked windows']
 }
 
+/** Email, by `hexbot_mail` action, which the daemon sends as the call's summary. */
+const MAIL: Record<string, [live: string, done: string]> = {
+  draft: ['Drafting an email', 'Drafted an email'],
+  read: ['Reading an email', 'Read an email'],
+  search: ['Searching email', 'Searched email']
+}
+
+/** "Searching email", or the plain phrase when the action is unknown. */
+export function mailLabel(action: null | string | undefined, tense: 'done' | 'live'): string {
+  const verbs = MAIL[(action ?? '').trim()]
+
+  return verbs
+    ? verbs[tense === 'live' ? 0 : 1]
+    : tense === 'live'
+      ? 'Checking email'
+      : 'Checked email'
+}
+
 /** "Clicking on the computer", or the plain phrase when the action is unknown. */
 export function computerLabel(action: null | string | undefined, tense: 'done' | 'live'): string {
   const verbs = COMPUTER[(action ?? '').trim()]
@@ -95,104 +117,11 @@ const NO_PREVIEW: Record<string, [live: string, done: string]> = {
   write_file: ['Writing a file', 'Wrote a file']
 }
 
-const record = (value: unknown): Record<string, unknown> =>
-  value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
+export { type Ask, ASKING_TOOL, askLabel, askTarget, askWords } from '../../lib/asks'
+export { workspaceLabel } from '../../lib/work-label'
 
-const string = (value: unknown) => (typeof value === 'string' ? value : '')
-
-/** The tool a bot asks another bot with; its row carries the other bot's face. */
-export const ASKING_TOOL = 'message_bot'
-
-/** One bot this turn asked for help, with the thread id once the daemon reported it. */
-export interface Ask {
-  /** The thread section on `target`, from the tool result; null until the ask completed. */
-  sectionId: null | string
-  /** The message was sent without waiting for a reply (`wait: false`); nothing came back. */
-  sent: boolean
-  status: ToolCallStatus
-  /** The target bot's name; null when the call came without its arguments. */
-  target: null | string
-}
-
-/**
- * The daemon's result as an object. Live calls carry Pi's `{content, details}` with the daemon's
- * result in `details`; restored history carries the result as a JSON string.
- */
-function resultOf(call: ToolCall): Record<string, unknown> {
-  if (typeof call.result !== 'string') {
-    const result = record(call.result)
-
-    return 'details' in result ? record(result.details) : result
-  }
-
-  try {
-    return record(JSON.parse(call.result))
-  } catch {
-    return {}
-  }
-}
-
-/** Who a `message_bot` call asked: its `to` argument, else the daemon's context line. */
-export const askTarget = (call: ToolCall): null | string =>
-  string(record(call.args).to) || call.summary?.trim() || null
-
-/**
- * The bots this turn asked, one entry per bot in first-ask order. Asking the
- * same bot twice is one row: the thread between the two is one conversation.
- * Running while any ask to that bot still runs.
- */
-export function asks(message: Message): Ask[] {
-  const byTarget = new Map<string, Ask>()
-
-  for (const call of message.toolCalls) {
-    if (call.name !== ASKING_TOOL) {
-      continue
-    }
-
-    const target = askTarget(call)
-    const key = target ?? ''
-    const previous = byTarget.get(key)
-    const result = resultOf(call)
-    const sectionId = string(result.section_id) || previous?.sectionId || null
-
-    const status: ToolCallStatus =
-      call.status === 'running' || previous?.status === 'running' ? 'running' : call.status
-
-    // One row per bot: it "helped" if any ask to it waited for a reply.
-    const sent = result.status === 'sent' && (previous?.sent ?? true)
-
-    byTarget.set(key, { sectionId, sent, status, target })
-  }
-
-  return [...byTarget.values()]
-}
-
-/**
- * The ask row's line: "Research is asking Writer" while it runs, "Writer
- * helped" once the reply is in, "Sent to Writer" when no reply was waited
- * for. "A teammate" stands in when the call did not name the target.
- */
-export function askLabel(
-  ask: Pick<Ask, 'sent' | 'status'>,
-  target: null | string,
-  sender: null | string
-): string {
-  const name = target ?? 'a teammate'
-
-  if (ask.status === 'running') {
-    return sender ? `${sender} is asking ${name}` : `Asking ${name}`
-  }
-
-  if (ask.status === 'error') {
-    return `Asked ${name}`
-  }
-
-  if (ask.sent) {
-    return `Sent to ${name}`
-  }
-
-  return target ? `${target} helped` : 'A teammate helped'
-}
+/** The bots this turn asked, one entry per bot in first-ask order. */
+export const asks = (message: Pick<Message, 'toolCalls'>): Ask[] => asksOf(message.toolCalls)
 
 const humanize = (name: string) => name.replace(/[_-]+/g, ' ').trim() || 'tool'
 
@@ -215,6 +144,16 @@ export function toolLabel(
 
   if (call.name === 'computer_use') {
     return computerLabel(call.summary, tense)
+  }
+
+  if (call.name === 'hexbot_mail') {
+    return mailLabel(call.summary, tense)
+  }
+
+  const workspace = workspaceLabel(call.name, call.summary, tense)
+
+  if (workspace) {
+    return workspace
   }
 
   const connector = PREVIEW[call.name]
@@ -250,9 +189,11 @@ const ACTIVITY: Record<string, string> = {
   delegate_task: 'is asking another bot',
   codemode: 'is running code',
   execute_code: 'is running code',
+  hexbot_discord: 'is reading the Discord server',
   hexbot_rename_section: 'is naming the chat',
   hexbot_passwords: 'is signing in',
   hexbot_plugins: 'is looking at plugins',
+  hexbot_share_file: 'is sharing a file',
   hexbot_show_html: 'is drawing',
   hexbot_soul: 'is updating its soul',
   image_generate: 'is making an image',
@@ -333,32 +274,52 @@ export function activityLabel(call: ToolCall, name: string): string {
     return `${name} is ${computerLabel(call.summary, 'live').replace(/^\w/, c => c.toLowerCase())}`
   }
 
+  if (call.name === 'hexbot_mail') {
+    return `${name} is ${mailLabel(call.summary, 'live').replace(/^\w/, c => c.toLowerCase())}`
+  }
+
+  const workspace = workspaceLabel(call.name, call.summary, 'live')
+
+  if (workspace) {
+    return `${name} is ${workspace.replace(/^\w/, c => c.toLowerCase())}`
+  }
+
   return `${name} ${ACTIVITY[call.name] ?? `is using ${humanize(call.name)}`}`
 }
 
-/** Tools that look for something; the face searches with them. */
-const SEARCHING = new Set(['search_files', 'session_search', 'web_search', 'x_search'])
+/**
+ * The face a bot wears while it works: thinking, searching, reading, writing,
+ * listening for someone's answer, working, or on the computer.
+ */
+export type LiveMood =
+  | 'computer'
+  | 'listening'
+  | 'reading'
+  | 'searching'
+  | 'thinking'
+  | 'working'
+  | 'writing'
 
-/** The face a bot wears while it works: thinking, searching, writing, or working. */
-export type LiveMood = 'searching' | 'thinking' | 'working' | 'writing'
+/** The step the status line and the face follow; an ask in progress has its own row. */
+const runningStep = (message: Message) =>
+  message.toolCalls.findLast(call => call.status === 'running' && call.name !== ASKING_TOOL)
 
 /**
  * The face a bot wears over a message while it streams: thinking before
- * anything happens, searching or working while a step runs, writing while
- * its words stream. None once the message is done.
+ * anything happens; while a step runs, the face of that step (peering while
+ * it searches, eyes down the page while it reads, a pencil while it writes,
+ * a pointer on the computer); writing while its words stream. None once the
+ * message is done.
  */
 export function liveMood(message: Message): LiveMood | undefined {
   if (!message.streaming) {
     return undefined
   }
 
-  // An ask in progress has its own row with the other bot's face.
-  const running = message.toolCalls.findLast(
-    call => call.status === 'running' && call.name !== ASKING_TOOL
-  )
+  const running = runningStep(message)
 
   if (running && !message.checking) {
-    return SEARCHING.has(running.name) ? 'searching' : 'working'
+    return stepMood(running)
   }
 
   if (message.checking || message.activity) {
@@ -378,9 +339,40 @@ export function liveMood(message: Message): LiveMood | undefined {
 }
 
 /**
+ * The live status line's words: the running step ("Opening" "Taobao"), else
+ * what the bot does between steps: "Thinking…" before anything happens,
+ * "Typing…" while it writes its reply, "Working…" otherwise. While Auto mode
+ * checks a step the line only says the bot is working; the step has not run.
+ */
+export function workLabel(message: Message): WorkLabel {
+  const running = message.checking ? undefined : runningStep(message)
+
+  if (running) {
+    return stepLabel(running, connectorName(running.name))
+  }
+
+  if (!message.streaming || message.checking || message.activity) {
+    return phaseLabel('working')
+  }
+
+  if (message.text) {
+    return phaseLabel('typing')
+  }
+
+  return phaseLabel(message.thinking || !message.toolCalls.length ? 'thinking' : 'working')
+}
+
+/** The line as a sentence about the bot, for screen readers: "Scout is opening Taobao". */
+export function workSentence(name: string, label: WorkLabel): string {
+  const words = `${label.verb}${label.object ? ` ${label.object}` : ''}`.replace(/…$/, '')
+
+  return `${name} is ${words.charAt(0).toLowerCase()}${words.slice(1)}`
+}
+
+/**
  * The live face of every section with a reply streaming in an open
- * transcript, by section. The sidebar and the header read it so they wear
- * the face the chat shows on that reply.
+ * transcript, by section. The sidebar, the header and the profile read it
+ * so they wear the face the chat shows on that reply.
  */
 export function liveMoodsOf(
   bySession: Record<

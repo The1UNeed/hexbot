@@ -468,6 +468,50 @@ mod tests {
         assert!(!home.path().join("python").exists());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_rolled_back_update_trial_keeps_a_verified_selection_and_its_floor() {
+        let home = tempfile::tempdir().unwrap();
+        let (source, manifest) = bundle("0.1.5", 200);
+        let old = select(home.path(), source.path(), &manifest).unwrap();
+        let native = services::native_directory(home.path()).unwrap();
+        let (next, next_manifest) = bundle("0.1.6", 300);
+        let staging = native.join(".staged-0.1.6-test");
+        fs::create_dir(&staging).unwrap();
+        let from = next.path().canonicalize().unwrap();
+        copy_runtime(&from, &staging, &from, &mut Vec::new()).unwrap();
+        fs::copy(
+            next.path().join("manifest.json"),
+            staging.join("manifest.json"),
+        )
+        .unwrap();
+        let staged = services::Staged {
+            digests: services::staged_digests(&staging).unwrap(),
+            dir: staging,
+            version: "0.1.6".into(),
+            entrypoint: "hexbot".into(),
+            manifest: next_manifest.clone(),
+        };
+        services::begin_update(home.path(), staged, "u1").unwrap();
+        assert!(matches!(selected(&native), Selected::Verified(_, m) if m["version"] == "0.1.6"));
+        let trial = crate::update_trial::read_trial(home.path())
+            .unwrap()
+            .unwrap();
+        crate::update_trial::mark_failed(home.path(), &trial, "crashed while starting").unwrap();
+        match selected(&native) {
+            Selected::Verified(path, current) => {
+                assert_eq!(path, old);
+                assert_eq!(current["version"], "0.1.5");
+            }
+            _ => panic!("the rolled-back selection must verify"),
+        }
+        // Setup offered the failed build again keeps the old one.
+        assert_eq!(
+            select(home.path(), next.path(), &next_manifest).unwrap(),
+            old
+        );
+    }
+
     #[test]
     fn damaged_identity_never_becomes_a_missing_install_or_a_tie_repair() {
         for damage in [

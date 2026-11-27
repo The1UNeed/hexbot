@@ -26,7 +26,7 @@ async fn complete(
     )
 }
 
-// Pi 1.0.1 removes queue metadata by text when any user message starts.
+// Pi 1.5.2 removes queue metadata by text when any user message starts.
 // Suspend agent_start before projection, so identical later inputs are already
 // acknowledged when the earlier message consumes their metadata. The real
 // queues still retain those inputs, and clear_queue clears both queues.

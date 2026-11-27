@@ -12,7 +12,9 @@ import {
   daemonInfo,
   messagesFromHistory,
   sectionsCreate,
+  sectionsHistory,
   sectionsList,
+  sectionsMarkRead,
   sectionsOpen,
   sectionsUnarchive,
   sessionHistory
@@ -22,6 +24,7 @@ import { KICKOFF_MARKER } from '../lib/bot-kickoff'
 import { CatalogAuthority } from '../lib/catalog-authority'
 import {
   activeCacheScope,
+  boundedHistory,
   cacheAccess,
   cacheCurrent,
   cachedHistory,
@@ -30,14 +33,15 @@ import {
   rememberHistory,
   syncHistory
 } from '../lib/device-cache'
-import type { Bot, BotStatus, DaemonInfo, Message, Section } from '../lib/types'
+import type { Bot, BotStatus, DaemonInfo, Message, RoomTurnAsk, Section } from '../lib/types'
 
+import { useBots } from './bots'
 import { connectionRead, useConnection } from './connection'
 import { releaseHeartbeatMessages, useTranscripts } from './transcripts'
 
 /** Interrupted hidden kickoffs must stay hidden in cached and fresh history. */
-function chatMessages(rows: HistoryRow[]) {
-  return messagesFromHistory(rows).filter(
+function chatMessages(rows: HistoryRow[], busy = false, asks?: RoomTurnAsk[]) {
+  return messagesFromHistory(rows, { asks, busy }).filter(
     message => !(message.role === 'user' && message.text.includes(KICKOFF_MARKER))
   )
 }
@@ -48,6 +52,20 @@ function chatMessages(rows: HistoryRow[]) {
  * section can arrive by (a bot's recent sections, a changed event, an open).
  */
 export const isThread = (section: Pick<Section, 'peer_bot'>) => Boolean(section.peer_bot)
+
+/**
+ * The bot a section belongs to, for a link that names only the section, such
+ * as a notification. A thread is in no list, so the bot working or waiting
+ * there names it.
+ */
+export function sectionBot(section: string): string | undefined {
+  return (
+    useSections.getState().byId[section]?.bot ??
+    Object.values(useBots.getState().byName).find(
+      bot => bot.status_detail?.peer_bot && bot.status_detail.section_id === section
+    )?.name
+  )
+}
 
 /**
  * A bot's chat on a daemon from before one chat per bot, which keeps many
@@ -112,6 +130,8 @@ export interface SectionsState {
   finished: (sessionId: string) => void
   error: null | string
   idsByBot: Record<string, string[]>
+  /** Each chat's history reads that succeeded in this window; it only grows. */
+  historyReads: Record<string, number>
   liveSessionId: Record<string, string>
   loading: boolean
   loaded: boolean
@@ -122,6 +142,13 @@ export interface SectionsState {
    */
   markTouched: (id: string, text?: string) => void
   open: (id: string) => Promise<{ liveSessionId: null | string; section: Section }>
+  /**
+   * Read a chat ahead of time, without starting its bot, so it shows at once
+   * when opened. Only rows newer than the ones held come over. A chat with a
+   * loaded transcript is skipped: its events keep it current. `rank` is its
+   * bot's place in the list, which decides what stays whole in memory.
+   */
+  prefetch: (id: string, rank?: number) => Promise<void>
   /**
    * Open a thread for the side panel: its history with `peer`'s questions as
    * messages, and its live session registered so events stream in. The
@@ -274,15 +301,33 @@ export function keepHistory(sectionId: string, sessionId: string): void {
               return
             }
 
-            const cached = await cachedHistory(access.scope, sectionId)
+            const memory = heldHistory(sectionId)
+            const cached = memory ?? (await cachedHistory<HistoryRow>(access.scope, sectionId))
 
             if (!cached || !current()) {
               return
             }
 
-            const { messages } = await sessionHistory(sessionId)
+            // Only the turn's rows come over; memory and disk both keep them.
+            const read = await sessionHistory(sessionId, cached.cursor)
 
-            await rememberHistory(access.scope, sectionId, { rows: messages ?? [] }, current)
+            if (!current()) {
+              return
+            }
+
+            const delta = Boolean(cached.cursor && read.history_delta)
+            const rows = delta ? [...cached.rows, ...(read.messages ?? [])] : (read.messages ?? [])
+            const complete = delta ? cached.complete !== false : true
+            const cursor = read.history_cursor
+
+            hold(sectionId, {
+              complete,
+              cursor,
+              onDisk: true,
+              rows,
+              touched: memory?.touched ?? Date.now()
+            })
+            await rememberHistory(access.scope, sectionId, { complete, cursor, rows }, current)
           })
         )
         .catch(() => undefined)
@@ -308,6 +353,78 @@ let chatGeneration = 0
  * shows it at once and asks the daemon again, which may name another.
  */
 const named = new Map<string, string>()
+
+/**
+ * Each chat's stored rows as this window last read them, with the daemon's
+ * cursor for their end, so a chat shows at once and a read sends only what is
+ * new. A chat read in the background keeps its newest part; one opened here
+ * keeps it all, the last few opened only, and only that can rebuild its transcript.
+ */
+interface HeldHistory {
+  complete: boolean
+  cursor?: string
+  daemon: string
+  /** Written to disk with this cursor by this window, so an unchanged read need not write. */
+  onDisk?: boolean
+  /** The newest part of `rows`, what the chat shows before it opens; measured once. */
+  part: HistoryRow[]
+  rows: HistoryRow[]
+  scope: null | string
+  /** When this window opened the chat; a chat only read ahead ranks below, by its bot's place. */
+  touched: number
+}
+
+const held = new Map<string, HeldHistory>()
+const WHOLE_HISTORIES = 8
+
+function heldHistory(id: string): HeldHistory | undefined {
+  const entry = held.get(id)
+  const daemon = useConnection.getState().daemon?.install_id
+
+  return entry && daemon && entry.daemon === daemon && entry.scope === activeCacheScope()
+    ? entry
+    : undefined
+}
+
+function hold(
+  id: string,
+  history: Pick<HeldHistory, 'complete' | 'cursor' | 'onDisk' | 'rows' | 'touched'>
+): HeldHistory | undefined {
+  const daemon = useConnection.getState().daemon?.install_id
+
+  if (!daemon) {
+    held.delete(id)
+
+    return undefined
+  }
+
+  const part = boundedHistory(history.rows)
+
+  held.set(id, {
+    ...history,
+    daemon,
+    part,
+    rows: history.complete ? history.rows : part,
+    scope: activeCacheScope()
+  })
+
+  // Past the most recent few, a whole history that does not fit keeps only its newest part.
+  const whole = [...held]
+    .filter(([, item]) => item.complete && item.part.length < item.rows.length)
+    .sort(([, a], [, b]) => b.touched - a.touched)
+
+  for (const [key, item] of whole.slice(WHOLE_HISTORIES)) {
+    held.set(key, { ...item, complete: false, rows: item.part })
+  }
+
+  return held.get(id)
+}
+
+/**
+ * The live sessions whose transcript is exactly what a read with this cursor
+ * built, and its messages then. A read that finds nothing newer leaves them be.
+ */
+const hydrated = new Map<string, { cursor: string; messages: Message[] }>()
 
 const differentDaemon = (daemon: DaemonInfo) =>
   pickedDaemon &&
@@ -432,6 +549,7 @@ export const useSections = create<SectionsState>((set, get) => ({
   },
   choosing: null,
   error: null,
+  historyReads: {},
   idsByBot: {},
   liveSessionId: {},
   loading: false,
@@ -442,6 +560,7 @@ export const useSections = create<SectionsState>((set, get) => ({
     authority.reset()
     removals.clear()
     opening.clear()
+    held.clear()
     get().clearLive()
     set({
       byId: {},
@@ -491,6 +610,7 @@ export const useSections = create<SectionsState>((set, get) => ({
       for (const id of new Set([...Object.keys(state.byId), ...opening.keys()])) {
         if (authority.current(id, request) && authority.outcome(id) === 'gone') {
           removals.set(id, (removals.get(id) ?? 0) + 1)
+          held.delete(id)
           void forgetHistory(scope, id)
           set(state => ({
             cachedMessages: withoutKey(state.cachedMessages, id),
@@ -551,6 +671,42 @@ export const useSections = create<SectionsState>((set, get) => ({
         throw new Error('The selected daemon changed. Open this chat again.')
       }
 
+      // What this window holds shows at once; the disk only when it holds nothing.
+      let memory = heldHistory(id)
+
+      const disk = memory || !access ? undefined : await cachedHistory<HistoryRow>(scope, id)
+
+      if (!current()) {
+        throw new Error('The selected daemon changed. Open this chat again.')
+      }
+
+      // A whole history on disk takes the rows after it, like one held here.
+      if (!memory && disk?.complete && disk.cursor) {
+        memory = hold(id, { ...disk, complete: true, onDisk: true, touched: Date.now() })
+      } else if (!memory && !disk && daemon?.section_history && !get().liveSessionId[id]) {
+        // Nothing to show: the stored history comes first, without waiting for
+        // the bot to start, and the open after it sends only what is newer.
+        try {
+          const first = await sectionsHistory(id)
+
+          if (current()) {
+            memory = hold(id, {
+              complete: true,
+              cursor: first.history_cursor,
+              rows: first.messages ?? [],
+              touched: Date.now()
+            })
+          }
+        } catch {
+          // The open reads it all, and says why when it cannot.
+        }
+
+        if (!current()) {
+          throw new Error('The selected daemon changed. Open this chat again.')
+        }
+      }
+
+      const cached = memory ?? disk
       const asked = reloads.get(id) ?? 0
       const completed = new Map(terminals)
       const readAt = Date.now()
@@ -562,22 +718,21 @@ export const useSections = create<SectionsState>((set, get) => ({
           .bySession[knownLive ?? '']?.messages.filter(message => message.role === 'user')
           .map(message => message.id) ?? []
 
-      const cached = access ? await cachedHistory<HistoryRow>(scope, id) : undefined
+      if (cached && !get().liveSessionId[id] && !(memory && get().cachedMessages[id])) {
+        // The disk keeps only the newest part already.
+        const rows = memory ? memory.part : cached.rows
 
-      if (!current()) {
-        throw new Error('The selected daemon changed. Open this chat again.')
-      }
-
-      if (cached && !get().liveSessionId[id]) {
         set(state => ({
-          cachedMessages: { ...state.cachedMessages, [id]: chatMessages(cached.rows) }
+          cachedMessages: { ...state.cachedMessages, [id]: chatMessages(rows) }
         }))
       }
 
+      // Only a whole history can take the rows after it and rebuild the transcript.
+      const cursor = memory?.complete ? memory.cursor : undefined
       let result
 
       try {
-        result = await sectionsOpen(id)
+        result = await sectionsOpen(id, cursor)
       } catch (error) {
         // A report can supersede a failed read as well as a successful snapshot.
         if (current() && (reloads.get(id) ?? 0) !== asked) {
@@ -600,6 +755,7 @@ export const useSections = create<SectionsState>((set, get) => ({
             }
           }
 
+          held.delete(id)
           set(state => ({ cachedMessages: withoutKey(state.cachedMessages, id) }))
           await forgetHistory(scope, id)
         }
@@ -611,8 +767,12 @@ export const useSections = create<SectionsState>((set, get) => ({
         throw new Error('The selected daemon changed. Open this chat again.')
       }
 
-      const { busy, context, messages, pending_clarify, pending_requests, section } = result
+      const { asks, busy, context, pending_clarify, pending_requests, section } = result
       const live = section.live_session_id
+      const appended = result.messages ?? []
+      const delta = Boolean(cursor && memory && result.history_delta)
+      const messages = delta ? [...memory!.rows, ...appended] : appended
+      const unchanged = delta && !appended.length
 
       const snapshotCurrent = () =>
         current() &&
@@ -624,9 +784,16 @@ export const useSections = create<SectionsState>((set, get) => ({
       }
 
       const authorized = cacheAccess()
+      // An unchanged chat this window already stored is on disk as it is.
+      const write = cacheCurrent(authorized) && !(unchanged && memory?.onDisk)
 
-      if (cacheCurrent(authorized)) {
-        await rememberHistory(authorized!.scope, id, { rows: messages ?? [] }, snapshotCurrent)
+      if (write) {
+        await rememberHistory(
+          authorized!.scope,
+          id,
+          { complete: true, cursor: result.history_cursor, rows: messages },
+          snapshotCurrent
+        )
       }
 
       if (!current()) {
@@ -639,26 +806,55 @@ export const useSections = create<SectionsState>((set, get) => ({
         return read()
       }
 
+      hold(id, {
+        complete: true,
+        cursor: result.history_cursor,
+        onDisk: write || (unchanged && memory?.onDisk),
+        rows: messages,
+        touched: Date.now()
+      })
+
       if (live) {
         const wasActive = useTranscripts.getState().bySession[live]?.turnActive
         // Merging local rows into history needs the daemon's input and
         // fragment IDs. Without them the snapshot replaces what is shown.
         const identified = useConnection.getState().daemon?.transcript_identity === true
+        const shown = useTranscripts.getState().bySession[live]
+        const built = hydrated.get(live)
 
-        useTranscripts.getState().open(
-          live,
-          id,
-          chatMessages(messages ?? []),
-          identified
-            ? {
-                inputsAtRead,
-                reports: (messages ?? [])
-                  .filter(row => row.dream === true)
-                  .map(row => String(row.row_id))
-              }
-            : undefined,
-          { busy, pending: pending_requests, readAt }
+        const hasHydratedRunning = Boolean(
+          shown?.messages.some(message =>
+            message.toolCalls.some(call => call.status === 'running' && call.startedAt === 0)
+          )
         )
+
+        // Nothing new since the read that built what is shown, and nothing
+        // happened to it since: only the snapshot's turn and cards settle.
+        if (
+          unchanged &&
+          shown &&
+          built?.cursor === cursor &&
+          built?.messages === shown.messages &&
+          !shown.unproven?.length &&
+          !(busy && !shown.turnActive) &&
+          !(hasHydratedRunning && !busy) &&
+          !asks?.length
+        ) {
+          useTranscripts.getState().settle(live, id, { busy, pending: pending_requests, readAt })
+        } else {
+          useTranscripts.getState().open(
+            live,
+            id,
+            chatMessages(messages, busy === true, asks),
+            identified
+              ? {
+                  inputsAtRead,
+                  reports: messages.filter(row => row.dream === true).map(row => String(row.row_id))
+                }
+              : undefined,
+            { busy, pending: pending_requests, readAt }
+          )
+        }
 
         // Heartbeat messages that arrived while this loaded; the history may hold them already.
         for (const row of releaseHeartbeatMessages(id)) {
@@ -681,6 +877,14 @@ export const useSections = create<SectionsState>((set, get) => ({
         if (pending_clarify) {
           useTranscripts.getState().clarifyRequest(live, pending_clarify, { notify: false })
         }
+
+        const after = useTranscripts.getState().bySession[live]
+
+        if (result.history_cursor && after) {
+          hydrated.set(live, { cursor: result.history_cursor, messages: after.messages })
+        } else {
+          hydrated.delete(live)
+        }
       }
 
       // Only a history read establishes a loaded chat. Catalog live IDs are
@@ -689,6 +893,7 @@ export const useSections = create<SectionsState>((set, get) => ({
       set(state => ({
         ...(catalogCurrent ? mergeSection(state, section) : {}),
         cachedMessages: withoutKey(state.cachedMessages, id),
+        historyReads: { ...state.historyReads, [id]: (state.historyReads[id] ?? 0) + 1 },
         liveSessionId: live ? { ...state.liveSessionId, [id]: live } : state.liveSessionId
       }))
 
@@ -706,12 +911,104 @@ export const useSections = create<SectionsState>((set, get) => ({
     return request
   },
 
+  prefetch(id, rank = 0) {
+    const { target, epoch, daemon } = useConnection.getState()
+
+    const loaded = () => {
+      const live = get().liveSessionId[id]
+
+      return Boolean(live && useTranscripts.getState().bySession[live])
+    }
+
+    if (!daemon?.section_history || !daemon.install_id || opening.has(id) || loaded()) {
+      return Promise.resolve()
+    }
+
+    const access = cacheAccess()
+    const activeRead = sectionRead(id)
+
+    const current = () => {
+      const next = useConnection.getState()
+
+      return (
+        activeRead() &&
+        target === next.target &&
+        epoch === next.epoch &&
+        daemon.install_id === next.daemon?.install_id &&
+        !loaded()
+      )
+    }
+
+    // Queued with this chat's opens, so neither replaces a newer snapshot. An
+    // open that starts meanwhile waits for this read and shows what it brings.
+    return syncHistory(access, id, async () => {
+      if (!current()) {
+        return
+      }
+
+      const memory = heldHistory(id)
+      const disk = memory || !access ? undefined : await cachedHistory<HistoryRow>(access.scope, id)
+
+      const known =
+        memory ?? (disk && { ...disk, complete: disk.complete === true, touched: -rank })
+
+      if (!current()) {
+        return
+      }
+
+      const result = await sectionsHistory(id, known?.cursor)
+
+      if (!current()) {
+        return
+      }
+
+      const appended = result.messages ?? []
+      const delta = Boolean(known?.cursor && result.history_delta)
+
+      const entry =
+        delta && !appended.length && memory
+          ? memory
+          : hold(id, {
+              complete: delta ? known!.complete : true,
+              cursor: result.history_cursor,
+              onDisk: cacheCurrent(access),
+              rows: delta ? [...known!.rows, ...appended] : appended,
+              touched: memory?.touched ?? -rank
+            })
+
+      if (!entry) {
+        return
+      }
+
+      if (entry !== memory || !get().cachedMessages[id]) {
+        set(state => ({
+          cachedMessages: { ...state.cachedMessages, [id]: chatMessages(entry.part) }
+        }))
+      }
+
+      if (entry !== memory && cacheCurrent(access)) {
+        void rememberHistory(access!.scope, id, entry, current)
+      }
+    })
+  },
+
   async openThread(id, peer) {
-    const { messages, pending_clarify, section } = await sectionsOpen(id)
+    const readAt = Date.now()
+    const { epoch, target } = useConnection.getState()
+
+    const { asks, busy, messages, pending_clarify, pending_requests, section } =
+      await sectionsOpen(id)
+
     const live = section.live_session_id
 
-    if (live) {
+    const current =
+      useConnection.getState().target === target && useConnection.getState().epoch === epoch
+
+    if (live && current) {
       set(state => ({ liveSessionId: { ...state.liveSessionId, [id]: live } }))
+      // Reconcile pending approvals and questions against the daemon's snapshot so cards
+      // settled elsewhere during reconnect are retired rather than staying actionable.
+      useTranscripts.getState().settle(live, id, { busy, pending: pending_requests, readAt })
 
       // The owner answers the receiving bot's questions here: threads have no other view.
       if (pending_clarify) {
@@ -721,7 +1018,7 @@ export const useSections = create<SectionsState>((set, get) => ({
 
     return {
       liveSessionId: live,
-      messages: messagesFromHistory(messages ?? [], { sender: peer }),
+      messages: messagesFromHistory(messages ?? [], { asks, busy: busy === true, sender: peer }),
       section
     }
   },
@@ -835,6 +1132,7 @@ export const useSections = create<SectionsState>((set, get) => ({
   },
 
   clearLive() {
+    hydrated.clear()
     set({ liveSessionId: {}, cachedMessages: {} })
     useTranscripts.getState().dropAll()
     straddling.clear()
@@ -849,6 +1147,7 @@ export const useSections = create<SectionsState>((set, get) => ({
       return
     }
 
+    hydrated.delete(closed)
     set(state => {
       const { [id]: _closed, ...liveSessionId } = state.liveSessionId
 
@@ -928,6 +1227,69 @@ useConnection.subscribe((next, previous) => {
     }
   }
 })
+
+/** Sets `done_at` where `done` names a section and `applies`, here and in each bot's recent chats. */
+function setDone(done: Map<string, Section['done_at']>, applies: (section: Section) => boolean) {
+  const changes = (section: Section) => done.has(section.id) && applies(section)
+
+  const changed = (section: Section) =>
+    changes(section) ? { ...section, done_at: done.get(section.id) } : section
+
+  useSections.setState(state =>
+    Object.values(state.byId).some(changes)
+      ? {
+          byId: Object.fromEntries(
+            Object.entries(state.byId).map(([id, section]) => [id, changed(section)])
+          )
+        }
+      : state
+  )
+  useBots.setState(state =>
+    Object.values(state.byName).some(bot => bot.sections_recent?.some(changes))
+      ? {
+          byName: Object.fromEntries(
+            Object.entries(state.byName).map(([name, bot]) => [
+              name,
+              bot.sections_recent?.some(changes)
+                ? { ...bot, sections_recent: bot.sections_recent.map(changed) }
+                : bot
+            ])
+          )
+        }
+      : state
+  )
+}
+
+/**
+ * Marks chats read at once, in the list and in each bot's recent chats, then
+ * tells the daemon. A refused chat shows unread again unless it finished since.
+ */
+export function markSectionsRead(ids: string[]): Promise<void> {
+  const before = new Map<string, Section['done_at']>()
+
+  for (const section of [
+    ...Object.values(useSections.getState().byId),
+    ...Object.values(useBots.getState().byName).flatMap(bot => bot.sections_recent ?? [])
+  ]) {
+    if (ids.includes(section.id) && section.done_at != null) {
+      before.set(section.id, section.done_at)
+    }
+  }
+
+  setDone(new Map([...before.keys()].map(id => [id, null])), section => section.done_at != null)
+
+  return Promise.all(
+    ids.map(id =>
+      sectionsMarkRead(id).catch((error: unknown) => {
+        if (before.has(id)) {
+          setDone(new Map([[id, before.get(id)]]), section => section.done_at == null)
+        }
+
+        throw error
+      })
+    )
+  ).then(() => undefined)
+}
 
 export function sectionsActions(): SectionsState {
   return useSections.getState()

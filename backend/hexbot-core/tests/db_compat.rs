@@ -122,6 +122,11 @@ fn team_shape(connection: &Connection) -> Vec<(String, Vec<Column>)> {
                 Some("0".into()),
                 0,
             ));
+            columns.push(("pinned_at".into(), "REAL".into(), false, None, 0));
+        }
+        if table == "bot_messages" {
+            columns.push(("waited".into(), "INTEGER".into(), true, Some("1".into()), 0));
+            columns.push(("failed".into(), "INTEGER".into(), true, Some("0".into()), 0));
         }
     }
     // Native-only tables, in sqlite_master name order with the rest.
@@ -175,6 +180,135 @@ fn team_shape(connection: &Connection) -> Vec<(String, Vec<Column>)> {
             text("status", true),
             ("summary".into(), "TEXT".into(), true, Some("''".into()), 0),
             text("message_id", false),
+        ],
+    ));
+    expected.push((
+        "room_pins".into(),
+        vec![key("room_id"), real("pinned_at", true)],
+    ));
+    expected.push((
+        "message_reactions".into(),
+        vec![
+            ("section_id".into(), "TEXT".into(), true, None, 1),
+            ("message_id".into(), "TEXT".into(), true, None, 2),
+            ("by_bot".into(), "TEXT".into(), true, Some("''".into()), 3),
+            text("emoji", true),
+            text("owner_id", true),
+            real("created_at", true),
+            (
+                "offered".into(),
+                "INTEGER".into(),
+                true,
+                Some("0".into()),
+                0,
+            ),
+            real("noted_at", false),
+        ],
+    ));
+    // Discord: each bot's own app, the channels that became rooms, which
+    // Discord message is which room event, and when a channel's room was deleted.
+    let int = |name: &str, required: bool, default: Option<&str>| {
+        (
+            name.into(),
+            "INTEGER".into(),
+            required,
+            default.map(str::to_owned),
+            0,
+        )
+    };
+    expected.push((
+        "discord_bots".into(),
+        vec![
+            key("bot"),
+            text("owner_id", true),
+            text("application_id", true),
+            text("user_id", false),
+            text("username", false),
+            (
+                "status".into(),
+                "TEXT".into(),
+                true,
+                Some("'connecting'".into()),
+                0,
+            ),
+            text("error", false),
+            real("connected_at", false),
+            real("updated_at", false),
+        ],
+    ));
+    expected.push((
+        "discord_channels".into(),
+        vec![
+            key("channel_id"),
+            text("guild_id", true),
+            text("room_id", true),
+            text("guild_name", false),
+            text("channel_name", false),
+            int("posted_seq", true, Some("0")),
+        ],
+    ));
+    expected.push((
+        "discord_messages".into(),
+        vec![
+            key("message_id"),
+            text("room_id", true),
+            int("seq", false, None),
+            text("bot", false),
+        ],
+    ));
+    expected.push((
+        "discord_closed".into(),
+        vec![key("channel_id"), real("closed_at", true)],
+    ));
+    expected.push((
+        "discord_plugin".into(),
+        vec![
+            key("bot"),
+            text("owner_id", true),
+            (
+                "mode".into(),
+                "TEXT".into(),
+                true,
+                Some("'reads'".into()),
+                0,
+            ),
+            real("enabled_at", true),
+        ],
+    ));
+    expected.push((
+        "discord_guilds".into(),
+        vec![
+            ("bot".into(), "TEXT".into(), true, None, 1),
+            ("guild_id".into(), "TEXT".into(), true, None, 2),
+            text("name", false),
+            text("mode", false),
+            int("present", true, Some("1")),
+            real("joined_at", false),
+        ],
+    ));
+    expected.push((
+        "approval_rules".into(),
+        vec![
+            key("id"),
+            (
+                "owner_id".into(),
+                "TEXT".into(),
+                true,
+                Some("'local'".into()),
+                0,
+            ),
+            text("kind", true),
+            text("text", true),
+            (
+                "source".into(),
+                "TEXT".into(),
+                true,
+                Some("'manual'".into()),
+                0,
+            ),
+            text("tool", false),
+            text("computer", false),
+            real("created_at", true),
         ],
     ));
     expected.sort_by(|a, b| a.0.cmp(&b.0));

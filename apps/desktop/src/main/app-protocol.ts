@@ -55,9 +55,10 @@ const APP_CSP = [
   "img-src 'self' data: blob: http: https:",
   "font-src 'self' data:",
   "connect-src 'self' http: https: ws: wss:",
-  "media-src 'self' blob:",
-  // A bot's computer screen comes from its daemon; frameNavigationAllowed narrows it.
-  "frame-src 'self' http: https:"
+  "media-src 'self' blob: http://*:*/api/media/ https://*:*/api/media/",
+  // A bot's computer screen comes from its daemon, and a PDF beside the chat
+  // from a blob the page made; frameNavigationAllowed narrows both.
+  "frame-src 'self' blob: http: https:"
 ].join('; ')
 
 /**
@@ -101,6 +102,11 @@ export function frameNavigationAllowed(url: string, pageUrl: string, frameUrl = 
     }
 
     const showingVisual = frameUrl !== '' && new URL(frameUrl).pathname === VISUAL_FRAME_PATH
+
+    // A PDF opened beside the chat: a blob this page made, never inside a visual.
+    if (target.protocol === 'blob:') {
+      return !showingVisual && target.pathname.startsWith(`${page.protocol}//${page.host}/`)
+    }
 
     return (
       !showingVisual &&

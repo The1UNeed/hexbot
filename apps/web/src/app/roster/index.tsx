@@ -1,29 +1,30 @@
 import { useNavigate, useParams } from '@tanstack/react-router'
-import { Hexagon, Plus, Search, Settings, SquarePen } from 'lucide-react'
+import { Hexagon, Pin, Plus, Search, Settings, SquarePen } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Avatar, PersonAvatar } from '../../components/ui/avatar'
-import { AvatarBuilder } from '../../components/ui/avatar-builder'
+import { FaceChoices } from '../../components/ui/avatar-builder'
 import { Button } from '../../components/ui/button'
 import { Dialog } from '../../components/ui/dialog'
 import { Input } from '../../components/ui/input'
-import { ContextMenu, Menu } from '../../components/ui/menu'
+import { ContextMenu, Menu, type MenuItem } from '../../components/ui/menu'
 import { RoomCluster } from '../../components/ui/room-cluster'
+import { ScrollArea } from '../../components/ui/scroll-area'
 import { Select } from '../../components/ui/select'
 import { StatusDot, StatusTag } from '../../components/ui/status-dot'
-import { providerModels, sectionsMarkRead } from '../../lib/api'
+import { providerModels } from '../../lib/api'
 import { approvalModes } from '../../lib/approval-modes'
 import {
   avatarPng,
   type AvatarStyle,
   botFace,
   DEFAULT_AVATAR_STYLE,
-  styleForName
+  randomStyle
 } from '../../lib/avatar-builder'
 import { toHandle } from '../../lib/bot-handle'
 import { getBridge } from '../../lib/bridge'
 import { cn } from '../../lib/cn'
-import { moodForStatus } from '../../lib/face'
+import { setShownSection, usePageFocused } from '../../lib/page-visible'
 import { previewLine } from '../../lib/preview'
 import { reasoningOptions, runningLevel } from '../../lib/reasoning'
 import { toMillis } from '../../lib/time'
@@ -36,22 +37,25 @@ import { useEmotion } from '../../stores/emotions'
 import { useMe } from '../../stores/me'
 import { roomStatus, roomUnread, useRoomList, useRooms } from '../../stores/rooms'
 import {
-  botStatusWithLive,
   introduceBot,
   knownChat,
   legacyChat,
   type LiveSections,
   liveSectionsOf,
+  markSectionsRead,
   sectionsActions,
   useSections
 } from '../../stores/sections'
 import { useSettings } from '../../stores/settings'
 import { useTranscripts } from '../../stores/transcripts'
+import { useUi } from '../../stores/ui'
+import { botRowState, chatShown } from '../bot-mood'
 import { rememberedTab } from '../bot-settings'
 import { type LiveMood, liveMoodsOf } from '../conversation/steps'
 import { UpdatePill } from '../update-pill'
 
 import { needsPrimary, PrimaryChoice } from './primary-choice'
+import { WaitingThreads } from './waiting-threads'
 
 const DAY = 86_400_000
 
@@ -110,33 +114,83 @@ export function Field({ children, label }: { children: React.ReactNode; label: s
 
 export type RosterItem = { item: Bot | Room; kind: 'bot' | 'room' }
 
-const pinned = (entry: RosterItem) => entry.kind === 'bot' && Boolean((entry.item as Bot).primary)
+/**
+ * Pinned by you; the primary bot starts pinned. Older daemons send no
+ * `pinned_at`, and their primary bot stays on top.
+ */
+export const isPinned = ({ item, kind }: RosterItem) =>
+  item.pinned_at != null ||
+  (item.pinned_at === undefined && kind === 'bot' && Boolean((item as Bot).primary))
 
-/** The primary bot pinned on top, then bots and rooms by recent activity. */
+/** What you pinned, in the order you pinned it, then bots and rooms by recent activity. */
 export const orderedRosterItems = (bots: Bot[], rooms: Room[]): RosterItem[] =>
   [
     ...bots.map(item => ({ item, kind: 'bot' as const })),
     ...rooms.filter(room => !room.archived_at).map(item => ({ item, kind: 'room' as const }))
   ].sort(
     (a, b) =>
-      Number(pinned(b)) - Number(pinned(a)) ||
+      Number(isPinned(b)) - Number(isPinned(a)) ||
+      toMillis(a.item.pinned_at) - toMillis(b.item.pinned_at) ||
       toMillis(b.item.last_activity_at) - toMillis(a.item.last_activity_at)
   )
+
+/** What a right click on a row or a pinned face offers. */
+function rowMenu({
+  onMarkRead,
+  onPin,
+  onRename,
+  onSettings,
+  pinned,
+  unread
+}: {
+  onMarkRead: () => void
+  /** Left out for a daemon from before pins, which can't pin. */
+  onPin?: () => void
+  onRename: () => void
+  onSettings: () => void
+  pinned: boolean
+  unread: boolean
+}): MenuItem[] {
+  return [
+    ...(onPin ? [{ label: pinned ? 'Unpin' : 'Pin', onSelect: onPin }] : []),
+    { disabled: !unread, label: 'Mark as read', onSelect: onMarkRead },
+    { label: 'Rename…', onSelect: onRename },
+    { label: null, separator: true },
+    { label: 'Settings', onSelect: onSettings }
+  ]
+}
+
+const pinMark = <Pin aria-label="Pinned" className="shrink-0 text-muted" role="img" size={12} />
+
+/** A pinned bot or room: its face, large, and its name, three to a row above the list. */
+const tileClass =
+  'flex w-1/3 min-w-0 flex-col items-center gap-1.5 rounded-panel pt-2.5 pb-2 outline-none transition-colors duration-[var(--hex-motion-fast)] hover:bg-foreground/[0.04] data-[popup-open]:bg-foreground/[0.04]'
+
+const tileName = 'truncate text-[length:var(--text-secondary)] font-medium'
+
+/** Rename comes back to the roster, which owns the one rename dialog. */
+/** `draft` and `error` reopen the dialog on a name the daemon refused. */
+type Renaming = { draft?: string; error?: string; id: string; kind: 'bot' | 'room'; name: string }
 
 function RoomRow({
   active,
   focused,
   onOpen,
+  onRename,
   onSettings,
   query,
-  room
+  room,
+  tile = false
 }: {
   active: boolean
   focused: string | null
   onOpen: (id: string) => void
+  onRename: (renaming: Renaming) => void
   onSettings: (id: string) => void
   query: string
   room: Room
+  /** Drawn as a pinned face above the list. */
+  tile?: boolean
 }) {
   const bots = useBots(state => state.byName)
   const events = useRooms(state => state.eventsByRoom[room.id] ?? NO_EVENTS)
@@ -150,10 +204,48 @@ function RoomRow({
   const active_ = room.members.filter(member => member.member_kind === 'bot' && !member.left_at)
   const latest = events.at(-1)
   const status = roomStatus(events, turns)
-  const dot = status === 'idle' && roomUnread(room, events, currentId) ? 'done' : status
+  const unread = roomUnread(room, events, currentId)
+  const dot = status === 'idle' && unread ? 'done' : status
+  const pinned = isPinned({ item: room, kind: 'room' })
+
+  const menu = rowMenu({
+    onMarkRead: () => latest && void useRooms.getState().markRead(room.id, latest.seq),
+    onPin:
+      room.pinned_at === undefined
+        ? undefined
+        : () =>
+            void useRooms
+              .getState()
+              .pin(room.id, !pinned)
+              .catch(() => undefined),
+    onRename: () => onRename({ id: room.id, kind: 'room', name: room.name }),
+    onSettings: () => onSettings(room.id),
+    pinned,
+    unread
+  })
+
+  if (tile) {
+    return (
+      <ContextMenu items={menu}>
+        <button
+          className={cn(
+            tileClass,
+            active && 'bg-background shadow-card',
+            focused === `room:${room.id}` && rowFocus
+          )}
+          data-roster-id={`room:${room.id}`}
+          onClick={() => onOpen(room.id)}
+          type="button"
+        >
+          <RoomCluster bots={bots} room={room} size="xl" status={dot} />
+          <span className={cn(tileName, 'max-w-full px-1')}>{room.name}</span>
+        </button>
+      </ContextMenu>
+    )
+  }
 
   return (
-    <ContextMenu items={[{ label: 'Settings', onSelect: () => onSettings(room.id) }]}>
+    <ContextMenu items={menu}>
       <button
         className={cn(
           rowClass,
@@ -167,7 +259,10 @@ function RoomRow({
         <RoomCluster bots={bots} room={room} status={dot} />
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline gap-2">
-            <span className="min-w-0 flex-1 truncate font-semibold">{room.name}</span>
+            <span className="flex min-w-0 flex-1 items-center gap-1.5">
+              <span className="truncate font-semibold">{room.name}</span>
+              {pinned ? pinMark : null}
+            </span>
             <StatusTag status={status} />
           </span>
           <span className="block truncate text-[length:var(--text-secondary)] text-muted">
@@ -184,29 +279,37 @@ function RoomRow({
 interface BotRowProps {
   active: boolean
   bot: Bot
+  /** True while a bot-to-bot thread overlays the chat, so unread replies still show a dot. */
+  covered?: boolean
   draft: boolean
   focused: string | null
   live: LiveSections
   /** The live face of each section with a reply streaming. */
   moods: Record<string, LiveMood>
   onOpen: (bot: string) => void
+  onRename: (renaming: Renaming) => void
   onSettings: (bot: string) => void
   query: string
   sections: Section[]
+  /** Drawn as a pinned face above the list. */
+  tile?: boolean
 }
 
 /** A bot and its one chat with you: opening the row opens the chat. */
 function BotRow({
   active,
   bot,
+  covered = false,
   draft,
   focused,
   live,
   moods,
   onOpen,
+  onRename,
   onSettings,
   query,
-  sections
+  sections,
+  tile = false
 }: BotRowProps) {
   const emotion = useEmotion(bot.name)
 
@@ -214,29 +317,71 @@ function BotRow({
     return null
   }
 
-  // Prefer the live sections store; the bot row's recent list can lag behind.
-  const available = [
-    ...sections,
-    ...bot.sections_recent.filter(recent => !sections.some(section => section.id === recent.id))
-  ]
+  const { available, dot, mood, status, unread } = botRowState(
+    bot,
+    sections,
+    live,
+    moods,
+    active && !covered,
+    emotion
+  )
 
   // The last thing either side said in the chat, as a messaging app lists it.
   const chat = legacyChat(available, bot.name)
   const preview = chat && 'section' in chat ? previewLine(chat.section.preview) : ''
   const label = preview || bot.title || bot.description
-  const status = botStatusWithLive(bot, available, live)
 
-  // A turn finished in the chat that you have not seen on any device. Check-ins
-  // and archived sections do not count: opening the bot never clears them.
-  const dot =
-    status === 'idle' &&
-    !active &&
-    available.some(section => section.done_at && !section.archived_at && !section.purpose)
-      ? 'done'
-      : status
+  const pinned = isPinned({ item: bot, kind: 'bot' })
+
+  const menu = rowMenu({
+    onMarkRead: () =>
+      void markSectionsRead(unread.map(section => section.id)).catch(() => undefined),
+    onPin:
+      bot.pinned_at === undefined
+        ? undefined
+        : () =>
+            void useBots
+              .getState()
+              .pin(bot.name, !pinned)
+              .catch(() => undefined),
+    onRename: () => onRename({ id: bot.name, kind: 'bot', name: bot.display_name }),
+    onSettings: () => onSettings(bot.name),
+    pinned,
+    unread: unread.length > 0
+  })
+
+  const primaryMark = (
+    <Hexagon aria-label="Primary bot" className="shrink-0 text-muted" role="img" size={12} />
+  )
+
+  if (tile) {
+    return (
+      <ContextMenu items={menu}>
+        <button
+          className={cn(
+            tileClass,
+            active && 'bg-background shadow-card',
+            focused === `bot:${bot.name}` && rowFocus
+          )}
+          data-roster-id={`bot:${bot.name}`}
+          onClick={() => onOpen(bot.name)}
+          type="button"
+        >
+          <span className="relative">
+            <Avatar {...botFace(bot)} mood={mood} name={bot.display_name} size="xl" />
+            <StatusDot className="right-0.5 bottom-0.5" status={dot} />
+          </span>
+          <span className="flex max-w-full items-center gap-1 px-1">
+            <span className={tileName}>{bot.display_name}</span>
+            {bot.primary ? primaryMark : null}
+          </span>
+        </button>
+      </ContextMenu>
+    )
+  }
 
   return (
-    <ContextMenu items={[{ label: 'Settings', onSelect: () => onSettings(bot.name) }]}>
+    <ContextMenu items={menu}>
       <button
         className={cn(
           rowClass,
@@ -248,33 +393,14 @@ function BotRow({
         type="button"
       >
         <span className="relative shrink-0">
-          <Avatar
-            {...botFace(bot)}
-            mood={
-              emotion ??
-              moodForStatus(
-                dot,
-                moods[bot.status_detail?.section_id ?? ''] ??
-                  available.map(section => moods[section.id]).find(Boolean)
-              )
-            }
-            name={bot.display_name}
-            size="lg"
-          />
+          <Avatar {...botFace(bot)} mood={mood} name={bot.display_name} size="lg" />
           <StatusDot status={dot} />
         </span>
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline gap-2">
             <span className="flex min-w-0 flex-1 items-center gap-1.5">
               <span className="truncate font-semibold">{bot.display_name}</span>
-              {bot.primary ? (
-                <Hexagon
-                  aria-label="Primary bot"
-                  className="shrink-0 text-muted"
-                  role="img"
-                  size={12}
-                />
-              ) : null}
+              {bot.primary ? primaryMark : pinned ? pinMark : null}
             </span>
             {status === 'idle' && draft ? (
               <SquarePen aria-label="Draft" className="shrink-0 text-muted" size={12} />
@@ -293,6 +419,27 @@ function BotRow({
   )
 }
 
+/**
+ * What the new-bot form starts on: a choice from an earlier open while its
+ * provider is still connected, else the default from Settings while its
+ * provider is. A provider since removed is no start for a new bot.
+ */
+export function startingModel(
+  value: { model: string; provider: string },
+  providers: readonly { id: string }[],
+  defaultModel: null | string | undefined
+): { model: string; provider: string } {
+  const connected = (id: string) => providers.some(item => item.id === id)
+
+  if (value.provider && connected(value.provider)) {
+    return { model: value.model, provider: value.provider }
+  }
+
+  const [provider = '', ...rest] = (defaultModel ?? '').split('/')
+
+  return connected(provider) ? { model: rest.join('/'), provider } : { model: '', provider: '' }
+}
+
 export function RosterColumn() {
   const params = useParams({ strict: false }) as { bot?: string; section?: string }
   const navigate = useNavigate()
@@ -306,6 +453,7 @@ export function RosterColumn() {
   const [query, setQuery] = useState('')
   const [botDialog, setBotDialog] = useState(false)
   const [roomDialog, setRoomDialog] = useState(false)
+  const [renaming, setRenaming] = useState<null | Renaming>(null)
 
   const [newBot, setNewBot] = useState<{
     model: string
@@ -335,13 +483,18 @@ export function RosterColumn() {
 
     void useSettings.getState().refreshProviders()
     void useSettings.getState().refresh()
-    const [provider, ...rest] = (settings?.default_model ?? '').split('/')
+  }, [botDialog])
+
+  useEffect(() => {
+    if (!botDialog) {
+      return
+    }
+
     setNewBot(value => ({
       ...value,
-      model: value.model || rest.join('/'),
-      provider: value.provider || provider || ''
+      ...startingModel(value, configuredProviders, settings?.default_model)
     }))
-  }, [botDialog, settings?.default_model])
+  }, [botDialog, configuredProviders, settings?.default_model])
   // Each open starts at the default level, which the collapsed summary implies.
   useEffect(() => {
     if (botDialog) {
@@ -377,6 +530,12 @@ export function RosterColumn() {
   const newModel = newModels.find(item => item.id === newBot.model)
   const [focused, setFocused] = useState<string | null>(null)
   const root = useRef<HTMLDivElement>(null)
+  // The chat column shows the clicked bot opening, not the chat it leaves.
+  useEffect(() => {
+    useUi.getState().setOpeningBot(asking)
+
+    return () => useUi.getState().setOpeningBot(null)
+  }, [asking])
   useEffect(() => {
     if (!useBots.getState().loaded) {
       void useBots.getState().refresh()
@@ -396,17 +555,62 @@ export function RosterColumn() {
       )?.done_at
     : null
 
+  // Read only once you look at it: a closed app window, a background tab or a
+  // window behind another app has not shown it to you, so the daemon still
+  // wakes the phone about it.
+  const pageFocused = usePageFocused()
+  const openThread = useUi(state => state.thread)
+  const peerRoute = useUi(state => state.peerRoute)
+
+  // A chat hidden behind another bot's loading face or an open bot-to-bot thread has not been seen.
+  const hidden = Boolean(openThread) || Boolean(asking && asking !== params.bot)
+
+  // Once per finish: a refused read puts the dot back, and asking again would loop.
+  const acknowledged = useRef<null | string>(null)
   useEffect(() => {
-    if (params.section && activeSectionDoneAt) {
-      void sectionsMarkRead(params.section).catch(() => undefined)
+    const finish = `${params.section}:${activeSectionDoneAt}`
+
+    if (
+      params.section &&
+      activeSectionDoneAt &&
+      pageFocused &&
+      !hidden &&
+      acknowledged.current !== finish
+    ) {
+      acknowledged.current = finish
+      void markSectionsRead([params.section]).catch(() => undefined)
     }
-  }, [activeSectionDoneAt, params.section])
+  }, [activeSectionDoneAt, hidden, pageFocused, params.section])
+
+  // What a notification about the chat or room on screen checks (lib/notify.ts).
+  const shownRoom = (params as { room?: string }).room
+
+  const shown = openThread
+    ? (openThread.sectionId ?? null)
+    : !hidden
+      ? shownRoom
+        ? `room:${shownRoom}`
+        : (params.section ?? null)
+      : null
+
+  useEffect(() => {
+    setShownSection(shown)
+
+    return () => setShownSection(null)
+  }, [shown])
   const streamingSessions = useTranscripts(state => state.bySession)
 
   const liveSections = useMemo(() => liveSectionsOf(streamingSessions), [streamingSessions])
   const liveMoods = useMemo(() => liveMoodsOf(streamingSessions), [streamingSessions])
 
   const ordered = useMemo(() => orderedBots(bots), [bots])
+
+  // Every way in starts on a random face none of the other bots has; its name never changes it.
+  const openNewBot = () => {
+    setNewStyle(randomStyle(ordered.flatMap(bot => [bot.face, bot.kept_face])))
+    setBotDialog(true)
+  }
+
   const roster = useMemo(() => orderedRosterItems(bots, rooms), [bots, rooms])
 
   const anyMatch =
@@ -421,13 +625,18 @@ export function RosterColumn() {
     )
 
   const open = (bot: string, section: string) => {
+    useUi.getState().closeThread()
     void sectionsActions()
       .open(section)
       .catch(() => undefined)
     void navigate({ to: '/b/$bot/s/$section', params: { bot, section } })
   }
 
-  const openRoom = (room: string) => void navigate({ to: '/r/$room', params: { room } })
+  const openRoom = (room: string) => {
+    cancelChat()
+    useUi.getState().closeThread()
+    void navigate({ to: '/r/$room', params: { room } })
+  }
 
   const openRoomSettings = (room: string) =>
     void navigate({ to: '/r/$room/settings', params: { room } })
@@ -441,6 +650,7 @@ export function RosterColumn() {
    * One it named on this connection opens at once; the chat view asks again.
    */
   const openChat = async (bot: string) => {
+    useUi.getState().beginThreadLookup()
     const known = knownChat(bot)
 
     if (known) {
@@ -490,6 +700,48 @@ export function RosterColumn() {
     }
   }
 
+  /** Pinned bots and rooms sit above the list as faces; a search lists everything as rows. */
+  const pinnedRoster = query ? [] : roster.filter(isPinned)
+  const listRoster = query ? roster : roster.filter(entry => !isPinned(entry))
+
+  const activeRoom = (params as { room?: string }).room
+
+  const rosterEntry = (entry: RosterItem, tile: boolean) =>
+    entry.kind === 'room' ? (
+      <RoomRow
+        active={activeRoom === (entry.item as Room).id}
+        focused={focused}
+        key={`room:${(entry.item as Room).id}`}
+        onOpen={openRoom}
+        onRename={setRenaming}
+        onSettings={openRoomSettings}
+        query={query}
+        room={entry.item as Room}
+        tile={tile}
+      />
+    ) : (
+      <BotRow
+        active={chatShown((entry.item as Bot).name, asking, params)}
+        bot={entry.item as Bot}
+        covered={Boolean(openThread || peerRoute)}
+        draft={Object.values(sectionMap).some(
+          section => section.bot === (entry.item as Bot).name && Boolean(drafts[section.id])
+        )}
+        focused={focused}
+        key={`bot:${(entry.item as Bot).name}`}
+        live={liveSections}
+        moods={liveMoods}
+        onOpen={name => void openChat(name)}
+        onRename={setRenaming}
+        onSettings={openBotSettings}
+        query={query}
+        sections={Object.values(sectionMap).filter(
+          section => section.bot === (entry.item as Bot).name
+        )}
+        tile={tile}
+      />
+    )
+
   const label =
     connection.status === 'connected'
       ? connection.daemon?.daemon_name || 'Connected'
@@ -506,61 +758,88 @@ export function RosterColumn() {
 
   const macTitleBar = getBridge()?.platform === 'darwin'
 
-  const activeRoom = (params as { room?: string }).room
-
-  const footerRow =
-    'flex w-full items-center gap-3 rounded-panel px-2.5 py-2 text-left outline-none transition-colors hover:bg-foreground/[0.04]'
-
   const footerIcon =
     'grid size-7 shrink-0 place-items-center rounded-full border border-border text-foreground'
 
   return (
     <div className="flex h-full min-h-0 flex-col" onKeyDown={keyboard} ref={root}>
-      <header className={cn('hex-drag shrink-0 px-3 pb-2', macTitleBar ? 'pt-[42px]' : 'pt-3')}>
-        <div className="hex-no-drag flex items-center gap-2">
-          <label className="relative block min-w-0 flex-1">
-            <Search className="absolute top-1/2 left-3 -translate-y-1/2 text-muted" size={14} />
-            <Input
-              aria-label="Search bots and rooms"
-              className="h-9 rounded-full border-transparent bg-foreground/[0.05] pl-9 focus-visible:border-transparent focus-visible:bg-background focus-visible:shadow-card"
-              onChange={event => {
-                cancelChat()
-                setQuery(event.target.value.toLowerCase())
-              }}
-              placeholder="Search"
-              value={query}
-            />
-          </label>
-          <Menu
-            items={[
-              {
-                label: 'New bot',
-                onSelect: () => {
-                  // Start each new bot on a different face than the last.
-                  setNewStyle(styleForName(`bot-${ordered.length}`))
-                  setBotDialog(true)
-                }
-              },
-              {
-                'data-testid': 'roster-new-room',
-                disabled: !ordered.length,
-                label: 'New room',
-                onSelect: () => setRoomDialog(true)
-              }
-            ]}
-            trigger={
+      <ScrollArea
+        bottom={
+          <div className="px-2 pb-2">
+            <UpdatePill className="hex-glass hex-glass-press mb-1 w-full rounded-full border-transparent hover:bg-[var(--hex-glass-bg)]" />
+            <div
+              // Not a row: no hover fill, so the glass keeps its density.
+              className="hex-glass flex w-full items-center gap-3 rounded-full py-1.5 pr-2.5 pl-1.5"
+            >
+              <span className="relative">
+                <PersonAvatar name={me?.display_name ?? 'You'} />
+                <span
+                  className={cn('absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full', dot)}
+                  title={label}
+                />
+              </span>
+              <span className="min-w-0 flex-1 truncate font-medium">
+                {me?.display_name ?? 'You'}
+              </span>
               <button
-                aria-label="New"
-                className="hex-glass hex-glass-press grid size-9 shrink-0 place-items-center rounded-full text-foreground/75 hover:text-foreground"
+                aria-label="Settings"
+                className="hex-focus grid size-7 place-items-center rounded-full text-muted transition-colors hover:bg-foreground/[0.06] hover:text-foreground"
+                onClick={() =>
+                  void navigate({ to: '/settings/$tab', params: { tab: 'providers' } })
+                }
                 type="button"
               >
-                <Plus size={18} />
+                <Settings size={14} />
               </button>
-            }
-          />
-        </div>
-      </header>
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 py-1">
+            </div>
+          </div>
+        }
+        className="flex-1"
+        gap={4}
+        top={
+          <header className={cn('px-3 pb-2', macTitleBar ? 'pt-[42px]' : 'pt-3')}>
+            <div className="flex items-center gap-2">
+              <label className="hex-glass hex-glass-field relative block min-w-0 flex-1 rounded-full">
+                <Search className="absolute top-1/2 left-3 -translate-y-1/2 text-muted" size={14} />
+                <Input
+                  aria-label="Search bots and rooms"
+                  className="h-9 rounded-full border-transparent bg-transparent pl-9 hover:bg-transparent focus-visible:border-transparent focus-visible:bg-transparent"
+                  onChange={event => {
+                    cancelChat()
+                    setQuery(event.target.value.toLowerCase())
+                  }}
+                  placeholder="Search"
+                  value={query}
+                />
+              </label>
+              <Menu
+                items={[
+                  {
+                    label: 'New bot',
+                    onSelect: openNewBot
+                  },
+                  {
+                    'data-testid': 'roster-new-room',
+                    disabled: !ordered.length,
+                    label: 'New room',
+                    onSelect: () => setRoomDialog(true)
+                  }
+                ]}
+                trigger={
+                  <button
+                    aria-label="New"
+                    className="hex-glass hex-glass-press grid size-9 shrink-0 place-items-center rounded-full text-foreground/75 hover:text-foreground"
+                    type="button"
+                  >
+                    <Plus size={18} />
+                  </button>
+                }
+              />
+            </div>
+          </header>
+        }
+        viewportClassName="hex-no-scrollbar px-2"
+      >
         {needsPrimary(ordered) ? (
           <PrimaryChoice
             bots={ordered}
@@ -574,11 +853,7 @@ export function RosterColumn() {
           />
         ) : null}
         {useBots.getState().loaded && ordered.length === 0 ? (
-          <button
-            className={cn(rowClass, 'bg-surface-2/60')}
-            onClick={() => setBotDialog(true)}
-            type="button"
-          >
+          <button className={cn(rowClass, 'bg-surface-2/60')} onClick={openNewBot} type="button">
             <span className={cn(footerIcon, 'size-10')}>
               <Plus size={18} />
             </span>
@@ -590,66 +865,28 @@ export function RosterColumn() {
             No bots or rooms match “{query}”.
           </p>
         ) : null}
-        {roster.map(entry =>
-          entry.kind === 'room' ? (
-            <RoomRow
-              active={activeRoom === (entry.item as Room).id}
-              focused={focused}
-              key={`room:${(entry.item as Room).id}`}
-              onOpen={openRoom}
-              onSettings={openRoomSettings}
-              query={query}
-              room={entry.item as Room}
-            />
-          ) : (
-            <BotRow
-              active={
-                asking
-                  ? asking === (entry.item as Bot).name
-                  : Boolean(params.section) && params.bot === (entry.item as Bot).name
+        {query ? null : (
+          <WaitingThreads
+            bots={ordered}
+            onOpen={(bot, section) => {
+              cancelChat()
+              const peer = ordered.find(item => item.name === bot)?.status_detail?.peer_bot
+
+              if (peer) {
+                useUi.getState().openThread({ bot, peer, sectionId: section })
+              } else {
+                void navigate({ to: '/b/$bot/s/$section', params: { bot, section } })
               }
-              bot={entry.item as Bot}
-              draft={Object.values(sectionMap).some(
-                section => section.bot === (entry.item as Bot).name && Boolean(drafts[section.id])
-              )}
-              focused={focused}
-              key={`bot:${(entry.item as Bot).name}`}
-              live={liveSections}
-              moods={liveMoods}
-              onOpen={name => void openChat(name)}
-              onSettings={openBotSettings}
-              query={query}
-              sections={Object.values(sectionMap).filter(
-                section => section.bot === (entry.item as Bot).name
-              )}
-            />
-          )
+            }}
+          />
         )}
-      </div>
-      <div className="shrink-0 px-2 pb-2">
-        <UpdatePill className="mb-1 w-full" />
-        <div className={cn(footerRow, 'hover:bg-transparent')}>
-          <span className="relative">
-            <PersonAvatar name={me?.display_name ?? 'You'} />
-            <span
-              className={cn(
-                'absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full border-2 border-surface',
-                dot
-              )}
-              title={label}
-            />
-          </span>
-          <span className="min-w-0 flex-1 truncate font-medium">{me?.display_name ?? 'You'}</span>
-          <button
-            aria-label="Settings"
-            className="grid size-7 place-items-center rounded-full border border-border text-muted transition-colors hover:bg-surface-2 hover:text-foreground"
-            onClick={() => void navigate({ to: '/settings/$tab', params: { tab: 'providers' } })}
-            type="button"
-          >
-            <Settings size={14} />
-          </button>
-        </div>
-      </div>
+        {pinnedRoster.length ? (
+          <div className="flex flex-wrap justify-center pb-1" data-testid="roster-pinned">
+            {pinnedRoster.map(entry => rosterEntry(entry, true))}
+          </div>
+        ) : null}
+        {listRoster.map(entry => rosterEntry(entry, false))}
+      </ScrollArea>
       <Dialog
         description="A face and a name. It will ask you the rest in your chat."
         onOpenChange={value => {
@@ -704,7 +941,15 @@ export function RosterColumn() {
               .finally(() => setCreatingBot(false))
           }}
         >
-          <AvatarBuilder onChange={setNewStyle} value={newStyle} />
+          <NewBotFace
+            onChange={setNewStyle}
+            onShuffle={() =>
+              setNewStyle(
+                randomStyle([newStyle, ...ordered.flatMap(bot => [bot.face, bot.kept_face])])
+              )
+            }
+            value={newStyle}
+          />
           <Field label="Name">
             <Input
               aria-label="Bot name"
@@ -783,6 +1028,51 @@ export function RosterColumn() {
         </form>
       </Dialog>
       <NewRoomDialog onClose={() => setRoomDialog(false)} onCreated={openRoom} open={roomDialog} />
+      <RenameDialog onClose={() => setRenaming(null)} onRefused={setRenaming} renaming={renaming} />
+    </div>
+  )
+}
+
+/**
+ * A new bot's face: the one it was given, a shuffle for another, and every
+ * shape and colour behind Change face.
+ */
+function NewBotFace({
+  onChange,
+  onShuffle,
+  value
+}: {
+  onChange: (style: AvatarStyle) => void
+  onShuffle: () => void
+  value: AvatarStyle
+}) {
+  const [choosing, setChoosing] = useState(false)
+
+  return (
+    <div className="grid justify-items-center gap-3">
+      <Avatar
+        className="hex-pop-in size-24"
+        key={`${value.shape}-${value.color}`}
+        name="Preview"
+        style={value}
+      />
+      <div className="flex gap-2">
+        <Button onClick={onShuffle} size="sm" type="button">
+          Shuffle
+        </Button>
+        <Button
+          aria-expanded={choosing}
+          onClick={() => setChoosing(open => !open)}
+          size="sm"
+          type="button"
+          variant="ghost"
+        >
+          Change face
+        </Button>
+      </div>
+      {choosing ? (
+        <FaceChoices className="w-full max-w-[340px]" onChange={onChange} value={value} />
+      ) : null}
     </div>
   )
 }
@@ -854,30 +1144,33 @@ function NewRoomDialog({
           placeholder="Search bots"
           value={query}
         />
-        <fieldset className="max-h-44 overflow-auto border-y border-border">
-          <legend className="sr-only">Members</legend>
-          {bots
-            .filter(bot =>
-              `${bot.display_name} ${bot.name}`.toLowerCase().includes(query.toLowerCase())
-            )
-            .map(bot => (
-              <label className="flex items-center gap-3 py-2" key={bot.name}>
-                <input
-                  checked={members.includes(bot.name)}
-                  onChange={event =>
-                    setMembers(items =>
-                      event.target.checked
-                        ? [...items, bot.name]
-                        : items.filter(item => item !== bot.name)
-                    )
-                  }
-                  type="checkbox"
-                />
-                <Avatar {...botFace(bot)} name={bot.display_name} size="sm" />
-                <span>{bot.display_name}</span>
-              </label>
-            ))}
-        </fieldset>
+        {/* The list fades at its edges while it scrolls, without rules above and below. */}
+        <ScrollArea className="max-h-44">
+          <fieldset>
+            <legend className="sr-only">Members</legend>
+            {bots
+              .filter(bot =>
+                `${bot.display_name} ${bot.name}`.toLowerCase().includes(query.toLowerCase())
+              )
+              .map(bot => (
+                <label className="flex items-center gap-3 py-2" key={bot.name}>
+                  <input
+                    checked={members.includes(bot.name)}
+                    onChange={event =>
+                      setMembers(items =>
+                        event.target.checked
+                          ? [...items, bot.name]
+                          : items.filter(item => item !== bot.name)
+                      )
+                    }
+                    type="checkbox"
+                  />
+                  <Avatar {...botFace(bot)} name={bot.display_name} size="sm" />
+                  <span>{bot.display_name}</span>
+                </label>
+              ))}
+          </fieldset>
+        </ScrollArea>
         <label className="grid gap-1">
           <span>
             Main bot <span className="text-muted">(optional)</span>
@@ -942,6 +1235,89 @@ function NewRoomDialog({
           </Button>
           <Button disabled={!name.trim() || !members.length} type="submit" variant="primary">
             Create room
+          </Button>
+        </div>
+      </form>
+    </Dialog>
+  )
+}
+
+/**
+ * Renames a bot (its display name; the handle stays) or a room. The new name
+ * shows as the dialog closes; a name the daemon refuses comes back here.
+ */
+function RenameDialog({
+  onClose,
+  onRefused,
+  renaming
+}: {
+  onClose: () => void
+  onRefused: (renaming: Renaming) => void
+  renaming: null | Renaming
+}) {
+  const [name, setName] = useState('')
+  const [error, setError] = useState<null | string>(null)
+
+  useEffect(() => {
+    if (renaming) {
+      setName(renaming.draft ?? renaming.name)
+      setError(renaming.error ?? null)
+    }
+  }, [renaming])
+
+  const trimmed = name.trim()
+
+  return (
+    <Dialog
+      onOpenChange={value => !value && onClose()}
+      open={Boolean(renaming)}
+      title={renaming?.kind === 'room' ? 'Rename room' : 'Rename bot'}
+    >
+      <form
+        className="grid gap-4 p-5"
+        onSubmit={event => {
+          event.preventDefault()
+
+          if (!renaming || !trimmed) {
+            return
+          }
+
+          const saved =
+            renaming.kind === 'room'
+              ? useRooms.getState().update(renaming.id, { name: trimmed })
+              : useBots.getState().update(renaming.id, { display_name: trimmed })
+
+          onClose()
+          void saved.catch(reason =>
+            onRefused({
+              ...renaming,
+              draft: trimmed,
+              error: reason instanceof Error ? reason.message : String(reason)
+            })
+          )
+        }}
+      >
+        <Field label="Name">
+          <Input
+            aria-label="Name"
+            autoFocus
+            onChange={event => setName(event.target.value)}
+            onFocus={event => event.target.select()}
+            required
+            value={name}
+          />
+        </Field>
+        {error ? (
+          <p className="text-[length:var(--text-secondary)] text-danger" role="alert">
+            {error}
+          </p>
+        ) : null}
+        <div className="flex justify-end gap-2 pt-1">
+          <Button onClick={onClose} variant="ghost">
+            Cancel
+          </Button>
+          <Button disabled={!trimmed || trimmed === renaming?.name} type="submit" variant="primary">
+            Rename
           </Button>
         </div>
       </form>

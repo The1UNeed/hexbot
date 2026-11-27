@@ -1,5 +1,5 @@
-import type { SearchEntry, SearchFile } from '../../../web/src/lib/search'
-import { parseArgs } from './chat'
+import type { SearchEntry } from '../../../web/src/lib/search'
+import { parseArgs, sharedFiles } from './chat'
 import type { ChatMessage } from './types'
 
 export {
@@ -10,11 +10,6 @@ export {
   type SearchHit,
   type SearchResults
 } from '../../../web/src/lib/search'
-
-/** Tools that write a file at their `path` argument: Pi's and the earlier names. */
-const WRITE_TOOLS = new Set(['edit', 'patch', 'write', 'write_file'])
-
-const baseName = (path: string) => path.split(/[\\/]/).filter(Boolean).at(-1) ?? path
 
 /**
  * The open conversation as search entries, the same reading the app's panel
@@ -41,19 +36,14 @@ export function searchEntries(
           }
         ]
       })
-    const written = tools.flatMap((tool): SearchFile[] => {
-      if (!WRITE_TOOLS.has(tool.name) || tool.status !== 'ok') return []
-      const args = parseArgs(tool.args) as { file_path?: unknown; path?: unknown } | null
-      const path = [args?.path, args?.file_path].find(
-        (value): value is string => typeof value === 'string' && value.trim() !== ''
-      )
-      return path ? [{ name: baseName(path), path }] : []
-    })
     return [
       {
         at: message.createdAt,
         author: nameOf(message),
-        files: [...(message.attachments ?? []).map(file => ({ name: file.name })), ...written],
+        files: [
+          ...(message.attachments ?? []).map(file => ({ name: file.name })),
+          ...(message.role === 'assistant' ? sharedFiles(tools) : [])
+        ],
         id: message.id,
         text: message.text,
         visuals

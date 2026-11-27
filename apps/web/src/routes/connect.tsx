@@ -65,7 +65,7 @@ function ConnectPage() {
       tunnel_hostname: string
       identity_key?: string | null
       online?: boolean
-      /** `unreachable` is a daemon that heartbeats but whose address does not answer. */
+      /** `unreachable` comes only from Connect deployments before probe-only online state; current ones send `online` or `offline`. */
       status?: 'offline' | 'online' | 'unreachable'
     }>
   >([])

@@ -97,11 +97,78 @@ fn home_credential_name(home: &Path, path: &Path) -> bool {
             || local.is_match(&p.to_string_lossy().replace('\\', "/"))
     })
 }
+/// Cua's own folder when `CUA_HOME` moves it from `~/.cua`: its host token
+/// is a shell on this computer, and its cloud credentials live there too.
+/// A relative one is the daemon's working folder's, as Cua resolves it,
+/// never a bot's: Pi gets it absolute.
+pub(crate) fn cua_home() -> Option<PathBuf> {
+    std::env::var_os("CUA_HOME")
+        .filter(|home| !home.is_empty())
+        .map(|home| absolute_in(PathBuf::from(home), std::env::current_dir().ok()))
+}
+/// `path` as an absolute path, a relative one taken from `cwd`.
+fn absolute_in(path: PathBuf, cwd: Option<PathBuf>) -> PathBuf {
+    match cwd {
+        Some(cwd) if !path.is_absolute() => cwd.join(path),
+        _ => path,
+    }
+}
+/// The Cua folder in use (`CUA_HOME`, else `~/.cua`) as written and as
+/// resolved: renaming any folder above either, such as a writable one a
+/// symlinked `~/.cua` points into, would carry the token out from under its
+/// rule, so both sandbox levels pin their parents.
+fn cua_roots() -> Vec<PathBuf> {
+    let folders = match cua_home() {
+        Some(cua) => vec![cua],
+        None => user_homes().iter().map(|user| user.join(".cua")).collect(),
+    };
+    let mut roots = vec![];
+    for cua in folders {
+        let real = real_root(&cua).unwrap_or_else(|_| cua.clone());
+        for path in [cua, real] {
+            if !roots.contains(&path) {
+                roots.push(path);
+            }
+        }
+    }
+    roots
+}
+/// The folders to pin above Cua's: inside the home only those between the
+/// home and it, as for other stores; outside it, every one up to the root.
+fn cua_parents() -> Vec<PathBuf> {
+    let homes = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map_or_else(Vec::new, |user| {
+            let mut homes = vec![user.clone(), real_root(&user).unwrap_or(user)];
+            homes.dedup();
+            homes
+        });
+    let mut parents: Vec<PathBuf> = vec![];
+    for path in cua_roots() {
+        let home = homes.iter().find(|h| path.starts_with(h) && path != **h);
+        let mut dir = path.parent();
+        while let Some(current) = dir.filter(|d| {
+            d.parent().is_some() && home.is_none_or(|h| d.starts_with(h) && *d != h.as_path())
+        }) {
+            if !parents.iter().any(|p| p == current) {
+                parents.push(current.to_owned());
+            }
+            dir = current.parent();
+        }
+    }
+    parents
+}
+fn cua_credential_name(path: &Path) -> bool {
+    cua_home().is_some_and(|cua| {
+        under(path, &cua) || std::fs::canonicalize(&cua).is_ok_and(|p| under(path, &p))
+    })
+}
 pub fn credential_name(home: &Path, path: &Path) -> bool {
     if user_homes()
         .iter()
         .any(|user| user_credential_name(user, path) || ssh_credential_name(user, path))
         || store_credential_name(path)
+        || cua_credential_name(path)
     {
         return true;
     }
@@ -297,6 +364,9 @@ fn secret_paths(home: &Path) -> Vec<PathBuf> {
         for local in &policy().user {
             add(user.join(local), &mut paths);
         }
+    }
+    if let Some(cua) = cua_home() {
+        add(cua, &mut paths);
     }
     // Byte order, as the extension sorts, so both profiles list filters alike.
     paths.sort_by(|a, b| a.as_os_str().cmp(b.as_os_str()));
@@ -1524,7 +1594,13 @@ fn sandbox_profile(layout: &Layout) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ");
-    let ancestors = store_ancestors(&layout.denied)
+    let mut pinned = store_ancestors(&layout.denied);
+    for dir in cua_parents() {
+        if !pinned.contains(&dir) {
+            pinned.push(dir);
+        }
+    }
+    let ancestors = pinned
         .iter()
         .map(|p| format!("(literal {})", quoted(p.to_string_lossy())))
         .collect::<Vec<_>>()
@@ -1562,7 +1638,13 @@ fn sandbox_profile(layout: &Layout) -> String {
         let mut protected = browser_roots.clone();
         protected.extend(git.clone());
         protected.extend(confine.protected.secrets.clone());
-        let parents = path_ancestors(&protected).iter().map(|p| format!("(literal {})", quoted(p.to_string_lossy()))).collect::<Vec<_>>().join(" ");
+        let mut pinned = path_ancestors(&protected);
+        for dir in cua_parents() {
+            if !pinned.contains(&dir) {
+                pinned.push(dir);
+            }
+        }
+        let parents = pinned.iter().map(|p| format!("(literal {})", quoted(p.to_string_lossy()))).collect::<Vec<_>>().join(" ");
         let browsers = browser_roots
             .iter()
             .map(|p| {
@@ -2045,9 +2127,36 @@ mod tests {
         assert!(status.success(), "{args:?}");
     }
     #[test]
+    fn a_relative_cua_home_is_the_daemons_working_folders() {
+        // Cua resolves it from the daemon's folder; Pi, started in a bot's
+        // workspace, gets it absolute.
+        assert_eq!(
+            absolute_in(
+                PathBuf::from("state/cua"),
+                Some(PathBuf::from("/srv/hexbot"))
+            ),
+            PathBuf::from("/srv/hexbot/state/cua")
+        );
+        assert_eq!(
+            absolute_in(
+                PathBuf::from("/opt/cua"),
+                Some(PathBuf::from("/srv/hexbot"))
+            ),
+            PathBuf::from("/opt/cua")
+        );
+    }
+    #[test]
     fn user_auth_paths_and_child_environment_are_explicit() {
         let user = tempfile::tempdir().unwrap();
-        for path in [".codex/auth.json", ".hermes/auth.json", ".hermes/.env"] {
+        for path in [
+            ".codex/auth.json",
+            ".hermes/auth.json",
+            ".hermes/.env",
+            // Cua's host token is a shell on this computer; its cloud
+            // credentials sit beside it.
+            ".cua/host/env-token",
+            ".cua/spaces-credentials.json",
+        ] {
             assert!(user_credential_name(user.path(), &user.path().join(path)));
         }
         assert!(!user_credential_name(

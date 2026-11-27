@@ -8,7 +8,7 @@ import { needsPrimary, PrimaryChoice } from './primary-choice'
 // jsdom never loads images, so the face is drawn as no PNG at all.
 vi.mock('../../lib/avatar-builder', () => ({
   avatarPng: () => Promise.resolve(null),
-  styleForName: () => ({})
+  randomStyle: () => ({})
 }))
 
 const bot = (name: string, primary?: boolean) =>

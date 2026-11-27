@@ -2,8 +2,15 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { ArrowRight, ArrowUp, Plus } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { PluginSheet } from '../app/settings/plugin-sheet'
 import { UsageDataSummary } from '../app/settings/privacy'
-import { ConnectorFields, connectorValues } from '../components/connector-fields'
+import {
+  connectorFieldMissing,
+  ConnectorFields,
+  connectorFieldsFor,
+  connectorSignInMissing,
+  connectorValues
+} from '../components/connector-fields'
 import { isSubscription, ProviderPanel, supportsApiKey } from '../components/provider-panel'
 import { Avatar } from '../components/ui/avatar'
 import { Button } from '../components/ui/button'
@@ -11,6 +18,7 @@ import { Chip } from '../components/ui/chip'
 import { ConnectorIcon } from '../components/ui/connector-icon'
 import type { HexbotActName } from '../components/ui/hexbot-act'
 import { Input } from '../components/ui/input'
+import { ScrollArea } from '../components/ui/scroll-area'
 import { Select } from '../components/ui/select'
 import { Switch } from '../components/ui/switch'
 import { Textarea } from '../components/ui/textarea'
@@ -19,7 +27,11 @@ import {
   botsCreate,
   botsCreatePrimary,
   botsList,
+  computersDefaults,
+  computersList,
+  computersSet,
   connectorsList,
+  connectorsSetForBot,
   connectorsSetup,
   providerModels,
   providersList,
@@ -28,7 +40,7 @@ import {
   userMemoryGet,
   userMemorySet
 } from '../lib/api'
-import { avatarPng, type AvatarStyle, botFace, styleForName } from '../lib/avatar-builder'
+import { avatarPng, type AvatarStyle, botFace, randomStyle } from '../lib/avatar-builder'
 import { type DaemonProgress, getBridge, hasLocalRuntime, isElectron } from '../lib/bridge'
 import { cn } from '../lib/cn'
 import { connectTo, setLocalDaemonPort } from '../lib/connection'
@@ -36,8 +48,10 @@ import type {
   Bot,
   BotCreateInput,
   BotFace,
+  Computer,
   Connector,
   ModelOption,
+  Plugin,
   Provider,
   Section
 } from '../lib/types'
@@ -45,6 +59,7 @@ import { useChatSelection } from '../lib/use-chat-selection'
 import { useBots } from '../stores/bots'
 import { useConnection } from '../stores/connection'
 import { unknownMethod, useMe } from '../stores/me'
+import { usePlugins } from '../stores/plugins'
 import { introduceBot, oneChat, sectionsActions } from '../stores/sections'
 import { type LastSection, uiActions } from '../stores/ui'
 
@@ -53,6 +68,7 @@ export const Route = createFileRoute('/onboarding')({ component: OnboardingPage 
 type OnboardingStep =
   | 'about'
   | 'choice'
+  | 'computers'
   | 'connect'
   | 'continue'
   | 'deciding'
@@ -418,9 +434,11 @@ export function InstallStep({
       </div>
       <details className="w-full pb-10 text-center text-secondary text-muted">
         <summary className="cursor-pointer">Install log</summary>
-        <pre className="mt-2 max-h-40 overflow-y-auto text-left whitespace-pre-wrap font-mono text-meta">
-          {progress.map(item => item.message).join('\n')}
-        </pre>
+        <ScrollArea className="mt-2 max-h-40">
+          <pre className="text-left whitespace-pre-wrap font-mono text-meta">
+            {progress.map(item => item.message).join('\n')}
+          </pre>
+        </ScrollArea>
       </details>
     </SetupFrame>
   )
@@ -621,49 +639,51 @@ function ProvidersStep({
         placeholder="Search providers"
         value={search}
       />
-      <ul className="max-h-[42dvh] divide-y divide-border overflow-y-auto rounded-panel border border-border">
-        {filtered.map(item => {
-          const open = selected === item.id
+      <ScrollArea className="max-h-[42dvh] overflow-hidden rounded-2xl bg-foreground/[0.04]">
+        <ul className="divide-y divide-foreground/[0.07]">
+          {filtered.map(item => {
+            const open = selected === item.id
 
-          return (
-            <li key={item.id}>
-              <button
-                aria-expanded={open}
-                className={cn(
-                  'flex w-full items-center justify-between gap-3 px-4 py-3 text-left outline-none transition-colors hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-accent',
-                  open && 'bg-surface-2'
-                )}
-                data-testid={`onboarding-provider-item-${item.id}`}
-                onClick={() => setSelected(open ? null : item.id)}
-                type="button"
-              >
-                <span className="font-medium">{item.label}</span>
-                <Chip
-                  tone={item.configured ? 'success' : isSubscription(item) ? 'accent' : 'neutral'}
+            return (
+              <li key={item.id}>
+                <button
+                  aria-expanded={open}
+                  className={cn(
+                    'flex w-full items-center justify-between gap-3 px-4 py-3 text-left outline-none transition-colors hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-accent',
+                    open && 'bg-surface-2'
+                  )}
+                  data-testid={`onboarding-provider-item-${item.id}`}
+                  onClick={() => setSelected(open ? null : item.id)}
+                  type="button"
                 >
-                  {item.configured
-                    ? 'Connected'
-                    : isSubscription(item)
-                      ? 'Subscription'
-                      : supportsApiKey(item)
-                        ? 'API key'
-                        : 'Setup required'}
-                </Chip>
-              </button>
-              {open ? (
-                <div className="border-t border-border bg-background px-4 py-4">
-                  <ProviderPanel onConfigured={refresh} provider={item} />
-                </div>
-              ) : null}
+                  <span className="font-medium">{item.label}</span>
+                  <Chip
+                    tone={item.configured ? 'success' : isSubscription(item) ? 'accent' : 'neutral'}
+                  >
+                    {item.configured
+                      ? 'Connected'
+                      : isSubscription(item)
+                        ? 'Subscription'
+                        : supportsApiKey(item)
+                          ? 'API key'
+                          : 'Setup required'}
+                  </Chip>
+                </button>
+                {open ? (
+                  <div className="border-t border-foreground/[0.07] px-4 py-4">
+                    <ProviderPanel onConfigured={refresh} provider={item} />
+                  </div>
+                ) : null}
+              </li>
+            )
+          })}
+          {filtered.length === 0 ? (
+            <li className="px-4 py-6 text-center text-secondary text-muted">
+              {providers ? 'No providers match.' : 'Loading providers'}
             </li>
-          )
-        })}
-        {filtered.length === 0 ? (
-          <li className="px-4 py-6 text-center text-secondary text-muted">
-            {providers ? 'No providers match.' : 'Loading providers'}
-          </li>
-        ) : null}
-      </ul>
+          ) : null}
+        </ul>
+      </ScrollArea>
       <p className="text-center text-secondary text-muted">
         {configured.length === 0
           ? 'Connect at least one provider to continue.'
@@ -1045,7 +1065,26 @@ function ToolPanel({
   const [provider, setProvider] = useState(connector.provider ?? connector.providers?.[0]?.id)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [signedIn, setSignedIn] = useState(false)
+  const [renewing, setRenewing] = useState(false)
+  const onSignedIn = useCallback(() => setSignedIn(true), [])
   const sending = connectorValues(connector, provider, values)
+
+  const chosen = connector.providers?.find(item => item.id === provider)
+
+  // A free provider needs nothing typed; one already in use, nothing new. A
+  // subscription has nothing to type, so once signed in it can always be tested.
+  const unchanged =
+    !chosen?.sign_in &&
+    Object.keys(sending).length === 0 &&
+    provider === connector.provider &&
+    connector.state === 'ready'
+
+  const needsSignIn = connectorSignInMissing(chosen, signedIn, renewing)
+
+  const blocked =
+    unchanged ||
+    connectorFieldsFor(connector, provider).some(field => connectorFieldMissing(field, values))
 
   const save = async () => {
     setBusy(true)
@@ -1084,8 +1123,12 @@ function ToolPanel({
         connector={connector}
         invalid={Boolean(error)}
         onProviderChange={setProvider}
+        onRenewingChange={setRenewing}
+        onSignedIn={onSignedIn}
         onValuesChange={setValues}
         provider={provider}
+        renewing={renewing}
+        signedIn={signedIn}
         values={values}
       />
       {error ? (
@@ -1093,98 +1136,509 @@ function ToolPanel({
           {error}
         </p>
       ) : null}
-      <Button
-        busy={busy}
-        className="justify-self-end"
-        data-testid={`onboarding-tool-save-${connector.id}`}
-        disabled={Object.keys(sending).length === 0}
-        type="submit"
-        variant="primary"
-      >
-        Save and test
-      </Button>
+      {/* One primary button: the sign-in first, then this. */}
+      {needsSignIn ? null : (
+        <Button
+          busy={busy}
+          className="justify-self-end"
+          data-testid={`onboarding-tool-save-${connector.id}`}
+          disabled={blocked}
+          type="submit"
+          variant="primary"
+        >
+          Save and test
+        </Button>
+      )}
     </form>
   )
 }
 
-/** The tools that need an account: a bot can only use the ones set up here. */
-const SETUP_TOOL_GROUPS = new Set(['media', 'search'])
+/**
+ * The tools that need an account: a bot can only use the ones set up here.
+ * Google's and Microsoft's connectors sign in as a suite, above the list
+ * (`AccountSuites`), so connectors with an account stay out of it.
+ */
+const SETUP_TOOL_GROUPS = new Set(['search', 'social_home', 'work'])
+/** The connectors setup suggests first, in this order; the rest follow. */
+const SUGGESTED_TOOLS = ['github', 'x_search', 'web_search']
+
+/** One sign-in each connects a whole suite; its connectors open in their sheet. */
+const ACCOUNT_SUITES = [
+  {
+    description: 'Outlook, calendar, OneDrive, Word, Excel, PowerPoint and To Do, in one sign-in.',
+    family: 'microsoft',
+    first: 'outlook',
+    name: 'Microsoft'
+  },
+  {
+    description: 'Gmail, Calendar, Drive, Docs, Sheets, Slides and Tasks, in one sign-in.',
+    family: 'google',
+    first: 'gmail',
+    name: 'Google'
+  }
+] as const
+
+/** Connectors setup gives HexBot once it exists, when they are connected by then. */
+export function connectedForPrimary(connectors: Connector[]): string[] {
+  return connectors
+    .filter(
+      item =>
+        item.state === 'ready' &&
+        (item.family === 'google' ||
+          item.family === 'microsoft' ||
+          SUGGESTED_TOOLS.includes(item.id) ||
+          item.id === 'notion')
+    )
+    .map(item => item.id)
+}
+
+/** Whether a suite (Microsoft or Google) has at least one ready signed-in connector. */
+function suiteConnected(family: string, plugins: Plugin[]): boolean {
+  return plugins.some(
+    plugin =>
+      plugin.kind === 'connector' &&
+      plugin.connector?.family === family &&
+      Boolean(plugin.connector.account?.signed_in) &&
+      plugin.ready
+  )
+}
+
+/** Microsoft and Google: one card each, opening the connector's sheet to sign in. */
+export function AccountSuites() {
+  const plugins = usePlugins(state => state.plugins)
+  const refresh = usePlugins(state => state.refresh)
+  // The open sheet's plugin by id, read from the current list, so a sign-in
+  // that refreshes the list shows its new status.
+  const [openId, setOpenId] = useState<null | string>(null)
+  const open = openId ? ((plugins ?? []).find(plugin => plugin.id === openId) ?? null) : null
+
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
+
+  const suites = ACCOUNT_SUITES.map(suite => {
+    const family = (plugins ?? []).filter(
+      plugin => plugin.kind === 'connector' && plugin.connector?.family === suite.family
+    )
+
+    return {
+      ...suite,
+      connected: suiteConnected(suite.family, plugins ?? []),
+      plugin: family.find(plugin => plugin.id === suite.first) ?? family[0] ?? null
+    }
+  }).filter(suite => suite.plugin)
+
+  if (!suites.length) {
+    return null
+  }
+
+  return (
+    <>
+      <ul className="grid gap-2 sm:grid-cols-2">
+        {suites.map(suite => (
+          <li key={suite.family}>
+            <button
+              className="flex w-full items-center gap-3 rounded-2xl bg-foreground/[0.04] px-4 py-3 text-left outline-none transition-colors hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-accent"
+              data-testid={`onboarding-suite-${suite.family}`}
+              onClick={() => setOpenId(suite.plugin!.id)}
+              type="button"
+            >
+              <ConnectorIcon icon={suite.plugin!.icon} />
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-2 font-medium">
+                  {suite.name}
+                  <Chip tone={suite.connected ? 'success' : 'neutral'}>
+                    {suite.connected ? 'Connected' : 'Sign in'}
+                  </Chip>
+                </span>
+                <span className="block text-secondary text-muted">{suite.description}</span>
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+      {open ? (
+        <PluginSheet
+          bots={[]}
+          focus={null}
+          onClose={() => {
+            setOpenId(null)
+            void refresh()
+          }}
+          plugin={open}
+        />
+      ) : null}
+    </>
+  )
+}
 
 export function ToolsStep({
   onContinue,
   onError
 }: {
-  onContinue: () => void
+  onContinue: (computerUse?: boolean) => void
   onError: (message: string) => void
 }) {
+  const plugins = usePlugins(state => state.plugins)
   const [tools, setTools] = useState<Connector[] | null>(null)
   const [selected, setSelected] = useState<string | null>('web_search')
+  // The Computer Use plugin for every bot made from now on, HexBot first.
+  // Null until computersList answers, or on a daemon from before computers.
+  const [computerUse, setComputerUse] = useState<boolean | null>(null)
+  const [busy, setBusy] = useState(false)
+  const computersPending = useRef<Promise<boolean | null> | null>(null)
 
   useEffect(() => {
+    let active = true
+
     connectorsList()
-      .then(result => setTools(result.connectors.filter(item => SETUP_TOOL_GROUPS.has(item.group))))
-      .catch(reason => onError(String(reason)))
+      .then(result => {
+        if (!active) {
+          return
+        }
+
+        const order = (id: string) => {
+          const index = SUGGESTED_TOOLS.indexOf(id)
+
+          return index < 0 ? SUGGESTED_TOOLS.length : index
+        }
+
+        setTools(
+          result.connectors
+            .filter(item => SETUP_TOOL_GROUPS.has(item.group) && !item.account)
+            .sort((a, b) => order(a.id) - order(b.id))
+        )
+      })
+      .catch(reason => {
+        if (active) {
+          onError(String(reason))
+        }
+      })
+
+    // Computer Use is suggested on when the bots' computer can run here.
+    const pending = computersList()
+      .then(({ computers }) =>
+        Array.isArray(computers)
+          ? Boolean(computers.find(computer => computer.kind === 'vm')?.available)
+          : null
+      )
+      .catch(reason => {
+        if (active && !unknownMethod(reason)) {
+          onError(String(reason))
+        }
+
+        return null
+      })
+
+    computersPending.current = pending
+    void pending.then(value => {
+      if (active) {
+        computersPending.current = null
+        setComputerUse(value)
+      }
+    })
+
+    return () => {
+      active = false
+
+      if (computersPending.current === pending) {
+        computersPending.current = null
+      }
+    }
   }, [onError])
+
+  const save = async () => {
+    if (computerUse === null && !computersPending.current) {
+      onContinue(undefined)
+
+      return
+    }
+
+    setBusy(true)
+
+    try {
+      const chosen = computerUse ?? (await computersPending.current)
+
+      if (chosen !== null) {
+        await computersDefaults({ computer_use: chosen })
+      }
+
+      onContinue(chosen ?? undefined)
+    } catch (reason) {
+      // A daemon from before computers has no defaults method.
+      if (unknownMethod(reason)) {
+        onContinue(undefined)
+      } else {
+        onError(String(reason))
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
 
   const ready = (tools ?? []).filter(item => item.state === 'ready')
 
+  const connectedSuites = ACCOUNT_SUITES.filter(suite =>
+    suiteConnected(suite.family, plugins ?? [])
+  ).length
+
+  const readyCount = ready.length + connectedSuites + (computerUse ? 1 : 0)
+
   return (
     <div className="w-full space-y-4 py-8">
-      <ul className="max-h-[52dvh] divide-y divide-border overflow-y-auto rounded-panel border border-border">
-        {(tools ?? []).map(item => {
-          const open = selected === item.id
+      {computerUse !== null ? (
+        <div className="rounded-2xl bg-foreground/[0.04]">
+          <label
+            className={cn(
+              'flex items-center gap-3 px-4 py-3',
+              busy ? 'opacity-60' : 'cursor-pointer'
+            )}
+            data-testid="onboarding-computer-use"
+          >
+            <ConnectorIcon icon="glyph:monitor" />
+            <span className="min-w-0 flex-1">
+              <span className="flex items-center gap-2 font-medium">
+                Computer Use <Chip tone="accent">Suggested</Chip>
+              </span>
+              <span className="block text-secondary text-muted">
+                Bots see and use the screens of the computers they work on: click, type and open
+                apps.
+              </span>
+            </span>
+            <Switch
+              aria-label="Computer Use"
+              checked={computerUse}
+              disabled={busy}
+              onCheckedChange={setComputerUse}
+            />
+          </label>
+        </div>
+      ) : null}
+      <AccountSuites />
+      <ScrollArea className="max-h-[40dvh] overflow-hidden rounded-2xl bg-foreground/[0.04]">
+        <ul className="divide-y divide-foreground/[0.07]">
+          {(tools ?? []).map(item => {
+            const open = selected === item.id
 
-          return (
-            <li key={item.id}>
-              <button
-                aria-expanded={open}
-                className={cn(
-                  'flex w-full items-center gap-3 px-4 py-3 text-left outline-none transition-colors hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-accent',
-                  open && 'bg-surface-2'
-                )}
-                data-testid={`onboarding-tool-item-${item.id}`}
-                onClick={() => setSelected(open ? null : item.id)}
-                type="button"
-              >
-                <ConnectorIcon icon={item.icon} />
-                <span className="min-w-0 flex-1">
-                  <span className="block font-medium">{item.name}</span>
-                  <span className="block text-secondary text-muted">{item.description}</span>
-                </span>
-                <Chip tone={item.state === 'ready' ? 'success' : 'neutral'}>{item.state_text}</Chip>
-              </button>
-              {open ? (
-                <div className="border-t border-border bg-background px-4 py-4">
-                  <ToolPanel
-                    connector={item}
-                    onSaved={saved =>
-                      setTools(current =>
-                        (current ?? []).map(tool => (tool.id === saved.id ? saved : tool))
-                      )
-                    }
-                  />
-                </div>
-              ) : null}
-            </li>
-          )
-        })}
-        {tools === null ? (
-          <li className="px-4 py-6 text-center text-secondary text-muted">Loading tools</li>
-        ) : null}
-      </ul>
+            return (
+              <li key={item.id}>
+                <button
+                  aria-expanded={open}
+                  className={cn(
+                    'flex w-full items-center gap-3 px-4 py-3 text-left outline-none transition-colors hover:bg-surface-2 focus-visible:ring-2 focus-visible:ring-accent',
+                    open && 'bg-surface-2'
+                  )}
+                  data-testid={`onboarding-tool-item-${item.id}`}
+                  onClick={() => setSelected(open ? null : item.id)}
+                  type="button"
+                >
+                  <ConnectorIcon icon={item.icon} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block font-medium">{item.name}</span>
+                    <span className="block text-secondary text-muted">{item.description}</span>
+                  </span>
+                  <Chip tone={item.state === 'ready' ? 'success' : 'neutral'}>
+                    {item.state_text}
+                  </Chip>
+                </button>
+                {open ? (
+                  <div className="border-t border-foreground/[0.07] px-4 py-4">
+                    <ToolPanel
+                      connector={item}
+                      onSaved={saved =>
+                        setTools(current =>
+                          (current ?? []).map(tool => (tool.id === saved.id ? saved : tool))
+                        )
+                      }
+                    />
+                  </div>
+                ) : null}
+              </li>
+            )
+          })}
+          {tools === null ? (
+            <li className="px-4 py-6 text-center text-secondary text-muted">Loading plugins</li>
+          ) : null}
+        </ul>
+      </ScrollArea>
       <p className="text-center text-secondary text-muted">
-        {ready.length === 0
-          ? "Bots cannot use a tool until it is set up. You can do it later in a bot's Connectors."
-          : `${ready.length} set up. Add more now, or later in a bot's Connectors.`}
+        {readyCount === 0
+          ? 'Skip any you don’t use. You can add more later in Settings, Plugins.'
+          : `${readyCount} ready. HexBot gets what you turn on or connect here; more in Settings, Plugins.`}
       </p>
       <SetupActions>
         <Button
+          busy={busy}
           className={PILL}
           data-testid="onboarding-tools-continue"
-          onClick={onContinue}
-          variant={ready.length ? 'primary' : 'secondary'}
+          disabled={busy}
+          onClick={() => void save()}
+          variant={readyCount ? 'primary' : 'secondary'}
         >
-          {ready.length ? 'Continue' : 'Skip for now'}
+          {readyCount ? 'Continue' : 'Skip for now'}
+        </Button>
+      </SetupActions>
+    </div>
+  )
+}
+
+/**
+ * Where bots work (`machines.rs`): their own computer, suggested, and the
+ * daemon's computer, its terminal and (when Computer Use is on) desktop.
+ * Saved for every bot made from now on, HexBot first; each bot changes in
+ * Settings, Computers.
+ */
+export function ComputersStep({
+  computerUse,
+  onContinue,
+  onError
+}: {
+  /** Whether setup turned on Computer Use on the Suggested plugins step. */
+  computerUse?: boolean
+  onContinue: () => void
+  onError: (message: string) => void
+}) {
+  const [computers, setComputers] = useState<Computer[] | null>(null)
+  const [vm, setVm] = useState(false)
+  const [terminal, setTerminal] = useState(false)
+  const [desktop, setDesktop] = useState(false)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    computersList()
+      .then(({ computers }) => {
+        setComputers(computers)
+        // The bots' computer is suggested when it can run; this computer is
+        // never chosen for the user.
+        setVm(Boolean(computers.find(computer => computer.kind === 'vm')?.available))
+      })
+      .catch(reason => {
+        // A daemon from before computers: nothing to choose here.
+        if (unknownMethod(reason)) {
+          onContinue()
+        } else {
+          onError(String(reason))
+        }
+      })
+  }, [onContinue, onError])
+
+  const own = computers?.find(computer => computer.kind === 'vm')
+  const host = computers?.find(computer => computer.kind === 'host')
+  const useComputer = computerUse ?? Boolean(own?.available)
+
+  const save = async () => {
+    setBusy(true)
+
+    try {
+      // Only a choice the user could make is saved: without Cua the bots'
+      // computer stays as it was, ready once Cua is installed.
+      if (own?.available) {
+        await computersSet('vm', { on: vm })
+      }
+
+      // This computer's screen is shared only for Computer Use, and only
+      // when bots work on it.
+      const share = desktop && useComputer && terminal && Boolean(host?.desktop.available)
+
+      if (share) {
+        await computersSet('host', { desktop: true })
+      }
+
+      await computersDefaults({ host_terminal: terminal })
+      onContinue()
+    } catch (reason) {
+      onError(String(reason))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (!computers || !own || !host) {
+    return <p className="py-10 text-center text-secondary text-muted">Loading computers…</p>
+  }
+
+  const option = (
+    id: string,
+    name: string,
+    title: ReactNode,
+    description: ReactNode,
+    checked: boolean,
+    onChange: (next: boolean) => void,
+    disabled = false
+  ) => (
+    // The label wraps the switch, so clicking the row's words flips it.
+    <label
+      className={cn(
+        'flex items-center gap-3 px-4 py-3',
+        disabled ? 'opacity-60' : 'cursor-pointer'
+      )}
+      data-testid={id}
+    >
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center gap-2 font-medium">{title}</span>
+        <span className="block text-secondary text-muted">{description}</span>
+      </span>
+      <Switch aria-label={name} checked={checked} disabled={disabled} onCheckedChange={onChange} />
+    </label>
+  )
+
+  return (
+    <div className="w-full space-y-4 py-8">
+      <div className="divide-y divide-foreground/[0.07] rounded-2xl bg-foreground/[0.04]">
+        {option(
+          'onboarding-computer-vm',
+          "The bots' computer",
+          <>
+            The bots' computer <Chip tone="accent">Suggested</Chip>
+          </>,
+          own.available
+            ? 'A Linux desktop for your bots, separate from yours. They run code, install programs and browse there. Easy to reset.'
+            : `Needs Cua and Docker on ${host.name}. Install Cua with “uv tool install cua”, then turn it on and choose its bots in Settings, Computers.`,
+          vm,
+          setVm,
+          !own.available
+        )}
+      </div>
+      <div className="divide-y divide-foreground/[0.07] rounded-2xl bg-foreground/[0.04]">
+        {option(
+          'onboarding-computer-terminal',
+          `${host.name}, where Hexbot runs`,
+          `${host.name}, where Hexbot runs`,
+          host.terminal.sandboxed
+            ? `Bots run commands on ${host.name}, in a sandbox in Auto and Manual.`
+            : `Bots run commands on ${host.name}. Hexbot has no sandbox on Windows yet, so this works only in Bypass.`,
+          terminal,
+          setTerminal
+        )}
+        {useComputer && terminal
+          ? option(
+              'onboarding-computer-desktop',
+              `Computer Use on ${host.name}`,
+              `Computer Use on ${host.name}`,
+              host.desktop.available
+                ? `Bots see ${host.name}'s screen, click and type in the apps you allow (in Bypass, without asking), never in terminals, editors or Hexbot.`
+                : (host.desktop.note ?? 'Not available on this computer.'),
+              desktop,
+              setDesktop,
+              !host.desktop.available
+            )
+          : null}
+      </div>
+      <p className="text-center text-secondary text-muted">
+        {!vm && !terminal
+          ? 'Without a computer, bots chat and use your plugins only.'
+          : 'Change this for each bot in Settings, Computers. Your other computers show up there once you let bots work on them.'}
+      </p>
+      <SetupActions>
+        <Button
+          busy={busy}
+          className={PILL}
+          data-testid="onboarding-computers-continue"
+          disabled={busy}
+          onClick={() => void save()}
+          variant="primary"
+        >
+          Continue
         </Button>
       </SetupActions>
     </div>
@@ -1201,6 +1655,7 @@ function OnboardingPage() {
   const [progress, setProgress] = useState<DaemonProgress[]>([])
   const [configured, setConfigured] = useState<Provider[]>([])
   const [defaultModel, setDefaultModel] = useState<string | null>(null)
+  const [computerUse, setComputerUse] = useState<boolean | undefined>(undefined)
   const [error, setError] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
   const creatingPrimary = useRef(false)
@@ -1221,11 +1676,23 @@ function OnboardingPage() {
     setCreating(true)
 
     try {
-      const face = styleForName('hexbot')
+      // A random face, as every bot gets; its name never picks it.
+      const face = randomStyle()
       const avatar = await avatarPng(face)
 
       if (current()) {
         const { bot, section } = await createHexBot(defaultModel, avatar, face)
+
+        // What setup connected goes to HexBot; a failure here leaves it for Settings, Plugins.
+        await connectorsList()
+          .then(({ connectors }) =>
+            Promise.all(
+              connectedForPrimary(connectors).map(id =>
+                connectorsSetForBot(id, bot.name, true).catch(() => null)
+              )
+            )
+          )
+          .catch(() => null)
 
         if (current()) {
           const last = { bot: bot.name, section: section.id }
@@ -1289,6 +1756,7 @@ function OnboardingPage() {
   const decided = useRef<null | (() => boolean)>(null)
   const decisionComplete = useRef(false)
   const afterAbout = useRef<() => void>(() => setStep('providers'))
+  const toUsage = useCallback(() => setStep('usage'), [])
 
   const decide = useCallback(() => {
     if (decisionComplete.current || decided.current?.()) {
@@ -1449,7 +1917,14 @@ function OnboardingPage() {
         'The model new bots start with, and where to go when it fails.'
       ],
       providers: ['Connect a provider', 'Sign in with a subscription or paste an API key.'],
-      tools: ['Set up tools', 'Web search and the other tools that need their own account.'],
+      computers: [
+        'Where can your bots work?',
+        "The bots' computer, the one Hexbot runs on, or both."
+      ],
+      tools: [
+        'Suggested plugins',
+        'Computer Use, Microsoft or Google, GitHub and X, so your bots can help with them.'
+      ],
       usage: ['Help improve Hexbot', 'Nothing is sent unless you turn this on.']
     } as const
   )[step]
@@ -1484,7 +1959,17 @@ function OnboardingPage() {
       ) : null}
 
       {step === 'tools' ? (
-        <ToolsStep onContinue={() => setStep('usage')} onError={onError} />
+        <ToolsStep
+          onContinue={chosen => {
+            setComputerUse(chosen)
+            setStep('computers')
+          }}
+          onError={onError}
+        />
+      ) : null}
+
+      {step === 'computers' ? (
+        <ComputersStep computerUse={computerUse} onContinue={toUsage} onError={onError} />
       ) : null}
 
       {error ? (

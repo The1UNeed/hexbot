@@ -24,7 +24,9 @@ export interface ComposerShellProps {
   /** One line above the field, coloured by `status` (an error, "Waiting on you"). */
   notice?: ReactNode
   onAttach?: () => void
-  onSend: () => void
+  /** Without it the pill has no Send, as in a room that is a Discord channel. */
+  onSend?: () => void
+  /** A room's Stop. A bot's chat has none: Recall takes a message back. */
   onStop?: () => void
   sending?: boolean
   /** Colours the pill so the bottom of the chat matches the bot's dot. */
@@ -34,7 +36,8 @@ export interface ComposerShellProps {
 
 /**
  * The floating glass pill that wraps a message field: attach on the left,
- * an optional accessory and send or stop on the right. The 30px buttons sit
+ * an optional accessory and send on the right. In a room, while bots work,
+ * the button is Stop until you type: then it is Send. The 30px buttons sit
  * 8px from the pill's outer edge on every side, so they stay concentric with
  * its 23px corners as the field grows (46px tall for one line). They are
  * sized in px because the root font is 14px, which makes `size-8` 28px. The
@@ -94,7 +97,7 @@ export function ComposerShell({
         )}
         <div className="min-w-0 flex-1 px-1">{children}</div>
         {accessory}
-        {streaming ? (
+        {streaming && onStop && !canSend ? (
           <button
             aria-label="Stop"
             className="hex-glass-press hex-focus hex-fade grid size-[30px] shrink-0 place-items-center rounded-full bg-foreground text-background hover:opacity-85"
@@ -103,7 +106,7 @@ export function ComposerShell({
           >
             <Square className="fill-current" size={12} />
           </button>
-        ) : (
+        ) : onSend ? (
           <button
             aria-label="Send"
             className={cn(
@@ -118,7 +121,7 @@ export function ComposerShell({
           >
             {sending ? <Spinner size="sm" /> : <ArrowUp size={16} strokeWidth={2.5} />}
           </button>
-        )}
+        ) : null}
       </div>
     </div>
   )

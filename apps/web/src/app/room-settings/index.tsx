@@ -45,7 +45,8 @@ function MemberRow({
   isMain?: boolean
   last?: boolean
   name: string
-  onMakeMain: () => Promise<void>
+  /** Absent in a Discord room, which has no main bot. */
+  onMakeMain?: () => Promise<void>
   onRemove: (keepRoom: boolean) => Promise<void>
 }) {
   const [busy, setBusy] = useState(false)
@@ -79,7 +80,7 @@ function MemberRow({
             </span>
           ) : null}
         </span>
-        {isMain ? null : (
+        {isMain || !onMakeMain ? null : (
           <Button disabled={busy} onClick={() => void run(onMakeMain)} size="sm" variant="ghost">
             Make main
           </Button>
@@ -261,59 +262,84 @@ export function RoomSettingsPanel({ room }: { room: Room }): React.JSX.Element {
                 key={member.member_id}
                 last={members.length === 1}
                 name={member.display_name ?? member.member_id}
-                onMakeMain={() => save({ main_bot: member.member_id })}
+                onMakeMain={room.discord ? undefined : () => save({ main_bot: member.member_id })}
                 onRemove={keepRoom => remove(member.member_id, keepRoom)}
               />
             ))}
             <div className="flex min-h-[48px] items-center justify-between gap-3 px-4 py-2">
               <span className="text-[length:var(--text-secondary)] text-muted">
-                {room.main_bot
-                  ? 'The main bot answers when nobody is mentioned.'
-                  : 'Without a main bot, only mentioned bots answer.'}
+                {room.discord
+                  ? 'A bot joins when someone mentions it in Discord, or when anyone writes where it is an active member or answers everyone. One you remove comes back when someone mentions it.'
+                  : room.main_bot
+                    ? 'The main bot answers when nobody is mentioned.'
+                    : 'Without a main bot, only mentioned bots answer.'}
               </span>
-              <Menu
-                items={
-                  addable.length
-                    ? addable.map(bot => ({
-                        label: bot.display_name,
-                        onSelect: () =>
-                          void rooms()
-                            .addMember(room.id, bot.name)
-                            .catch(c => setError(errorOf(c)))
-                      }))
-                    : [{ disabled: true, label: 'Every bot is already a member' }]
-                }
-                trigger={
-                  <Button icon={<Plus size={14} />} size="sm" variant="pill">
-                    Add bot
-                  </Button>
-                }
-              />
+              {room.discord ? (
+                <a
+                  className="shrink-0 text-[length:var(--text-secondary)] font-medium underline-offset-2 hover:underline"
+                  href={room.discord.url}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  Open in Discord
+                </a>
+              ) : (
+                <Menu
+                  items={
+                    addable.length
+                      ? addable.map(bot => ({
+                          label: bot.display_name,
+                          onSelect: () =>
+                            void rooms()
+                              .addMember(room.id, bot.name)
+                              .catch(c => setError(errorOf(c)))
+                        }))
+                      : [{ disabled: true, label: 'Every bot is already a member' }]
+                  }
+                  trigger={
+                    <Button icon={<Plus size={14} />} size="sm" variant="pill">
+                      Add bot
+                    </Button>
+                  }
+                />
+              )}
             </div>
           </Group>
           <Group title="Turns">
-            <Row
-              control={
-                <div className="w-40">
-                  <Select
-                    label="Room approval mode"
-                    onValueChange={value => void save({ approval_mode: value as BotApprovalMode })}
-                    options={[
-                      { label: 'Inherit', value: 'inherit' },
-                      ...approvalModes(me?.role, room.approval_mode ?? undefined).map(
-                        ({ label, value }) => ({
-                          label,
-                          value
-                        })
-                      )
-                    ]}
-                    value={room.approval_mode ?? 'inherit'}
-                  />
-                </div>
-              }
-              description="How tool actions in this room get approved. Inherit uses each bot's own mode."
-              title="Approval mode"
-            />
+            {room.discord ? (
+              <Row
+                control={
+                  <span className="text-[length:var(--text-secondary)] text-muted">Manual</span>
+                }
+                description="People in Discord are not you, so bots there only search the web, read the server and keep notes."
+                title="Approval mode"
+              />
+            ) : (
+              <Row
+                control={
+                  <div className="w-40">
+                    <Select
+                      label="Room approval mode"
+                      onValueChange={value =>
+                        void save({ approval_mode: value as BotApprovalMode })
+                      }
+                      options={[
+                        { label: 'Inherit', value: 'inherit' },
+                        ...approvalModes(me?.role, room.approval_mode ?? undefined).map(
+                          ({ label, value }) => ({
+                            label,
+                            value
+                          })
+                        )
+                      ]}
+                      value={room.approval_mode ?? 'inherit'}
+                    />
+                  </div>
+                }
+                description="How tool actions in this room get approved. Inherit uses each bot's own mode."
+                title="Approval mode"
+              />
+            )}
             <Row
               control={
                 <Input

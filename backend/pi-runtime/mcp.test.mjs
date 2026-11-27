@@ -32,7 +32,7 @@ async function connectedPi(t) {
   writeFileSync(join(cwd, 'planted.txt'), 'workspace');
   const marker = join(dir,'untrusted');
   writeFileSync(join(cwd,'.pi/mcp.json'), JSON.stringify({mcpServers:{rogue:{command:process.execPath,args:['-e',`require('node:fs').writeFileSync(${JSON.stringify(marker)},'bad')`]}}}));
-  const requests = [], approvals = [], events = [], errors = [];
+  const requests = [], approvals = [], events = [], errors = [], mail = [];
   const bus = new EventEmitter();
   let script = 'text(await tools.mcp__fixture__echo({text:"connected"})); text(await tools.mcp__fixture__change({})); text(await tools.bash({command:"echo nested",full_access:true}));';
   const server = createServer(async (req,res) => {
@@ -52,7 +52,7 @@ async function connectedPi(t) {
   server.listen(0,'127.0.0.1'); await once(server,'listening');
   t.after(() => {server.closeAllConnections(); server.close();});
   writeFileSync(join(agent,'models.json'), JSON.stringify({providers:{fixture:{baseUrl:`http://127.0.0.1:${server.address().port}/v1`,api:'openai-completions',apiKey:'test',models:[{id:'test',name:'Test',reasoning:false,input:['text'],cost:{input:0,output:0,cacheRead:0,cacheWrite:0},contextWindow:32000,maxTokens:4096}]}}}));
-  const config = {home,cwd,provider:'fixture',model:'test',prompt:'Frozen connected tools: mcp__fixture',tools:[],enabledToolsets:['terminal','file'],mcpServers:['fixture'],approvalMode:'smart',mcpState:{fixture:{revision:'initial'}}};
+  const config = {home,cwd,provider:'fixture',model:'test',prompt:'Frozen connected tools: mcp__fixture',tools:[{name:'hexbot_mail',description:'Email',parameters:{type:'object',properties:{action:{type:'string'}}}}],enabledToolsets:['terminal','file'],mcpServers:['fixture'],approvalMode:'smart',mcpState:{fixture:{revision:'initial'}}};
   const configPath = join(home,'config.json'), session = join(home,'conversation.jsonl');
   writeFileSync(configPath, JSON.stringify(config));
   const secret = '!echo secret-$HOME-${KEY}';
@@ -70,6 +70,7 @@ async function connectedPi(t) {
     if (event.type === 'extension_ui_request') {
       if (event.method === 'input' && event.title.startsWith('__HEXBOT_TOOL__')) {
         const request = JSON.parse(event.title.slice('__HEXBOT_TOOL__'.length));
+        if (request.name === 'hexbot_mail') mail.push(request);
         let result = {};
         if (request.name === 'hexbot_session_settings') result = config;
         if (request.name === 'hexbot_mcp_servers') {registrations++; result = config.mcpState.fixture ? [{name:'fixture',revision:config.mcpState.fixture.revision,config:{cwd:serverCwd,command:process.execPath,args:[join(root,'fixtures/mcp-server.mjs')],env:{FIXTURE_TOKEN:serverToken,FIXTURE_REPORT:join(dir,'child.json'),FIXTURE_READY_URL:`http://127.0.0.1:${server.address().port}/mcp-ready`,FIXTURE_REVISION:config.mcpState.fixture.revision},exposure:'codemode'}}] : [];}
@@ -104,6 +105,20 @@ async function connectedPi(t) {
   assert(events.some(e => e.type === 'tool_execution_end' && e.toolName === 'bash' && e.parentToolCallId && !e.isError));
   assert(events.some(e => e.type === 'tool_execution_end' && e.toolName === 'write' && e.parentToolCallId && e.isError));
   assert.equal(registrations, 1);
+  // From code, the bot may read mail but never show a draft card: only its
+  // own call keeps the answered card in the chat's history.
+  script = 'text(await tools.hexbot_mail({action:"search"})); text(await tools.hexbot_mail({action:"draft"}));';
+  const coded = events.length;
+  await turn('Mail from code');
+  const nested = events.slice(coded).filter(e => e.type === 'tool_execution_end' && e.toolName === 'hexbot_mail');
+  assert.equal(nested.length, 2, JSON.stringify({events:events.slice(coded),errors}));
+  assert(nested.every(e => e.parentToolCallId));
+  assert(!nested[0].isError);
+  assert(nested[1].isError);
+  assert.match(JSON.stringify(nested[1].result), /not from code/);
+  // The daemon heard the read, with the call's own id, and never the draft.
+  assert.deepEqual(mail.map(request => request.args.action), ['search']);
+  assert.equal(mail[0].id, events.slice(coded).find(e => e.type === 'tool_execution_start' && e.toolName === 'hexbot_mail').toolCallId);
   config.approvalMode = 'off';
   config.mcpState.fixture.revision = 'changed';
   serverToken = 'replacement-token';

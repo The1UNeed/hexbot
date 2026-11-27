@@ -80,7 +80,7 @@ pub fn descriptors(home: &Path, bot: &str) -> Result<Vec<Value>> {
     if enabled.iter().any(|s| s == "skills") {
         tools.push(descriptor(
             "skill_manage",
-            "Create, patch, or delete bot skills. Operations apply as one batch. Inherited skills are copied into this bot before editing.",
+            "Create, patch, or delete your own skills. Operations apply as one batch. A library skill is copied into your skills before editing; skills built into Hexbot can't be changed, and delete only turns them off for you. Read the skill-creator skill before writing one.",
             json!({
                 "operations": {
                     "type": "array",
@@ -480,6 +480,10 @@ fn manage_skills(home: &Path, bot: &str, p: &Value) -> Result<Value> {
             let existing = crate::skills::resolve_unlocked(home, Some(bot))?
                 .into_iter()
                 .find(|s| s.name == name);
+            // Built-in skills stay as Hexbot ships them: no private copy.
+            if existing.as_ref().is_some_and(|s| s.source == "bundled") {
+                return Err(crate::skills::built_in(name));
+            }
             if existing.as_ref().is_some_and(|s| !s.enabled) {
                 return Err(Error::new(4302, format!("skill is disabled: {name}")));
             }

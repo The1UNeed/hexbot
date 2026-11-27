@@ -255,8 +255,8 @@ impl RoomRunner for Asker {
             }
             let now = hexbot_core::common::now();
             db::open(&self.0).unwrap().execute(
-                "INSERT INTO bot_messages(id,from_bot,to_bot,section_id,source_section,created_at,text) VALUES('m1','owl','fox','fox-thread',?1,?2,'Help'),('m2','owl','fox','fox-thread',?1,?2,'More'),('m3','owl','fox','fox-thread','elsewhere',?2,'Other')",
-                rusqlite::params![stored, now],
+                "INSERT INTO bot_messages(id,from_bot,to_bot,section_id,source_section,created_at,text,waited,failed) VALUES('m1','owl','fox','fox-thread',?1,?2,'Help',1,0),('m2','owl','fox','fox-thread',?1,?2,'More',0,0),('m3','owl','bee','bee-thread',?1,?3,'FYI',0,0),('m4','owl','cat','cat-thread',?1,?4,'Retry',1,1),('m5','owl','fox','fox-thread','elsewhere',?2,'Other',1,0)",
+                rusqlite::params![stored, now, now + 1.0, now + 2.0],
             ).unwrap();
             Ok("Fox helped.".into())
         })
@@ -317,7 +317,11 @@ async fn a_room_reply_keeps_the_teammates_its_bot_asked() {
     assert_eq!(reply["payload"]["text"], "Fox helped.");
     assert_eq!(
         reply["payload"]["asks"],
-        json!([{"to":"fox","section_id":"fox-thread"}])
+        json!([
+            {"to":"fox","section_id":"fox-thread","waited":1,"failed":0},
+            {"to":"bee","section_id":"bee-thread","waited":0,"failed":0},
+            {"to":"cat","section_id":"cat-thread","waited":0,"failed":1}
+        ])
     );
 }
 #[tokio::test]

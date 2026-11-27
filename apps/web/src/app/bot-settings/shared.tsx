@@ -1,14 +1,15 @@
+import { useNavigate } from '@tanstack/react-router'
 import { Check } from 'lucide-react'
-import { type ChangeEvent, useEffect, useRef, useState } from 'react'
+import { type ChangeEvent, useEffect, useState } from 'react'
 
-import { Avatar, useFaceRead } from '../../components/ui/avatar'
-import { AvatarBuilder } from '../../components/ui/avatar-builder'
-import { Button } from '../../components/ui/button'
+import { Avatar } from '../../components/ui/avatar'
+import { buttonVariants } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
 import { Textarea } from '../../components/ui/textarea'
-import { avatarPng, type AvatarStyle, botFace, styleForName } from '../../lib/avatar-builder'
+import { botFace } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
 import type { Bot, BotUpdatePatch } from '../../lib/types'
+import { useBotMood } from '../bot-mood'
 
 /** One grouped-list card: white over the glass, rows divided by hairlines. */
 export const cardClass = 'hex-card rounded-2xl'
@@ -19,8 +20,6 @@ export const errorText = (error: unknown) =>
   error instanceof Error ? error.message : String(error)
 
 export type SaveBot = (patch: BotUpdatePatch) => Promise<void> | void
-
-const MAX_AVATAR_BYTES = 2 * 1024 * 1024
 
 /** Page title plus one line saying what the page is for. */
 export function Heading({
@@ -109,6 +108,98 @@ export function Row({
       </div>
       {control ? <div className="flex shrink-0 items-center gap-2">{control}</div> : null}
     </div>
+  )
+}
+
+/** What the daemon accepts as a soul or memory limit, in characters. */
+export const LIMIT_MIN = 500
+export const LIMIT_MAX = 20_000
+/** The built-in defaults, for a daemon that does not report its own. */
+export const DEFAULT_SOUL_LIMIT = 4000
+export const DEFAULT_MEMORY_LIMIT = 2200
+
+/**
+ * A row holding one character limit, saved when the field is left. With
+ * `fallback` the field may be empty, which follows that default; without
+ * it a number is required.
+ */
+export function LimitRow({
+  description,
+  fallback,
+  label,
+  onSave,
+  title,
+  value
+}: {
+  description: React.ReactNode
+  fallback?: number
+  label: string
+  onSave: (value: null | number) => Promise<void> | void
+  title: string
+  value: null | number | undefined
+}) {
+  const shown = value == null ? '' : String(value)
+  const [draft, setDraft] = useState(shown)
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => setDraft(shown), [shown])
+
+  const commit = () => {
+    const text = draft.trim()
+
+    if (!text) {
+      setError(null)
+
+      if (fallback === undefined) {
+        return setDraft(shown)
+      }
+
+      return value == null ? undefined : void onSave(null)
+    }
+
+    const limit = Number(text)
+
+    if (!Number.isInteger(limit) || limit < LIMIT_MIN || limit > LIMIT_MAX) {
+      return setError(
+        `Use a whole number from ${LIMIT_MIN.toLocaleString()} to ${LIMIT_MAX.toLocaleString()}.`
+      )
+    }
+
+    setError(null)
+
+    if (limit !== value) {
+      void onSave(limit)
+    }
+  }
+
+  return (
+    <Row
+      control={
+        <Input
+          aria-label={label}
+          className="w-28 text-right tabular-nums"
+          inputMode="numeric"
+          invalid={Boolean(error)}
+          onBlur={commit}
+          onChange={event => {
+            setDraft(event.target.value)
+            setError(null)
+          }}
+          onKeyDown={event => event.key === 'Enter' && event.currentTarget.blur()}
+          placeholder={fallback === undefined ? undefined : String(fallback)}
+          value={draft}
+        />
+      }
+      description={
+        error ? (
+          <span className="text-danger" role="alert">
+            {error}
+          </span>
+        ) : (
+          description
+        )
+      }
+      title={title}
+    />
   )
 }
 
@@ -238,144 +329,35 @@ export function InlineField({
   return multiline ? <Textarea {...props} /> : <Input {...props} />
 }
 
-/** The large face with the Bot / Upload picker under it. */
-export function AvatarPicker({
-  bot,
-  hint = true,
-  onSave
-}: {
-  bot: Bot
-  /** The one-line prompt under the face; off where the name sits right under it. */
-  hint?: boolean
-  onSave: SaveBot
-}) {
-  const [picking, setPicking] = useState(false)
-  const [pickerTab, setPickerTab] = useState<'bot' | 'upload'>('bot')
-  const [style, setStyle] = useState<AvatarStyle | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const fileRef = useRef<HTMLInputElement>(null)
+/**
+ * The bot's face, large, as one button that opens the Face page and says so.
+ * It wears the face its roster row wears: what the bot feels and does now.
+ */
+export function ProfileFace({ bot }: { bot: Bot }) {
+  const navigate = useNavigate()
   const shown = botFace(bot)
-  const saved = useFaceRead(shown.image)
-  const currentStyle = style ?? shown.style ?? saved ?? styleForName(bot.display_name)
-
-  const upload = (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    event.target.value = ''
-
-    if (!file) {
-      return
-    }
-
-    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
-      return setError('Choose a PNG, JPEG, or WebP image.')
-    }
-
-    if (file.size > MAX_AVATAR_BYTES) {
-      return setError('Avatar must be 2 MB or smaller.')
-    }
-
-    const reader = new FileReader()
-    reader.onload = () => void onSave({ avatar: String(reader.result) })
-    reader.onerror = () => setError('Could not read that image.')
-    reader.readAsDataURL(file)
-  }
-
-  const chooseFace = (next: AvatarStyle) => {
-    setStyle(next)
-    void avatarPng(next).then(png => {
-      if (png) {
-        void onSave({ avatar: png, face: next })
-      }
-    })
-  }
+  const mood = useBotMood(bot)
 
   return (
-    <div>
-      <div className="flex flex-col items-center gap-2">
-        <button
-          aria-expanded={picking}
-          aria-label="Change avatar"
-          className="hex-face rounded-full outline-none transition-transform hover:scale-105 focus-visible:ring-2 focus-visible:ring-accent/50 focus-visible:ring-offset-4 focus-visible:ring-offset-background"
-          onClick={() => setPicking(value => !value)}
-          type="button"
-        >
-          <Avatar
-            image={shown.image}
-            name={bot.display_name}
-            size="xl"
-            style={currentStyle}
-            sync={shown.sync}
-          />
-        </button>
-        {hint ? (
-          <span className="text-[length:var(--text-meta)] text-muted">
-            {picking ? 'Pick a face or upload one' : 'Click the face to change it'}
-          </span>
-        ) : null}
-        <input
-          accept="image/png,image/jpeg,image/webp"
-          className="hidden"
-          onChange={upload}
-          ref={fileRef}
-          type="file"
-        />
-      </div>
-      {picking ? (
-        <div className={cn(cardClass, 'hex-bubble mt-4')}>
-          <div className="flex gap-1 px-3 pt-3" role="tablist">
-            {(
-              [
-                ['bot', 'Bot'],
-                ['upload', 'Upload']
-              ] as const
-            ).map(([id, label]) => (
-              <button
-                aria-selected={pickerTab === id}
-                className={cn(
-                  'h-7 rounded-full px-3 text-[length:var(--text-secondary)] transition-colors',
-                  pickerTab === id
-                    ? 'bg-foreground text-background'
-                    : 'text-muted hover:bg-foreground/[0.06] hover:text-foreground'
-                )}
-                key={id}
-                onClick={() => setPickerTab(id)}
-                role="tab"
-                type="button"
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          <div className="p-3">
-            {pickerTab === 'bot' ? (
-              <AvatarBuilder onChange={chooseFace} preview={false} value={currentStyle} />
-            ) : (
-              <div className="grid justify-items-center gap-2 py-2 text-center">
-                <p className="text-[length:var(--text-secondary)] text-muted">
-                  PNG, JPEG or WebP up to 2 MB.
-                </p>
-                <Button onClick={() => fileRef.current?.click()} variant="secondary">
-                  Choose image
-                </Button>
-                {bot.avatar ? (
-                  <Button onClick={() => void onSave({ avatar: null })} variant="ghost">
-                    Use a generated face
-                  </Button>
-                ) : null}
-              </div>
-            )}
-          </div>
-        </div>
-      ) : null}
-      {error ? (
-        <p
-          className="mt-2 text-center text-[length:var(--text-secondary)] text-danger"
-          role="alert"
-        >
-          {error}
-        </p>
-      ) : null}
-    </div>
+    <button
+      aria-label="Change face"
+      className="hex-focus group mx-auto flex w-fit flex-col items-center gap-2 rounded-2xl p-1"
+      onClick={() =>
+        void navigate({ params: { bot: bot.name, tab: 'face' }, to: '/b/$bot/settings/$tab' })
+      }
+      type="button"
+    >
+      <Avatar
+        className="transition-transform duration-[var(--hex-motion-fast)] group-hover:scale-105"
+        image={shown.image}
+        mood={mood}
+        name={bot.display_name}
+        size="xl"
+        style={shown.style ?? bot.kept_face ?? undefined}
+        sync={shown.sync}
+      />
+      <span className={buttonVariants({ size: 'sm', variant: 'pill' })}>Change face</span>
+    </button>
   )
 }
 

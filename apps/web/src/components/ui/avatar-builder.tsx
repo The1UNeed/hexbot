@@ -1,75 +1,110 @@
-import { AVATAR_COLORS, AVATAR_SHAPES, type AvatarStyle } from '../../lib/avatar-builder'
+import {
+  AVATAR_COLORS,
+  AVATAR_SHAPES,
+  type AvatarStyle,
+  resolveStyle
+} from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
 
-import { Avatar, Face } from './avatar'
+import { Face } from './avatar'
 
-export interface AvatarBuilderProps {
+export interface FaceChoicesProps {
   className?: string
   onChange: (style: AvatarStyle) => void
-  /** Show the large live preview above the pickers. */
-  preview?: boolean
+  /**
+   * The bot shows a photo: nothing is marked as picked and the choices fade,
+   * but each still works, as picking one brings the face back.
+   */
+  photo?: boolean
   value: AvatarStyle
 }
 
-/**
- * Pick a colour and a shape for a bot's face: the face itself, a row of
- * colour dots, and a row of shapes drawn in the chosen colour.
- */
-export function AvatarBuilder({ className, onChange, preview = true, value }: AvatarBuilderProps) {
+/** A heading with the name of what is picked beside it. */
+function Choice({
+  children,
+  picked,
+  title
+}: {
+  children: React.ReactNode
+  picked?: string
+  title: string
+}) {
   return (
-    <div className={cn('flex flex-col items-center gap-4', className)}>
-      {preview ? (
-        <div data-testid="avatar-preview">
-          <Avatar
-            className="hex-pop-in size-24"
-            key={`${value.shape}-${value.color}`}
-            name="Preview"
-            style={value}
-          />
+    <div aria-label={title} role="group">
+      <div className="mb-2 flex items-baseline justify-between text-[length:var(--text-secondary)]">
+        <span className="font-semibold">{title}</span>
+        <span className="text-muted">{picked}</span>
+      </div>
+      {children}
+    </div>
+  )
+}
+
+/**
+ * Every shape, drawn in the chosen colour, and every colour. The name of each
+ * pick shows beside its heading. The choices hold still: the face they make
+ * is the one that moves.
+ */
+export function FaceChoices({ className, onChange, photo = false, value }: FaceChoicesProps) {
+  const { color, shape } = resolveStyle(value)
+
+  return (
+    <div
+      className={cn(
+        'grid gap-5 transition-opacity duration-[var(--hex-motion-fast)]',
+        photo && 'opacity-50 focus-within:opacity-100 hover:opacity-100',
+        className
+      )}
+    >
+      <Choice picked={photo ? undefined : shape.label} title="Shape">
+        <div className="grid grid-cols-5 gap-1.5">
+          {AVATAR_SHAPES.map(item => {
+            const picked = !photo && item.id === shape.id
+
+            return (
+              <button
+                aria-label={item.label}
+                aria-pressed={picked}
+                className={cn(
+                  'hex-focus grid aspect-square place-items-center rounded-xl transition-colors duration-[var(--hex-motion-fast)] hover:bg-foreground/[0.06]',
+                  picked && 'bg-foreground/[0.06] ring-[1.5px] ring-foreground ring-inset'
+                )}
+                key={item.id}
+                onClick={() => onChange({ color: color.id, shape: item.id })}
+                title={item.label}
+                type="button"
+              >
+                <span className="size-[62%]">
+                  <Face still style={{ color: color.id, shape: item.id }} />
+                </span>
+              </button>
+            )
+          })}
         </div>
-      ) : null}
-      <fieldset>
-        <legend className="sr-only">Colour</legend>
-        <div className="flex flex-wrap justify-center gap-2.5">
-          {AVATAR_COLORS.map(color => (
-            <button
-              aria-label={color.label}
-              aria-pressed={value.color === color.id}
-              className={cn(
-                'size-5 rounded-full shadow-[inset_0_0_0_1px_rgb(0_0_0/0.12)] transition-transform duration-[var(--hex-motion-fast)] hover:scale-110',
-                value.color === color.id &&
-                  'ring-2 ring-foreground ring-offset-2 ring-offset-background'
-              )}
-              key={color.id}
-              onClick={() => onChange({ ...value, color: color.id })}
-              style={{ backgroundColor: color.value }}
-              type="button"
-            />
-          ))}
+      </Choice>
+      <Choice picked={photo ? undefined : color.label} title="Colour">
+        <div className="grid grid-cols-7 justify-items-center gap-x-1.5 gap-y-2.5">
+          {AVATAR_COLORS.map(item => {
+            const picked = !photo && item.id === color.id
+
+            return (
+              <button
+                aria-label={item.label}
+                aria-pressed={picked}
+                className={cn(
+                  'hex-focus size-[30px] rounded-full shadow-[inset_0_0_0_1px_rgb(0_0_0/0.12)] transition-transform duration-[var(--hex-motion-fast)] hover:scale-110',
+                  picked && 'ring-2 ring-foreground ring-offset-2 ring-offset-background'
+                )}
+                key={item.id}
+                onClick={() => onChange({ color: item.id, shape: shape.id })}
+                style={{ backgroundColor: item.value }}
+                title={item.label}
+                type="button"
+              />
+            )
+          })}
         </div>
-      </fieldset>
-      <fieldset>
-        <legend className="sr-only">Shape</legend>
-        <div className="flex flex-wrap justify-center gap-1">
-          {AVATAR_SHAPES.map(shape => (
-            <button
-              aria-label={shape.label}
-              aria-pressed={value.shape === shape.id}
-              className={cn(
-                'grid size-8 place-items-center rounded-control transition-colors duration-[var(--hex-motion-fast)] hover:bg-surface-2',
-                value.shape === shape.id && 'bg-surface-2 ring-1 ring-foreground/50'
-              )}
-              key={shape.id}
-              onClick={() => onChange({ ...value, shape: shape.id })}
-              type="button"
-            >
-              <span className="size-6">
-                <Face style={{ color: value.color, shape: shape.id }} />
-              </span>
-            </button>
-          ))}
-        </div>
-      </fieldset>
+      </Choice>
     </div>
   )
 }

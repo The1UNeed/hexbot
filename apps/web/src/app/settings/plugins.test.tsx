@@ -2,11 +2,16 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { beforeEach, vi } from 'vitest'
 
 import {
+  accountsDisconnect,
+  accountsSignInStart,
+  discordDisconnect,
   pluginsConfigure,
   pluginsInstall,
   pluginsList,
   pluginsRemove,
   pluginsSetBots,
+  skillsDelete,
+  skillsSave,
   skillsSetGlobal
 } from '../../lib/api'
 import type { Bot, Connector, PluginsList } from '../../lib/types'
@@ -17,16 +22,26 @@ import { PluginsSettings } from './plugins'
 
 vi.mock('../../lib/api', async importOriginal => ({
   ...(await importOriginal()),
+  accountsDisconnect: vi.fn().mockResolvedValue({ disconnected: 'gmail' }),
+  accountsSignInCancel: vi.fn().mockResolvedValue({}),
+  accountsSignInStart: vi.fn(),
   connectorsTest: vi.fn().mockResolvedValue({ message: 'Connected.', ok: true }),
+  discordDisconnect: vi.fn().mockResolvedValue({ discord: null }),
   pluginsConfigure: vi.fn().mockResolvedValue({}),
   pluginsInstall: vi.fn().mockResolvedValue({}),
   pluginsList: vi.fn(),
   pluginsRemove: vi.fn().mockResolvedValue({ removed: true }),
   pluginsSetBots: vi.fn().mockResolvedValue({}),
+  skillsDelete: vi.fn().mockResolvedValue({ deleted: true }),
+  skillsSave: vi.fn().mockResolvedValue({}),
   skillsSetGlobal: vi.fn().mockResolvedValue({})
 }))
 
 vi.mock('../../components/ui/confirm', () => ({ confirm: vi.fn().mockResolvedValue(true) }))
+
+const navigate = vi.fn()
+
+vi.mock('@tanstack/react-router', () => ({ useNavigate: () => navigate }))
 
 const search: Connector = {
   description: 'Search the web and read pages.',
@@ -42,6 +57,40 @@ const search: Connector = {
   state: 'ready',
   state_text: 'Connected'
 }
+
+/** A Google or Microsoft connector, not connected unless `email` is given. */
+function account(
+  id: string,
+  name: string,
+  provider: 'google' | 'microsoft',
+  email: null | string = null,
+  change: Partial<PluginsList['connectors'][number]> = {}
+): PluginsList['connectors'][number] {
+  return {
+    abilities: [`Find and read your ${name}`, "Changes follow the bot's approval mode"],
+    account: { email, provider, service: id, signed_in: Boolean(email) },
+    bots: [],
+    description: `Work in ${name}.`,
+    enabled_bots: [],
+    enabled_for_bot: null,
+    family: provider,
+    fields: [],
+    group: 'work',
+    icon: 'glyph:mail',
+    id,
+    kind: 'connector',
+    last_error: null,
+    name,
+    ready: Boolean(email),
+    scope: 'daemon',
+    state: email ? 'ready' : 'not_set_up',
+    state_text: email ?? 'Not connected',
+    ...change
+  }
+}
+
+/** The sheet a card or a row opened. */
+const sheet = (key: string) => within(screen.getByTestId(`sheet-${key}`))
 
 function list(change: Partial<PluginsList> = {}): PluginsList {
   return {
@@ -104,6 +153,100 @@ describe('Settings, Plugins', () => {
     })
   })
 
+  it("turns Discord on for a bot and opens that bot's Discord settings", async () => {
+    const discord = (bots: string[], states: Connector['discord'] = {}) =>
+      ({
+        abilities: ['Each bot joins as its own Discord app, with its name and face'],
+        bots,
+        description: 'Bots join your Discord servers as their own Discord apps.',
+        discord: states,
+        enabled_bots: bots,
+        enabled_for_bot: null,
+        fields: [],
+        group: 'social_home',
+        icon: 'discord',
+        id: 'discord',
+        kind: 'connector',
+        last_error: null,
+        name: 'Discord',
+        ready: true,
+        scope: 'bot',
+        state: bots.length ? 'ready' : 'not_set_up',
+        state_text: bots.length ? '1 bot online' : 'Not set up'
+      }) as PluginsList['connectors'][number]
+
+    navigate.mockReset()
+    vi.mocked(pluginsSetBots).mockClear()
+    // The bot list is read again before the bot's settings open.
+    const refreshBots = vi.fn().mockResolvedValue(undefined)
+    useBots.setState({ refresh: refreshBots })
+    vi.mocked(pluginsList).mockResolvedValue(
+      list({ connectors: [{ ...search, bots: [], kind: 'connector', ready: true }, discord([])] })
+    )
+    render(<PluginsSettings />)
+    const card = await screen.findByTestId('plugin-connector:discord')
+    fireEvent.click(within(card).getByRole('button', { name: 'Set up' }))
+    const bots = sheet('connector:discord').getByRole('group', { name: 'Bots that use Discord' })
+    expect(within(bots).getAllByText('Off')).toHaveLength(2)
+    expect(sheet('connector:discord').queryByRole('button', { name: 'Test' })).toBeNull()
+    vi.mocked(pluginsList).mockResolvedValue(
+      list({
+        connectors: [
+          { ...search, bots: [], kind: 'connector', ready: true },
+          discord(['owl'], { owl: { error: null, status: 'not_connected', username: null } })
+        ]
+      })
+    )
+    fireEvent.click(within(bots).getByRole('switch', { name: 'Discord for Owl' }))
+    await waitFor(() =>
+      expect(pluginsSetBots).toHaveBeenCalledWith('connector', 'discord', ['owl'])
+    )
+    await waitFor(() =>
+      expect(navigate).toHaveBeenCalledWith({
+        params: { bot: 'owl', tab: 'discord' },
+        to: '/b/$bot/settings/$tab'
+      })
+    )
+    expect(refreshBots).toHaveBeenCalled()
+  })
+
+  it('disconnects a bot in Discord before turning Discord off for it', async () => {
+    vi.mocked(pluginsSetBots).mockClear()
+    vi.mocked(pluginsList).mockResolvedValue(
+      list({
+        connectors: [
+          { ...search, bots: [], kind: 'connector', ready: true },
+          {
+            bots: ['owl'],
+            description: 'Bots join your Discord servers as their own Discord apps.',
+            discord: { owl: { error: null, status: 'online', username: 'Owl' } },
+            enabled_bots: ['owl'],
+            enabled_for_bot: null,
+            fields: [],
+            group: 'social_home',
+            icon: 'discord',
+            id: 'discord',
+            kind: 'connector',
+            last_error: null,
+            name: 'Discord',
+            ready: true,
+            scope: 'bot',
+            state: 'ready',
+            state_text: '1 bot online'
+          }
+        ]
+      })
+    )
+    render(<PluginsSettings />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Discord' }))
+    const bots = sheet('connector:discord').getByRole('group', { name: 'Bots that use Discord' })
+    expect(within(bots).getByText('Online in Discord')).toBeVisible()
+    expect(within(bots).getByRole('button', { name: 'Open' })).toBeVisible()
+    fireEvent.click(within(bots).getByRole('switch', { name: 'Discord for Owl' }))
+    await waitFor(() => expect(discordDisconnect).toHaveBeenCalledWith('owl'))
+    await waitFor(() => expect(pluginsSetBots).toHaveBeenCalledWith('connector', 'discord', []))
+  })
+
   it('splits plugins into connectors, MCP servers and skills', async () => {
     render(<PluginsSettings />)
     expect(await screen.findByText('Web search')).toBeInTheDocument()
@@ -120,9 +263,9 @@ describe('Settings, Plugins', () => {
     expect(screen.getByText('Needs GITHUB_TOKEN')).toBeInTheDocument()
     expect(screen.queryByText('Web search')).not.toBeInTheDocument()
     await show('Skills')
-    expect(screen.getByText('Productivity')).toBeInTheDocument()
+    expect(screen.getByText('Built into Hexbot')).toBeInTheDocument()
     expect(screen.getByText('pdf')).toBeInTheDocument()
-    // Built-in tools live in Settings, Manuals.
+    // Hexbot's own tools aren't plugins: they come with every bot.
     expect(screen.queryByText('Built-in tools')).not.toBeInTheDocument()
     // The primary bot comes first.
     const picker = screen.getByRole('tablist', { name: 'Show plugins for' })
@@ -131,6 +274,111 @@ describe('Settings, Plugins', () => {
         .getAllByRole('tab')
         .map(tab => tab.textContent)
     ).toEqual(['Every bot', 'HexBot', 'Owl'])
+  })
+
+  it('adds a skill of your own for the bot in view, then opens it', async () => {
+    render(<PluginsSettings />)
+    await show('Skills')
+    fireEvent.click(screen.getByRole('tab', { name: 'Owl' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add skill' }))
+    const add = screen.getByRole('button', { name: 'Add skill' })
+    expect(add).toBeDisabled()
+    fireEvent.change(screen.getByLabelText('Skill name'), { target: { value: 'Release-Notes' } })
+    fireEvent.change(screen.getByLabelText('When to use the skill'), {
+      target: { value: 'Write release notes.' }
+    })
+    fireEvent.change(screen.getByLabelText('Skill instructions'), {
+      target: { value: 'List merged pull requests.' }
+    })
+    expect(screen.getByText(/On for Owl\./)).toBeInTheDocument()
+
+    const added = {
+      bots: ['owl'],
+      category: '',
+      description: 'Write release notes.',
+      enabled: true,
+      id: 'release-notes',
+      kind: 'skill' as const,
+      name: 'release-notes',
+      ready: true,
+      source: 'library'
+    }
+
+    vi.mocked(pluginsList).mockResolvedValue(list({ skills: [...list().skills, added] }))
+    fireEvent.click(add)
+    await waitFor(() =>
+      expect(skillsSave).toHaveBeenCalledWith({
+        botsDisabled: ['hexbot'],
+        content: '---\ndescription: "Write release notes."\n---\n\nList merged pull requests.\n',
+        name: 'release-notes'
+      })
+    )
+    // Its sheet opens to choose more bots, and a skill you added can be deleted.
+    await screen.findByTestId('sheet-skill:release-notes')
+    fireEvent.click(sheet('skill:release-notes').getByRole('button', { name: 'Delete skill' }))
+    await waitFor(() => expect(skillsDelete).toHaveBeenCalledWith('release-notes'))
+  })
+
+  it('lists the skills a connector comes with, and never deletes a built-in skill', async () => {
+    vi.mocked(pluginsList).mockResolvedValue(
+      list({
+        connectors: [
+          {
+            ...search,
+            bots: ['hexbot', 'owl'],
+            kind: 'connector',
+            ready: true,
+            skills: [
+              {
+                description: 'Recover blocked pages.',
+                disabled_globally: true,
+                name: 'blocked-page-recovery'
+              }
+            ]
+          }
+        ]
+      })
+    )
+    render(<PluginsSettings />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Web search' }))
+    expect(sheet('connector:web_search').getByText('Skills that come with it')).toBeInTheDocument()
+    expect(sheet('connector:web_search').getByText('blocked-page-recovery')).toBeInTheDocument()
+    // One switched off for every bot before it came with the connector is turned back on here.
+    fireEvent.click(sheet('connector:web_search').getByRole('button', { name: 'Turn on' }))
+    await waitFor(() => expect(skillsSetGlobal).toHaveBeenCalledWith('blocked-page-recovery', true))
+    fireEvent.click(sheet('connector:web_search').getByRole('button', { name: 'Done' }))
+    await show('Skills')
+    fireEvent.click(screen.getByRole('button', { name: 'pdf' }))
+    expect(sheet('skill:pdf').queryByRole('button', { name: 'Delete skill' })).toBeNull()
+  })
+
+  it('shows the server a tag in a message named, on a first visit', async () => {
+    usePlugins.getState().seek({ kind: 'plugin', name: 'GitHub' })
+    render(<PluginsSettings />)
+    // Its tab, searched for it, once the list is in.
+    expect(await screen.findByLabelText('Search MCP servers')).toHaveValue('github')
+    expect(screen.getByText('Needs GITHUB_TOKEN')).toBeInTheDocument()
+    expect(usePlugins.getState().sought).toBeNull()
+  })
+
+  it('shows the connector a tag names a skill of', async () => {
+    vi.mocked(pluginsList).mockResolvedValue(
+      list({
+        connectors: [
+          {
+            ...search,
+            bots: ['hexbot'],
+            kind: 'connector',
+            ready: true,
+            skills: [{ description: 'Recover blocked pages.', name: 'blocked-page-recovery' }]
+          }
+        ]
+      })
+    )
+    usePlugins.getState().seek({ kind: 'skill', name: 'blocked-page-recovery' })
+    render(<PluginsSettings />)
+    expect(await screen.findByLabelText('Search connectors')).toHaveValue('Web search')
+    expect(screen.getByTestId('plugin-connector:web_search')).toBeInTheDocument()
   })
 
   it('searches only the kind you are looking at', async () => {
@@ -144,16 +392,21 @@ describe('Settings, Plugins', () => {
   it('chooses the bots that get a package', async () => {
     render(<PluginsSettings />)
     await show('MCP servers')
-    fireEvent.click(await screen.findByText('github'))
+    fireEvent.click(await screen.findByRole('button', { name: 'github' }))
     const picker = screen.getByRole('group', { name: 'Bots that use github' })
-    const hexbot = within(picker).getByRole('button', { name: 'HexBot' })
-    expect(hexbot).toHaveAttribute('aria-pressed', 'false')
+    const hexbot = within(picker).getByRole('switch', { name: 'github for HexBot' })
+    expect(hexbot).not.toBeChecked()
+    expect(within(picker).getByRole('switch', { name: 'github for Owl' })).toBeChecked()
     fireEvent.click(hexbot)
     await waitFor(() =>
       expect(pluginsSetBots).toHaveBeenCalledWith('package', 'github', ['owl', 'hexbot'])
     )
     expect(screen.getByText('github-issues')).toBeInTheDocument()
     expect(screen.getByText('Asked for by Owl.')).toBeInTheDocument()
+    // Done closes the sheet and leaves the row.
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }))
+    await waitFor(() => expect(screen.queryByTestId('sheet-package:github')).toBeNull())
+    expect(screen.getByRole('button', { name: 'github' })).toBeInTheDocument()
   })
 
   it('shows one switch per plugin for the bot you pick', async () => {
@@ -171,7 +424,7 @@ describe('Settings, Plugins', () => {
   it('fills in a server value without sending the others back', async () => {
     render(<PluginsSettings />)
     await show('MCP servers')
-    fireEvent.click(await screen.findByText('github'))
+    fireEvent.click(await screen.findByRole('button', { name: 'github' }))
     fireEvent.change(screen.getByLabelText('GITHUB_TOKEN for github'), {
       target: { value: 'ghp_0123456789' }
     })
@@ -217,27 +470,115 @@ describe('Settings, Plugins', () => {
   it('removes a package for every bot', async () => {
     render(<PluginsSettings />)
     await show('MCP servers')
-    fireEvent.click(await screen.findByText('github'))
+    fireEvent.click(await screen.findByRole('button', { name: 'github' }))
     fireEvent.click(screen.getByRole('button', { name: 'Remove' }))
     await waitFor(() => expect(pluginsRemove).toHaveBeenCalledWith('github'))
+    // The sheet goes with what it showed.
     await waitFor(() => expect(screen.queryByText('github')).not.toBeInTheDocument())
   })
 
-  it('leaves a connector without a daemon key to the daemon, which knows bot keys', async () => {
+  it('offers set up, not bots, for a plugin that is not set up', async () => {
+    vi.mocked(pluginsSetBots).mockClear()
     const unset = { ...search, state: 'not_set_up' as const, state_text: 'Not set up' }
     vi.mocked(pluginsList).mockResolvedValue(
       list({ connectors: [{ ...unset, bots: [], kind: 'connector', ready: false }] })
     )
-    vi.mocked(pluginsSetBots).mockRejectedValueOnce(
-      new Error('Set up Web search before giving it to a bot.')
+    render(<PluginsSettings />)
+    // Not connected, it sits on its shelf with what it is for and one button.
+    const card = within(await screen.findByTestId('plugin-connector:web_search'))
+    expect(card.getByText('Search the web and read pages.')).toBeInTheDocument()
+    expect(card.getByRole('button', { name: 'Set up' })).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Connected' })).toBeNull()
+    fireEvent.click(screen.getByRole('tab', { name: 'Owl' }))
+    expect(screen.queryByRole('switch', { name: 'Web search for Owl' })).toBeNull()
+    fireEvent.click(card.getByRole('button', { name: 'Set up' }))
+    expect(screen.getByText('Set up Web search before giving it to a bot.')).toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'Bots that use Web search' })).toBeNull()
+    expect(pluginsSetBots).not.toHaveBeenCalled()
+  })
+
+  it('still takes a plugin that is not set up away from a bot that has it', async () => {
+    const unset = { ...search, state: 'not_set_up' as const, state_text: 'Not set up' }
+    vi.mocked(pluginsList).mockResolvedValue(
+      list({ connectors: [{ ...unset, bots: ['owl'], kind: 'connector', ready: false }] })
     )
     render(<PluginsSettings />)
-    fireEvent.click(await screen.findByText('Web search'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Web search' }))
     const picker = screen.getByRole('group', { name: 'Bots that use Web search' })
-    fireEvent.click(within(picker).getByRole('button', { name: 'HexBot' }))
-    expect(
-      await screen.findByText('Set up Web search before giving it to a bot.')
-    ).toBeInTheDocument()
+    expect(within(picker).getByRole('switch', { name: 'Web search for HexBot' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Turn on for every bot' })).toBeNull()
+    fireEvent.click(within(picker).getByRole('switch', { name: 'Web search for Owl' }))
+    await waitFor(() => expect(pluginsSetBots).toHaveBeenCalledWith('connector', 'web_search', []))
+  })
+
+  it('gives a plugin to a bot whose own settings hold its key', async () => {
+    const unset = { ...search, state: 'not_set_up' as const, state_text: 'Not set up' }
+    vi.mocked(pluginsList).mockResolvedValue(
+      list({
+        connectors: [{ ...unset, bots: [], kind: 'connector', ready: false, ready_bots: ['owl'] }]
+      })
+    )
+    render(<PluginsSettings />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Web search' }))
+    const picker = screen.getByRole('group', { name: 'Bots that use Web search' })
+    expect(within(picker).getByRole('switch', { name: 'Web search for HexBot' })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Turn on for every bot' })).toBeNull()
+    // On for no bot yet, so there is nothing to turn off.
+    expect(screen.queryByRole('button', { name: 'Turn off for every bot' })).toBeNull()
+    fireEvent.click(within(picker).getByRole('switch', { name: 'Web search for Owl' }))
+    await waitFor(() =>
+      expect(pluginsSetBots).toHaveBeenCalledWith('connector', 'web_search', ['owl'])
+    )
+  })
+
+  it('keeps a grant waiting for setup when another bot changes', async () => {
+    vi.mocked(pluginsSetBots).mockClear()
+    const unset = { ...search, state: 'not_set_up' as const, state_text: 'Not set up' }
+    vi.mocked(pluginsList).mockResolvedValue(
+      list({
+        connectors: [
+          {
+            ...unset,
+            bots: ['owl'],
+            kind: 'connector',
+            ready: false,
+            ready_bots: ['owl'],
+            waiting_bots: ['hexbot']
+          }
+        ]
+      })
+    )
+    render(<PluginsSettings />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Web search' }))
+    const picker = screen.getByRole('group', { name: 'Bots that use Web search' })
+    expect(within(picker).getByRole('switch', { name: 'Web search for HexBot' })).not.toBeChecked()
+    fireEvent.click(within(picker).getByRole('switch', { name: 'Web search for Owl' }))
+    await waitFor(() =>
+      expect(pluginsSetBots).toHaveBeenCalledWith('connector', 'web_search', ['hexbot'])
+    )
+  })
+
+  it('turning a plugin off for every bot also drops a grant waiting for setup', async () => {
+    vi.mocked(pluginsSetBots).mockClear()
+    const unset = { ...search, state: 'not_set_up' as const, state_text: 'Not set up' }
+    vi.mocked(pluginsList).mockResolvedValue(
+      list({
+        connectors: [
+          {
+            ...unset,
+            bots: ['owl'],
+            kind: 'connector',
+            ready: false,
+            ready_bots: ['owl'],
+            waiting_bots: ['hexbot']
+          }
+        ]
+      })
+    )
+    render(<PluginsSettings />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Web search' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Turn off for every bot' }))
+    await waitFor(() => expect(pluginsSetBots).toHaveBeenCalledWith('connector', 'web_search', []))
   })
 
   it('turns a skill that is off for every bot back on', async () => {
@@ -248,20 +589,195 @@ describe('Settings, Plugins', () => {
     })
     render(<PluginsSettings />)
     await show('Skills')
-    fireEvent.click(await screen.findByText('pdf'))
+    fireEvent.click(await screen.findByRole('button', { name: 'pdf' }))
     fireEvent.click(screen.getByRole('button', { name: 'Undo Off for every bot' }))
     await waitFor(() => expect(skillsSetGlobal).toHaveBeenCalledWith('pdf', true))
   })
 
-  it('keeps the latest list when an older refresh answers last', async () => {
-    let answerOld: (value: PluginsList) => void = () => {}
+  it('shelves what is connected first, then what each account still offers', async () => {
+    vi.mocked(pluginsList).mockResolvedValue(
+      list({
+        connectors: [
+          { ...search, bots: ['hexbot', 'owl'], kind: 'connector', ready: true },
+          account('gmail', 'Gmail', 'google', 'ana@example.com', { bots: ['hexbot'] }),
+          account('google_calendar', 'Google Calendar', 'google'),
+          account('word', 'Word', 'microsoft')
+        ]
+      })
+    )
+    render(<PluginsSettings />)
+    const connected = within(await screen.findByRole('region', { name: 'Connected' }))
+    // Connected, a card shows its account and the bots that have it.
+    const gmail = within(connected.getByTestId('plugin-connector:gmail'))
+    expect(gmail.getByText('ana@example.com')).toBeInTheDocument()
+    expect(gmail.getByText('HexBot')).toBeInTheDocument()
+    expect(gmail.queryByRole('button', { name: 'Connect' })).toBeNull()
+    expect(connected.getByTestId('plugin-connector:web_search')).toBeInTheDocument()
+    // The rest sit under their account, each with what it is for.
+    const google = within(screen.getByRole('region', { name: 'Google' }))
+    expect(google.getByText('Work in Google Calendar.')).toBeInTheDocument()
+    expect(google.getByRole('button', { name: 'Connect' })).toBeInTheDocument()
+    expect(google.queryByText('Gmail')).toBeNull()
+    expect(
+      within(screen.getByRole('region', { name: 'Microsoft' })).getByText('Word')
+    ).toBeInTheDocument()
+    // With a bot in view, a connected card carries that bot's switch.
+    fireEvent.click(screen.getByRole('tab', { name: 'Owl' }))
+    fireEvent.click(screen.getByRole('switch', { name: 'Gmail for Owl' }))
+    await waitFor(() =>
+      expect(pluginsSetBots).toHaveBeenCalledWith('connector', 'gmail', ['hexbot', 'owl'])
+    )
+    // An account's name finds its connectors.
+    fireEvent.change(screen.getByLabelText('Search connectors'), { target: { value: 'microsoft' } })
+    expect(screen.getByText('Word')).toBeInTheDocument()
+    expect(screen.queryByText('Google Calendar')).toBeNull()
+  })
+
+  it('connects a connector, and others of its account, in one sign-in for the bots chosen', async () => {
+    vi.mocked(pluginsSetBots).mockClear()
+    vi.mocked(pluginsList).mockResolvedValue(
+      list({
+        connectors: [
+          account('gmail', 'Gmail', 'google'),
+          account('google_calendar', 'Google Calendar', 'google', null, {
+            waiting_bots: ['owl']
+          }),
+          account('google_drive', 'Google Drive', 'google', 'ana@example.com'),
+          account('word', 'Word', 'microsoft')
+        ]
+      })
+    )
+    vi.mocked(accountsSignInStart).mockResolvedValue({
+      connected: ['gmail', 'google_calendar'],
+      email: 'ana@example.com',
+      login_id: 'l1',
+      message: 'Connected Gmail and Google Calendar.',
+      mode: 'browser',
+      service: 'gmail',
+      status: 'done',
+      url: 'https://accounts.google.com/x'
+    })
+    render(<PluginsSettings />)
+    const card = within(await screen.findByTestId('plugin-connector:gmail'))
+    fireEvent.click(card.getByRole('button', { name: 'Connect' }))
+    const opened = sheet('connector:gmail')
+    expect(opened.getByText('Find and read your Gmail')).toBeInTheDocument()
+    // The primary bot gets it unless the user says otherwise.
+    const give = opened.getByRole('group', { name: 'Bots that get Gmail' })
+    expect(within(give).getByRole('button', { name: 'HexBot' })).toHaveAttribute(
+      'aria-pressed',
+      'true'
+    )
+    expect(within(give).getByRole('button', { name: 'Owl' })).toHaveAttribute(
+      'aria-pressed',
+      'false'
+    )
+    // Only the same account's connectors that still wait are offered.
+    expect(opened.getByLabelText('Also connect Google Calendar')).not.toBeChecked()
+    expect(opened.queryByLabelText('Also connect Google Drive')).toBeNull()
+    expect(opened.queryByLabelText('Also connect Word')).toBeNull()
+    fireEvent.click(opened.getByLabelText('Also connect Google Calendar'))
+    fireEvent.click(opened.getByRole('button', { name: 'Sign in with Google' }))
+    await waitFor(() =>
+      expect(accountsSignInStart).toHaveBeenCalledWith('gmail', ['google_calendar'], undefined)
+    )
+    // Each connector it connected goes to the chosen bot, and a bot that
+    // was waiting for one keeps it.
+    await waitFor(() =>
+      expect(pluginsSetBots).toHaveBeenCalledWith('connector', 'gmail', ['hexbot'])
+    )
+    expect(pluginsSetBots).toHaveBeenCalledWith('connector', 'google_calendar', ['hexbot', 'owl'])
+  })
+
+  it('disconnects one connector and signs in again when a sign-in stopped working', async () => {
+    vi.mocked(pluginsSetBots).mockClear()
+    vi.mocked(pluginsList).mockResolvedValue(
+      list({
+        connectors: [
+          account('gmail', 'Gmail', 'google', 'ana@example.com', { bots: ['hexbot'] }),
+          account('outlook', 'Outlook', 'microsoft', 'sam@contoso.com', {
+            ready: false,
+            state: 'error',
+            state_text: 'Sign in again',
+            waiting_bots: ['owl']
+          })
+        ]
+      })
+    )
+    render(<PluginsSettings />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Gmail' }))
+    const gmail = sheet('connector:gmail')
+    expect(gmail.getByText('Signed in as ana@example.com')).toBeInTheDocument()
+    expect(gmail.getByRole('switch', { name: 'Gmail for HexBot' })).toBeChecked()
+    fireEvent.click(gmail.getByRole('button', { name: 'Disconnect' }))
+    await waitFor(() => expect(accountsDisconnect).toHaveBeenCalledWith('gmail'))
+    fireEvent.click(gmail.getByRole('button', { name: 'Done' }))
+    await waitFor(() => expect(screen.queryByTestId('sheet-connector:gmail')).toBeNull())
+
+    // A sign-in that stopped working asks for it again and keeps its bots.
+    const card = within(screen.getByTestId('plugin-connector:outlook'))
+    expect(card.getByText('Sign in again')).toBeInTheDocument()
+    fireEvent.click(card.getByRole('button', { name: 'Fix' }))
+    const outlook = sheet('connector:outlook')
+    expect(outlook.getByText(/sign-in for sam@contoso.com stopped working/)).toBeInTheDocument()
+    expect(outlook.getByRole('button', { name: 'Sign in with Microsoft' })).toBeInTheDocument()
+    expect(outlook.queryByRole('group', { name: 'Bots that get Outlook' })).toBeNull()
+    // Its bots wait for the new sign-in; one can be taken off meanwhile,
+    // and nothing adds it back.
+    const owl = outlook.getByRole('switch', { name: 'Outlook for Owl' })
+    expect(owl).toBeChecked()
+    expect(outlook.getByRole('switch', { name: 'Outlook for HexBot' })).toBeDisabled()
+    fireEvent.click(owl)
+    await waitFor(() => expect(pluginsSetBots).toHaveBeenCalledWith('connector', 'outlook', []))
+    // A sign-in that no longer works can still be removed.
+    fireEvent.click(outlook.getByRole('button', { name: 'Disconnect' }))
+    await waitFor(() => expect(accountsDisconnect).toHaveBeenCalledWith('outlook'))
+  })
+
+  it('takes waiting bots off one after another without bringing one back', async () => {
+    vi.mocked(pluginsSetBots).mockClear()
+    vi.mocked(pluginsList).mockResolvedValue(
+      list({
+        connectors: [
+          account('outlook', 'Outlook', 'microsoft', 'sam@contoso.com', {
+            ready: false,
+            state: 'error',
+            state_text: 'Sign in again',
+            waiting_bots: ['owl', 'hexbot']
+          })
+        ]
+      })
+    )
+    // The daemon has not answered the first change when the second is made.
+    vi.mocked(pluginsSetBots).mockReturnValue(new Promise(() => {}))
+    render(<PluginsSettings />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Outlook' }))
+    const outlook = sheet('connector:outlook')
+    fireEvent.click(outlook.getByRole('switch', { name: 'Outlook for Owl' }))
+    await waitFor(() =>
+      expect(pluginsSetBots).toHaveBeenLastCalledWith('connector', 'outlook', ['hexbot'])
+    )
+    expect(outlook.getByRole('switch', { name: 'Outlook for Owl' })).not.toBeChecked()
+    fireEvent.click(outlook.getByRole('switch', { name: 'Outlook for HexBot' }))
+    await waitFor(() => expect(pluginsSetBots).toHaveBeenLastCalledWith('connector', 'outlook', []))
+    vi.mocked(pluginsSetBots).mockResolvedValue({} as never)
+  })
+
+  it('reads the list once at a time, and one read after it answers every ask made meanwhile', async () => {
+    let answerFirst: (value: PluginsList) => void = () => {}
+    const before = vi.mocked(pluginsList).mock.calls.length
     vi.mocked(pluginsList)
-      .mockImplementationOnce(() => new Promise(resolve => (answerOld = resolve)))
+      .mockImplementationOnce(() => new Promise(resolve => (answerFirst = resolve)))
       .mockResolvedValueOnce(list({ connectors: [], packages: [] }))
     const first = usePlugins.getState().refresh()
-    await usePlugins.getState().refresh()
-    answerOld(list())
-    await first
+    // A change sends several events; each asks for the list while the first read is on its way.
+    const second = usePlugins.getState().refresh()
+    const third = usePlugins.getState().refresh()
+    expect(vi.mocked(pluginsList).mock.calls.length - before).toBe(1)
+    answerFirst(list())
+    await Promise.all([first, second, third])
+    expect(vi.mocked(pluginsList).mock.calls.length - before).toBe(2)
+    // The later read is the one the page shows.
     expect(usePlugins.getState().plugins.map(item => item.id)).toEqual(['pdf'])
     expect(usePlugins.getState().loading).toBe(false)
   })

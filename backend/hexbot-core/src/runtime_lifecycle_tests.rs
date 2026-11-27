@@ -9,6 +9,8 @@ mod stop_tests;
 #[path = "runtime_admission_tests.rs"]
 mod admission_tests;
 
+#[path = "runtime_mail_tests.rs"]
+mod mail_tests;
 #[cfg(unix)]
 #[path = "runtime_passwords_tests.rs"]
 mod passwords_tests;
@@ -17,6 +19,8 @@ mod passwords_tests;
 mod pi_file_tests;
 #[path = "runtime_recall_tests.rs"]
 mod recall_tests;
+#[path = "runtime_workspace_tests.rs"]
+mod workspace_tests;
 
 fn setup() -> (common::TestHome, Arc<Runtime>, EventHub) {
     let home = common::TestHome::new();
@@ -78,6 +82,268 @@ async fn open(runtime: &Runtime) -> String {
         .as_str()
         .unwrap()
         .to_owned()
+}
+
+#[tokio::test]
+async fn removing_one_upload_keeps_the_others_and_checks_owner() {
+    let (_home, runtime, _) = setup();
+    let id = open(&runtime).await;
+    let attach = |name: &str| json!({"session_id":id,"name":name,"data_url":"data:text/plain;base64,aGVsbG8="});
+    let gone = runtime
+        .call("alice", "file.attach", &attach("gone.txt"))
+        .await
+        .unwrap()
+        .unwrap();
+    let kept = runtime
+        .call("alice", "file.attach", &attach("kept.txt"))
+        .await
+        .unwrap()
+        .unwrap();
+    let remove = json!({"session_id":id,"id":gone["id"]});
+    assert_eq!(
+        runtime
+            .call("bob", "attachments.remove", &remove)
+            .await
+            .unwrap()
+            .unwrap_err()
+            .code,
+        4001
+    );
+    let live = runtime.sessions.lock().unwrap()["first"].clone();
+    // A turn on its way does not stop the user tidying the composer.
+    live.state.lock().unwrap().busy = true;
+    runtime
+        .call("alice", "attachments.remove", &remove)
+        .await
+        .unwrap()
+        .unwrap();
+    live.state.lock().unwrap().busy = false;
+    assert!(!PathBuf::from(gone["path"].as_str().unwrap()).exists());
+    assert!(PathBuf::from(kept["path"].as_str().unwrap()).exists());
+    let staged = live
+        .state
+        .lock()
+        .unwrap()
+        .staged
+        .iter()
+        .map(|u| u.id.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(staged, vec![kept["id"].as_str().unwrap().to_owned()]);
+    assert_eq!(
+        runtime
+            .call("alice", "attachments.remove", &remove)
+            .await
+            .unwrap()
+            .unwrap_err()
+            .code,
+        4204
+    );
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_file_sent_in_parts_is_staged_whole_and_its_parts_go() {
+    let (_home, runtime, _) = setup();
+    let id = open(&runtime).await;
+    let part = |upload: &str, offset: u64, data: &[u8]| {
+        json!({"session_id":id,"upload":upload,"offset":offset,
+            "data":base64::engine::general_purpose::STANDARD.encode(data)})
+    };
+    let call = |method: &'static str, p: Value| {
+        let runtime = &runtime;
+        async move { runtime.call("alice", method, &p).await.unwrap() }
+    };
+    for (offset, data) in [(0, &b"hello "[..]), (6, b"in "), (9, b"parts")] {
+        let sent = call("attachments.part", part("note", offset, data))
+            .await
+            .unwrap();
+        assert_eq!(sent["received"], offset + data.len() as u64);
+    }
+    // Parts go in order; a gap or a repeat is refused and changes nothing.
+    assert_eq!(
+        call("attachments.part", part("note", 3, b"x"))
+            .await
+            .unwrap_err()
+            .code,
+        4202
+    );
+    assert_eq!(
+        call("attachments.part", part("lost", 5, b"x"))
+            .await
+            .unwrap_err()
+            .code,
+        4204
+    );
+    let attached = call(
+        "file.attach",
+        json!({"session_id":id,"name":"note.txt","upload":"note"}),
+    )
+    .await
+    .unwrap();
+    let path = PathBuf::from(attached["path"].as_str().unwrap());
+    assert_eq!(fs::read(&path).unwrap(), b"hello in parts");
+    assert!(
+        !path
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("uploads/note.part")
+            .exists()
+    );
+    // Named once: the parts are gone with the attach that took them.
+    let again = json!({"session_id":id,"name":"note.txt","upload":"note"});
+    assert_eq!(call("file.attach", again).await.unwrap_err().code, 4204);
+
+    // A file of no bytes is one empty part.
+    call("attachments.part", part("empty", 0, b""))
+        .await
+        .unwrap();
+    let empty = call(
+        "file.attach",
+        json!({"session_id":id,"name":"empty.txt","upload":"empty"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(fs::read(empty["path"].as_str().unwrap()).unwrap(), b"");
+
+    // A picture goes the same way, checked as a picture.
+    let png = b"\x89PNG\r\n\x1a\nrest of the picture";
+    call("attachments.part", part("photo", 0, png))
+        .await
+        .unwrap();
+    let image = json!({"session_id":id,"filename":"photo.png","upload":"photo"});
+    assert_eq!(call("image.attach_bytes", image).await.unwrap()["count"], 3);
+    call("attachments.part", part("text", 0, b"not a picture"))
+        .await
+        .unwrap();
+    let wrong = json!({"session_id":id,"filename":"photo.png","upload":"text"});
+    assert_eq!(
+        call("image.attach_bytes", wrong).await.unwrap_err().code,
+        4017
+    );
+    assert_eq!(
+        runtime
+            .call("bob", "attachments.part", &part("note", 0, b"x"))
+            .await
+            .unwrap()
+            .unwrap_err()
+            .code,
+        4001
+    );
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_file_left_in_a_composer_does_not_keep_its_bot_running() {
+    let (_home, runtime, _) = setup();
+    let id = open(&runtime).await;
+    let file = runtime
+        .call(
+            "alice",
+            "file.attach",
+            &json!({"session_id":id,"name":"left.txt","data_url":"data:text/plain;base64,aGVsbG8="}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    // Idle, the process retires; the upload waits for the chat's next open.
+    assert_eq!(runtime.retire_idle(common::now() + 1.).await.unwrap(), 1);
+    assert!(runtime.sessions.lock().unwrap().is_empty());
+    assert!(Path::new(file["path"].as_str().unwrap()).is_file());
+    assert_eq!(open(&runtime).await, id);
+    let live = runtime.sessions.lock().unwrap()["first"].clone();
+    let staged = live
+        .state
+        .lock()
+        .unwrap()
+        .staged
+        .iter()
+        .map(|u| u.id.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(staged, vec![file["id"].as_str().unwrap().to_owned()]);
+    // A day later, still unsent, it goes when the process next retires.
+    live.state.lock().unwrap().staged[0].at -= STAGED_TTL;
+    assert_eq!(runtime.retire_idle(common::now() + 1.).await.unwrap(), 1);
+    assert!(!Path::new(file["path"].as_str().unwrap()).exists());
+    assert_eq!(open(&runtime).await, id);
+    let live = runtime.sessions.lock().unwrap()["first"].clone();
+    assert!(live.state.lock().unwrap().staged.is_empty());
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn taking_back_a_parked_upload_does_not_start_the_bot() {
+    let (_home, runtime, _) = setup();
+    let id = open(&runtime).await;
+    let attach = |name: &str| json!({"session_id":id,"name":name,"data_url":"data:text/plain;base64,aGVsbG8="});
+    let gone = runtime
+        .call("alice", "file.attach", &attach("gone.txt"))
+        .await
+        .unwrap()
+        .unwrap();
+    let kept = runtime
+        .call("alice", "file.attach", &attach("kept.txt"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(runtime.retire_idle(common::now() + 1.).await.unwrap(), 1);
+    let remove = json!({"session_id":id,"id":gone["id"]});
+    // Another user cannot reach it.
+    assert!(
+        runtime
+            .call("bob", "attachments.remove", &remove)
+            .await
+            .unwrap()
+            .is_err()
+    );
+    runtime
+        .call("alice", "attachments.remove", &remove)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(runtime.sessions.lock().unwrap().is_empty());
+    assert!(!Path::new(gone["path"].as_str().unwrap()).exists());
+    assert!(Path::new(kept["path"].as_str().unwrap()).exists());
+    let parked = runtime.parked.lock().unwrap()["first"]
+        .uploads
+        .iter()
+        .map(|u| u.id.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(parked, vec![kept["id"].as_str().unwrap().to_owned()]);
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_parked_upload_nobody_sends_goes_after_a_day_without_the_chat_opening() {
+    let (_home, runtime, _) = setup();
+    let id = open(&runtime).await;
+    let file = runtime
+        .call(
+            "alice",
+            "file.attach",
+            &json!({"session_id":id,"name":"left.txt","data_url":"data:text/plain;base64,aGVsbG8="}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(runtime.retire_idle(common::now() + 1.).await.unwrap(), 1);
+    assert_eq!(runtime.parked.lock().unwrap()["first"].uploads.len(), 1);
+    // A later maintenance pass keeps it while it is young, and drops it after a day.
+    assert_eq!(runtime.retire_idle(common::now() + 1.).await.unwrap(), 0);
+    assert_eq!(runtime.parked.lock().unwrap().len(), 1);
+    runtime
+        .parked
+        .lock()
+        .unwrap()
+        .get_mut("first")
+        .unwrap()
+        .uploads[0]
+        .at -= STAGED_TTL;
+    assert_eq!(runtime.retire_idle(common::now() + 1.).await.unwrap(), 0);
+    assert!(runtime.parked.lock().unwrap().is_empty());
+    assert!(!Path::new(file["path"].as_str().unwrap()).exists());
+    runtime.shutdown().await;
 }
 
 #[tokio::test]
@@ -182,13 +448,32 @@ async fn a_bot_asks_before_installing_a_plugin_for_itself() {
     assert!(!home.path().join("plugins/echo").exists());
     let (_, installed) = ask("once").await;
     let installed = installed.unwrap();
-    assert_eq!(installed["on"], true);
+    // Its token is empty, so it reaches no bot until the user fills it in.
+    assert_eq!(installed["on"], false);
     let note = installed["note"].as_str().unwrap();
     assert!(
-        note.contains("skill_view") && note.contains("Needs ECHO_TOKEN"),
+        note.contains("Needs ECHO_TOKEN") && !note.contains("skill_view"),
         "{note}"
     );
-    // On for the bot that asked, and only for it.
+    assert!(
+        crate::connectors::mcp_servers(home.path(), "owl")
+            .unwrap()
+            .get("echo")
+            .is_none()
+    );
+    assert!(
+        !crate::catalog::enabled_skills(home.path(), "owl")
+            .unwrap()
+            .iter()
+            .any(|s| s["name"] == "echo-usage")
+    );
+    crate::plugins::configure(
+        home.path(),
+        "echo",
+        &json!({"env": {"ECHO_TOKEN": "secret"}}),
+    )
+    .unwrap();
+    // Then on for the bot that asked, and only for it.
     assert!(
         crate::connectors::mcp_servers(home.path(), "owl")
             .unwrap()
@@ -313,29 +598,35 @@ async fn a_bot_asks_for_a_plugins_keys_on_a_card() {
     };
 
     // A connector's keys, even in Bypass: the card names the fields only.
-    let task = tool(json!({"action":"setup","id":"connector:home_assistant"}));
+    // Nothing answers for X here, so its test fails.
+    let mut env = fs::read_to_string(home.path().join(".env")).unwrap_or_default();
+    env.push_str("\nHEXBOT_X_API_BASE_URL=http://127.0.0.1:9\n");
+    fs::write(home.path().join(".env"), env).unwrap();
+    let task = tool(json!({"action":"setup","id":"connector:x_search"}));
     let shown = card(&mut events).await;
     let form = &shown["form"];
     assert_eq!(form["kind"], "plugin");
     assert_eq!(form["action"], "setup");
-    assert_eq!(form["name"], "Home Assistant");
-    assert_eq!(form["icon"], "homeassistant");
+    assert_eq!(form["name"], "X search");
+    assert_eq!(form["icon"], "x");
+    assert_eq!(form["provider"], "supergrok");
+    assert_eq!(form["providers"][0]["sign_in"], "xai-oauth");
     let keys = form["fields"]
         .as_array()
         .unwrap()
         .iter()
         .map(|f| f["key"].clone())
         .collect::<Vec<_>>();
-    assert_eq!(keys, [json!("HASS_URL"), json!("HASS_TOKEN")]);
+    assert_eq!(keys, [json!("XAI_API_KEY"), json!("X_BEARER_TOKEN")]);
     // A key left out keeps the card waiting; one it lacks is ignored.
-    let missing = respond(&shown, json!({"values":{"HASS_URL":"http://127.0.0.1:9"}}))
+    let missing = respond(&shown, json!({"provider":"x_api","values":{}}))
         .await
         .unwrap_err();
     assert_eq!(missing.code, 4202);
-    assert_eq!(missing.message, "Enter the Long-lived access token.");
+    assert_eq!(missing.message, "Enter the X API bearer token.");
     respond(
         &shown,
-        json!({"values":{"HASS_URL":"http://127.0.0.1:9","HASS_TOKEN":"ha-secret-token","OPENAI_API_KEY":"sk-nope"}}),
+        json!({"provider":"x_api","values":{"X_BEARER_TOKEN":"ha-secret-token","OPENAI_API_KEY":"sk-nope"}}),
     )
     .await
     .unwrap();
@@ -346,7 +637,7 @@ async fn a_bot_asks_for_a_plugins_keys_on_a_card() {
         "{done}"
     );
     assert!(!done.to_string().contains("ha-secret-token"));
-    let connector = crate::connectors::get(home.path(), None, "home_assistant").unwrap();
+    let connector = crate::connectors::get(home.path(), None, "x_search").unwrap();
     assert_eq!(connector["ready"], true);
     // Nothing typed reaches an event.
     while let Ok(event) = events.try_recv() {
@@ -382,6 +673,53 @@ async fn a_bot_asks_for_a_plugins_keys_on_a_card() {
         common::read_config(home.path()).unwrap()["mcp_servers"]["echo"]["env"]["ECHO_TOKEN"],
         "echo-secret"
     );
+
+    // A failure after the user agreed says so, so the apps show the card
+    // again from history as one that didn't work.
+    let task = tool(json!({
+        "action": "install",
+        "name": "echo",
+        "mcp": {"command": "node", "args": ["echo.js"]},
+    }));
+    let shown = card(&mut events).await;
+    respond(&shown, json!({})).await.unwrap();
+    let failed = task.await.unwrap().unwrap_err();
+    assert_eq!(failed.code, 4208);
+    assert!(
+        failed
+            .message
+            .starts_with("The user agreed on the card, but it didn't work: "),
+        "{}",
+        failed.message
+    );
+
+    // A card names the Pi tool call that showed it, so the apps tell it from
+    // the card they rebuild from history. Called directly, a tool has none.
+    assert!(shown.get("tool_id").is_none());
+    let named = json!({
+        "name": "hexbot_plugins",
+        "args": {"action": "install", "name": "named", "mcp": {"command": "node", "args": ["echo.js"]}},
+        "id": "call-7",
+    });
+    runtime
+        .event(
+            &s,
+            json!({"type":"extension_ui_request","id":"probe:named","method":"input","title":format!("__HEXBOT_TOOL__{named}")}),
+        )
+        .unwrap();
+    let shown = card(&mut events).await;
+    assert_eq!(shown["tool_id"], "call-7");
+    // Said no to, the card leaves its tool nothing to finish for Stop to wait on.
+    runtime
+        .call(
+            "alice",
+            "approval.respond",
+            &json!({"session_id":s.id,"request_id":shown["request_id"],"choice":"deny"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(s.state.lock().unwrap().finishing.is_empty());
 
     // A server that quotes the token it refused: the test error the bot
     // reads, and the one saved for later, leave the token out.
@@ -878,7 +1216,8 @@ async fn idle_restart_preserves_live_id_prompt_tools_and_client_watermarks() {
     let after = processes(home.path());
     // The chat restarts once, with its bot's new tools; it keeps its model.
     assert_eq!(after.len(), 2);
-    // Every bot has Computer use, whatever its saved toolsets say.
+    // On a daemon from before computers every bot has Computer use,
+    // whatever its saved toolsets say.
     assert_eq!(
         after[1]["config"]["enabledToolsets"],
         json!(["terminal", "computer_use"])
@@ -1090,33 +1429,19 @@ async fn sections_report_context_usage_and_compaction_point() {
 }
 
 #[tokio::test]
-async fn retire_skips_staged_attachments_busy_turns_and_pending_dialogs() {
+// Staged uploads no longer keep a process: they park
+// (`a_file_left_in_a_composer_does_not_keep_its_bot_running`).
+async fn retire_skips_busy_turns_and_pending_dialogs() {
     let (_home, runtime, _) = setup();
     let id = open(&runtime).await;
     let s = runtime.sessions.lock().unwrap()["first"].clone();
-    for kind in ["busy", "pending", "image", "file"] {
+    for kind in ["busy", "pending"] {
         {
             let mut state = s.state.lock().unwrap();
             state.last_activity = 0.;
             state.busy = kind == "busy";
             if kind == "pending" {
                 state.pending.insert("question".into(), json!({}));
-            }
-            if kind == "image" || kind == "file" {
-                state.staged.push(Staged {
-                    id: kind.into(),
-                    images: if kind == "image" {
-                        vec![json!({"type":"image"})]
-                    } else {
-                        vec![]
-                    },
-                    refs: if kind == "file" {
-                        vec!["note.txt".into()]
-                    } else {
-                        vec![]
-                    },
-                    files: vec![],
-                });
             }
         }
         assert_eq!(
@@ -1127,7 +1452,6 @@ async fn retire_skips_staged_attachments_busy_turns_and_pending_dialogs() {
         let mut state = s.state.lock().unwrap();
         state.busy = false;
         state.pending.clear();
-        state.staged.clear();
     }
     age(&runtime);
     runtime
@@ -2030,13 +2354,13 @@ const fs=require('node:fs')"#,
         }
     };
     assert_eq!(card["request_id"], "pi-rm");
-    assert_eq!(
-        card["reason"],
-        "Run outside the sandbox. Auto mode asks because: Deletes your home folder."
-    );
+    assert_eq!(card["reason"], "Deletes your home folder.");
+    // Untitled critical review leaves `title` absent so clients show the raw command.
+    assert!(card.get("title").is_none());
+    // Critical risk never offers Always allow.
     assert_eq!(card["choices"], json!(["once", "deny"]));
     assert!(card.get("review").is_none() && card.get("input").is_none());
-    // A reviewer that cannot answer leaves the decision to the user.
+    // A reviewer that cannot answer shows the raw command and never offers Always allow.
     runtime.event(&s, ask("pi-broken", "broken")).unwrap();
     let card = loop {
         let event = events.recv().await.unwrap();
@@ -2045,10 +2369,10 @@ const fs=require('node:fs')"#,
         }
     };
     assert_eq!(card["request_id"], "pi-broken");
-    assert_eq!(
-        card["reason"],
-        format!("Run outside the sandbox. {}", review::UNAVAILABLE)
-    );
+    assert_eq!(card["reason"], review::UNAVAILABLE);
+    assert!(card.get("title").is_none());
+    assert_eq!(card["choices"], json!(["once", "deny"]));
+    assert!(card.get("rule").is_none());
     // Failed verdicts cost tokens too. Reviewer text never appears in chat.
     assert_eq!(
         store::usage(home.path(), "first").unwrap()["total_tokens"],
@@ -2100,11 +2424,9 @@ const fs=require('node:fs')"#,
                 event.frame["params"]["payload"]["request_id"],
                 "pi-unreadable-evidence"
             );
-            assert!(
-                event.frame["params"]["payload"]["reason"]
-                    .as_str()
-                    .unwrap()
-                    .contains(review::UNAVAILABLE)
+            assert_eq!(
+                event.frame["params"]["payload"]["reason"],
+                review::UNAVAILABLE
             );
             break;
         }
@@ -2142,14 +2464,123 @@ const fs=require('node:fs')"#,
         }
     };
     assert_eq!(card["request_id"], "pi-long");
-    assert_eq!(
-        card["reason"],
-        format!("Run outside the sandbox. {}", review::LONG_CHAT)
+    assert_eq!(card["reason"], review::LONG_CHAT);
+    assert_eq!(card["choices"], json!(["once", "always", "deny"]));
+    assert!(
+        card["rule"]
+            .as_str()
+            .is_some_and(|r| r.contains("on this computer"))
     );
     let sent: Value =
         serde_json::from_slice(&fs::read(home.path().join("review-request.json")).unwrap())
             .unwrap();
     assert_eq!(sent["earlier_user_messages_omitted"], true);
+    assert!(sent.get("user_approved_steps").is_none());
+    // The owner approves that card once. Later reviews in the turn read the
+    // approval, so the same kind of step need not ask again...
+    runtime
+        .call(
+            "alice",
+            "approval.respond",
+            &json!({"session_id":s.id,"request_id":"pi-long","choice":"once"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let mut reviewed = async |id: &str, cmd: &str| {
+        runtime.event(&s, ask(id, cmd)).unwrap();
+        loop {
+            let event = events.recv().await.unwrap();
+            if event.frame["params"]["type"] == "approval.request" {
+                assert_eq!(event.frame["params"]["payload"]["request_id"], id);
+                break;
+            }
+        }
+        serde_json::from_slice::<Value>(&fs::read(home.path().join("review-request.json")).unwrap())
+            .unwrap()
+    };
+    let sent = reviewed("pi-after-approval", "medium").await;
+    assert_eq!(
+        sent["user_approved_steps"],
+        // The computer it ran on goes with it.
+        json!([{"tool":"bash","command":"medium","computer":"host"}])
+    );
+    // Always allow persists a computer-scoped rule so future turns see it in custom_rules.
+    runtime
+        .call(
+            "alice",
+            "approval.respond",
+            &json!({"session_id":s.id,"request_id":"pi-after-approval","choice":"always"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    // Deny records the denial for the rest of this turn.
+    let _ = reviewed("pi-to-deny", "broken").await;
+    runtime
+        .call(
+            "alice",
+            "approval.respond",
+            &json!({"session_id":s.id,"request_id":"pi-to-deny","choice":"deny"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let sent = reviewed("pi-after-deny", "broken").await;
+    assert_eq!(
+        sent["user_denied_steps"],
+        json!([{"tool":"bash","command":"broken","computer":"host"}])
+    );
+    assert_eq!(sent["custom_rules"]["allow"][0]["computer"], "host");
+    // ...and the next turn clears turn-only memory while keeping persisted custom_rules.
+    s.state.lock().unwrap().end_turn();
+    let sent = reviewed("pi-next-turn", "broken").await;
+    assert!(sent.get("user_approved_steps").is_none());
+    assert!(sent.get("user_denied_steps").is_none());
+    assert_eq!(sent["custom_rules"]["allow"][0]["computer"], "host");
+    // Hitting the 40-rule cap rejects a new Always allow rule without settling the card, so Allow once still works.
+    crate::approval_rules::clear(home.path(), "alice", Some("allow")).unwrap();
+    for i in 0..crate::approval_rules::MAX_RULES_PER_KIND {
+        crate::approval_rules::add(
+            home.path(),
+            "alice",
+            "allow",
+            &format!("Filler rule {i}"),
+            "manual",
+            None,
+            None,
+        )
+        .unwrap();
+    }
+    let _ = reviewed("pi-at-cap", "medium").await;
+    let err = runtime
+        .call(
+            "alice",
+            "approval.respond",
+            &json!({"session_id":s.id,"request_id":"pi-at-cap","choice":"always"}),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(err.code, 4202);
+    runtime
+        .call(
+            "alice",
+            "approval.respond",
+            &json!({"session_id":s.id,"request_id":"pi-at-cap","choice":"once"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    // A review model chosen in Settings judges in place of the bot's own.
+    assert_ne!(reviewer_model(), "checker");
+    conn.execute(
+        "INSERT OR REPLACE INTO settings VALUES('review_model','\"openai/checker\"')",
+        [],
+    )
+    .unwrap();
+    reviewed("pi-review-model", "broken").await;
+    assert_eq!(reviewer_model(), "checker");
     runtime.shutdown().await;
 }
 
@@ -2806,11 +3237,21 @@ async fn review_evidence_keeps_the_newest_owner_messages_under_one_budget() {
     );
     assert_eq!(sent["earlier_user_messages_omitted"], true);
     conn.execute("DELETE FROM room_events", []).unwrap();
-    // The same holds for an oversized non-owner row, without loading its JSON.
+    // An oversized non-owner tool row written normally is skipped without hiding user messages.
     store::append(
         home.path(),
         "first",
         json!({"role":"tool","text":"x".repeat(1_000_000)}),
+    )
+    .unwrap();
+    let sent = evidence(&conn).unwrap().unwrap();
+    assert_eq!(sent["user_messages"].as_array().unwrap().len(), 36);
+    assert_eq!(sent["earlier_user_messages_omitted"], false);
+    // An oversized user message still stops without allocating its JSON.
+    store::append(
+        home.path(),
+        "first",
+        json!({"role":"user","text":"x".repeat(1_000_000)}),
     )
     .unwrap();
     let sent = evidence(&conn).unwrap().unwrap();
@@ -2981,7 +3422,7 @@ async fn actual_pi_reviewer_excludes_instructions_and_tools_and_accounts_usage()
         .await
         .unwrap();
     assert!(!failed);
-    assert_eq!(review::verdict(&text, false), None);
+    assert_eq!(review::verdict(&text, false), review::ReviewDecision::Allow);
     assert_eq!(
         store::usage(home.path(), "first").unwrap()["total_tokens"],
         40
@@ -3026,6 +3467,26 @@ async fn actual_pi_reviewer_excludes_instructions_and_tools_and_accounts_usage()
         assert_ne!(Path::new(cwd), home.path());
         assert_ne!(Path::new(cwd), home.workspace());
     }
+    // A review model chosen in Settings need not be one a bot runs on: Pi
+    // takes a model id it has no entry for.
+    let chosen = json!({"provider":"lmstudio","model":"chosen-reviewer"});
+    let (text, failed) = runtime
+        .one_shot(
+            "owl",
+            &chosen,
+            Some(&s),
+            review::PROMPT,
+            &payload,
+            Duration::from_secs(20),
+        )
+        .await
+        .unwrap();
+    assert!(!failed);
+    assert_eq!(review::verdict(&text, false), review::ReviewDecision::Allow);
+    assert_eq!(
+        requests.lock().unwrap().last().unwrap()["model"],
+        "chosen-reviewer"
+    );
     runtime.shutdown().await;
     server.abort();
 }
@@ -3076,7 +3537,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs');for(const flag 
         .await
         .unwrap();
     assert!(!failed, "ACP reviewer did not complete: {text}");
-    assert_eq!(review::verdict(&text, false), None);
+    assert_eq!(review::verdict(&text, false), review::ReviewDecision::Allow);
     assert!(!home.workspace().join("unsafe").exists());
     // Config arguments cannot restore an external instruction/plugin catalog.
     fs::write(home.path().join(".env"), format!("HEXBOT_COPILOT_ACP_COMMAND={}\nHEXBOT_COPILOT_ACP_ARGS=\"--acp --config-dir /tmp/untrusted\"\n", serde_json::to_string(&script.to_string_lossy()).unwrap())).unwrap();
@@ -3145,7 +3606,9 @@ async fn bot_message_hops_count_per_turn_and_follow_the_chain() {
     open(&runtime).await;
     let owl = runtime.sessions.lock().unwrap()["first"].clone();
     for _ in 0..MAX_HOPS {
-        let (stored, _, chain) = runtime.prepare_delivery(&owl, "cat", "hello").unwrap();
+        let (stored, _, chain) = runtime
+            .prepare_delivery(&owl, "cat", "hello", true)
+            .unwrap();
         runtime
             .deliver_message(&owl, "cat", "hello", &stored, chain)
             .await
@@ -3153,7 +3616,7 @@ async fn bot_message_hops_count_per_turn_and_follow_the_chain() {
     }
     assert_eq!(
         runtime
-            .prepare_delivery(&owl, "cat", "one too many")
+            .prepare_delivery(&owl, "cat", "one too many", true)
             .unwrap_err()
             .code,
         4240
@@ -3174,7 +3637,7 @@ async fn bot_message_hops_count_per_turn_and_follow_the_chain() {
     }
     assert_eq!(
         runtime
-            .prepare_delivery(&cat, "fox", "onward")
+            .prepare_delivery(&cat, "fox", "onward", true)
             .unwrap_err()
             .code,
         4240
@@ -3188,7 +3651,9 @@ async fn bot_message_hops_count_per_turn_and_follow_the_chain() {
         &owl.state.lock().unwrap().chain.hops,
         &cat.state.lock().unwrap().chain.hops
     ));
-    let (stored, _, chain) = runtime.prepare_delivery(&owl, "cat", "hello").unwrap();
+    let (stored, _, chain) = runtime
+        .prepare_delivery(&owl, "cat", "hello", true)
+        .unwrap();
     runtime
         .deliver_message(&owl, "cat", "hello", &stored, chain)
         .await
@@ -3222,19 +3687,23 @@ async fn a_bot_cannot_hand_a_request_back_up_the_chain() {
             .cloned()
             .unwrap()
     };
-    let (stored, _, chain) = runtime.prepare_delivery(&owl, "cat", "research").unwrap();
+    let (stored, _, chain) = runtime
+        .prepare_delivery(&owl, "cat", "research", true)
+        .unwrap();
     runtime
         .deliver_message(&owl, "cat", "research", &stored, chain)
         .await
         .unwrap();
     let cat = live("cat");
     let error = runtime
-        .prepare_delivery(&cat, "owl", "research")
+        .prepare_delivery(&cat, "owl", "research", true)
         .unwrap_err();
     assert_eq!(error.code, 4202);
     assert!(error.message.starts_with("owl is waiting on this request."));
     // Asking a bot outside the chain is still fine, and the chain grows with it.
-    let (stored, _, chain) = runtime.prepare_delivery(&cat, "fox", "a detail").unwrap();
+    let (stored, _, chain) = runtime
+        .prepare_delivery(&cat, "fox", "a detail", true)
+        .unwrap();
     runtime
         .deliver_message(&cat, "fox", "a detail", &stored, chain)
         .await
@@ -3243,14 +3712,16 @@ async fn a_bot_cannot_hand_a_request_back_up_the_chain() {
     for upstream in ["owl", "cat"] {
         assert_eq!(
             runtime
-                .prepare_delivery(&fox, upstream, "over to you")
+                .prepare_delivery(&fox, upstream, "over to you", true)
                 .unwrap_err()
                 .code,
             4202
         );
     }
     // The bot that started the chain can still ask again.
-    runtime.prepare_delivery(&owl, "cat", "one more").unwrap();
+    runtime
+        .prepare_delivery(&owl, "cat", "one more", true)
+        .unwrap();
     runtime.shutdown().await;
 }
 
@@ -4441,6 +4912,17 @@ async fn scheduled_jobs_keep_the_creating_sections_workdir() {
         result["job"]["workdir"],
         json!(fs::canonicalize(workdir).unwrap())
     );
+    // A job a bot schedules reports back unless it was asked to stay quiet.
+    assert_eq!(result["job"]["notify"], true);
+    let quiet = runtime
+        .tool(
+            &section,
+            "cronjob_manage",
+            &json!({"action":"create","schedule":"every 1h","prompt":"check","notify":false}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(quiet["job"]["notify"], false);
     runtime.shutdown().await;
 }
 
@@ -4587,7 +5069,7 @@ async fn concurrent_deliveries_reserve_writes_before_reading_the_target_section(
             .map(|_| {
                 scope.spawn(|| {
                     barrier.wait();
-                    runtime.record_delivery(&s, "cat", "hello").unwrap().0
+                    runtime.record_delivery(&s, "cat", "hello", true).unwrap().0
                 })
             })
             .collect();
@@ -4661,7 +5143,7 @@ fn team_prompt_uses_descriptions_owner_scope_toolsets_order_and_limit() {
     // at the time of a rebuild: message_bot lists the teammates.
     let messaging = [json!({"name":"memory"}), json!({"name":"message_bot"})];
     let prompt = runtime
-        .session_prompt(&row, "alice", "owl", &home.workspace(), &messaging)
+        .session_prompt(&row, "alice", "owl", &home.workspace(), &messaging, false)
         .unwrap()
         .0;
     assert!(prompt.contains("Other bots see you as: User description"));
@@ -5229,7 +5711,10 @@ async fn message_bot_checks_teammates_reuses_threads_and_returns_section_ids() {
     }));
     assert_eq!(tool_context("message_bot", &json!({"to":"cat"})), "cat");
     let cat = runtime.sessions.lock().unwrap()[id].clone();
-    let reverse = runtime.record_delivery(&cat, "owl", "Reply").unwrap().0;
+    let reverse = runtime
+        .record_delivery(&cat, "owl", "Reply", true)
+        .unwrap()
+        .0;
     assert_ne!(reverse, id);
     assert_eq!(
         crate::catalog::section(h, "alice", &reverse).unwrap()["peer_bot"],
@@ -5241,12 +5726,18 @@ async fn message_bot_checks_teammates_reuses_threads_and_returns_section_ids() {
         .unwrap()
         .execute_batch("UPDATE bots SET display_name='New Owl' WHERE name='owl';")
         .unwrap();
-    assert_eq!(runtime.record_delivery(&s, "cat", "Again").unwrap().0, id);
+    assert_eq!(
+        runtime.record_delivery(&s, "cat", "Again", true).unwrap().0,
+        id
+    );
     db::open(h)
         .unwrap()
         .execute("UPDATE sections SET archived_at=1 WHERE id=?", [id])
         .unwrap();
-    let next = runtime.record_delivery(&s, "cat", "New thread").unwrap().0;
+    let next = runtime
+        .record_delivery(&s, "cat", "New thread", true)
+        .unwrap()
+        .0;
     assert_ne!(next, id);
     assert_eq!(
         crate::catalog::section(h, "alice", &next).unwrap()["title"],
@@ -5845,11 +6336,64 @@ emit({type:'response',id:c.id,command:c.type,success:true,data:{}});});
         if answer == "ok" {
             assert!(texts.iter().any(|t| t == "Older messages summarised."));
         }
+        // A compaction, done or failed, shows finished until it is read; no
+        // app's touch does that (`hexbot.sections.touch`). A refused message
+        // never started: its sender has the error.
+        let conn = db::open(&runtime.home).unwrap();
+        let done: Option<f64> = conn
+            .query_row("SELECT done_at FROM sections WHERE id='first'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            done.is_some(),
+            text == "/compact",
+            "{text} ending with {answer}"
+        );
+        conn.execute("UPDATE sections SET done_at=NULL WHERE id='first'", [])
+            .unwrap();
     }
     assert!(Arc::ptr_eq(&s, &runtime.sessions.lock().unwrap()["first"]));
     assert!(!s.state.lock().unwrap().busy);
     runtime.shutdown().await;
 }
+#[tokio::test]
+async fn a_part_on_its_way_in_keeps_its_section_running() {
+    let (home, runtime, _) = setup();
+    let id = open(&runtime).await;
+    let s = runtime.sessions.lock().unwrap()["first"].clone();
+    // The part is past the open and waiting for the attachment gate.
+    let staging = s.attachment_gate.lock().await;
+    let part = {
+        let (runtime, id) = (runtime.clone(), id.clone());
+        tokio::spawn(async move {
+            runtime
+                .call(
+                    "alice",
+                    "attachments.part",
+                    &json!({"session_id":id,"upload":"held","offset":0,"data":"aGVsbG8="}),
+                )
+                .await
+                .unwrap()
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(5), s.landed.notified())
+        .await
+        .unwrap();
+    assert_eq!(s.state.lock().unwrap().landing, 1);
+    // Running out of room does not retire it under the part.
+    assert_eq!(runtime.retire_idle(f64::INFINITY).await.unwrap(), 0);
+    drop(staging);
+    assert_eq!(part.await.unwrap().unwrap()["received"], 5);
+    assert!(
+        home.path()
+            .join("runtime/sessions/first/uploads/held.part")
+            .is_file()
+    );
+    assert!(Arc::ptr_eq(&s, &runtime.sessions.lock().unwrap()["first"]));
+    runtime.shutdown().await;
+}
+
 #[tokio::test]
 async fn an_upload_on_its_way_in_keeps_its_section_running() {
     let (home, runtime, _) = setup();
@@ -6360,4 +6904,387 @@ async fn native_approval_parent_swap_never_writes_managed_runtime() {
         );
         runtime.shutdown().await;
     }
+}
+
+/// Notion keys never reach a shell, so a bot that has Notion on gets the
+/// daemon's connector tools, and its chat takes them at its next
+/// message. A heartbeat only reads.
+#[tokio::test]
+async fn a_bot_with_notion_on_gets_the_connector_tools() {
+    let (home, runtime, _hub) = setup();
+    let names = |overrides: Option<&Value>| {
+        runtime
+            .fresh_tools("alice", "owl", "first", None, overrides)
+            .unwrap()
+            .0
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(str::to_owned))
+            .filter(|name| name.starts_with("hexbot_connector"))
+            .collect::<Vec<_>>()
+    };
+    crate::connectors::set_enabled(home.path(), "owl", "notion", false).unwrap();
+    crate::connectors::set_enabled(home.path(), "owl", "github", false).unwrap();
+    assert!(names(None).is_empty());
+    runtime.open_session("alice", "owl", "first").await.unwrap();
+    assert!(!runtime.tools_stale("alice", "owl", "first").unwrap());
+    // Notion is given only once it is set up.
+    std::fs::write(
+        home.path().join("profiles/owl/.env"),
+        "NOTION_API_KEY=test\n",
+    )
+    .unwrap();
+    crate::connectors::set_enabled(home.path(), "owl", "notion", true).unwrap();
+    assert_eq!(
+        names(None),
+        ["hexbot_connector_read", "hexbot_connector_write"]
+    );
+    assert!(runtime.tools_stale("alice", "owl", "first").unwrap());
+    // Code reaches daemon tools without the extension's gate, so it cannot change a connector.
+    let s = runtime
+        .open_for_input("alice", "owl", "first")
+        .await
+        .unwrap();
+    assert!(s.tools.iter().any(|t| t["name"] == connector_tool::WRITE));
+    runtime.register_worker_bridge(&s);
+    let bridge = crate::native_tools::dispatcher(home.path(), "first").unwrap();
+    let error = bridge(
+        connector_tool::WRITE.into(),
+        json!({"connector":"notion","method":"PATCH","path":"/v1/pages/a"}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, 4302);
+    assert_eq!(
+        names(Some(&json!({"heartbeat":"run-1"}))),
+        ["hexbot_connector_read"]
+    );
+    // Turned off again, a request is refused before any key is read.
+    crate::connectors::set_enabled(home.path(), "owl", "notion", false).unwrap();
+    let s = runtime.open_session("alice", "owl", "first").await.unwrap();
+    let error = connector_tool::request(
+        home.path(),
+        "owl",
+        &json!({"connector":"notion","method":"POST","path":"/v1/search"}),
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, 4210);
+    assert!(
+        runtime
+            .tool(
+                &s,
+                connector_tool::WRITE,
+                &json!({"connector":"notion","method":"PATCH","path":"/v1/pages/a"})
+            )
+            .await
+            .is_err()
+    );
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_package_of_skills_set_up_through_a_bots_own_key_reads_as_ready_to_that_bot() {
+    let (home, runtime, _hub) = setup();
+    crate::plugins::call(
+        home.path(),
+        "alice",
+        "hexbot.plugins.install",
+        &json!({"name":"notes","skills":[{"name":"notes-sync","content":
+            "---\ndescription: Sync notes.\nprerequisites:\n  env_vars: [HEXBOT_TEST_OWL_NOTES_KEY]\n---\nBody."}]}),
+    )
+    .unwrap()
+    .unwrap();
+    let notes = |runtime: &Runtime| {
+        runtime.plugin_list("alice", "owl", false).unwrap()["plugins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == "package:notes")
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(notes(&runtime)["ready"], false);
+    fs::write(
+        home.path().join("profiles/owl/.env"),
+        "HEXBOT_TEST_OWL_NOTES_KEY=value\n",
+    )
+    .unwrap();
+    // Owl's own key sets it up for Owl, so it is not sent to setup.
+    let row = notes(&runtime);
+    assert_eq!(row["ready"], true, "{row}");
+    assert!(row.get("state").is_none(), "{row}");
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn only_messages_in_a_bots_chat_move_it_up_the_list() {
+    let (home, runtime, hub) = setup();
+    db::open(home.path())
+        .unwrap()
+        .execute_batch("INSERT INTO bots(name,owner_id) VALUES('fox','alice');INSERT INTO sections(id,bot,owner_id,title,peer_bot) VALUES('thread','owl','alice','Fox asks','fox');")
+        .unwrap();
+    let activity = || {
+        db::open(home.path())
+            .unwrap()
+            .query_row(
+                "SELECT last_activity_at FROM bots WHERE name='owl'",
+                [],
+                |r| r.get::<_, Option<f64>>(0),
+            )
+            .unwrap()
+    };
+    let mut events = hub.subscribe();
+    // A whole turn in a thread between bots leaves the bot where it is.
+    let thread = runtime
+        .call("alice", "hexbot.sections.open", &json!({"id":"thread"}))
+        .await
+        .unwrap()
+        .unwrap()["section"]["live_session_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    runtime
+        .call(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":thread,"text":"hello"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while events.recv().await.unwrap().frame["params"]["type"] != "message.complete" {}
+    })
+    .await
+    .unwrap();
+    assert_eq!(activity(), None);
+    // Nor does an app touching or renaming its chat.
+    for (method, params) in [
+        ("hexbot.sections.touch", json!({"id":"first"})),
+        (
+            "hexbot.sections.rename",
+            json!({"id":"first","title":"Renamed"}),
+        ),
+    ] {
+        crate::catalog::call(home.path(), "alice", method, &params)
+            .unwrap()
+            .unwrap();
+    }
+    assert_eq!(activity(), None);
+    // Writing in its chat moves it at once, before any reply, and every app hears.
+    let id = open(&runtime).await;
+    runtime
+        .call(
+            "alice",
+            "prompt.submit",
+            &json!({"session_id":id,"text":"wait"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(activity().is_some());
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let event = events.recv().await.unwrap();
+            if event.frame["params"]["type"] == "hexbot.bots.changed"
+                && event.frame["params"]["payload"]["name"] == "owl"
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    runtime.shutdown().await;
+}
+
+/// People in a Discord room are not the owner: the bot's conversation there
+/// gets only notes and the web, its prompt leaves out About you, and an
+/// ordinary room keeps both.
+#[test]
+fn a_discord_room_session_gets_only_notes_and_the_web() {
+    let (home, runtime, _hub) = setup();
+    let h = home.path();
+    fs::create_dir_all(h.join("users/alice")).unwrap();
+    fs::write(
+        h.join("users/alice/user.md"),
+        "Alice lives at 1 Secret Lane.",
+    )
+    .unwrap();
+    fs::write(
+        h.join("profiles/owl/config.yaml"),
+        "model:\n  provider: openai\n  default: fixture\ntools:\n  enabled_toolsets: [hexbot, web, file, terminal, delegation, cronjob]\n",
+    )
+    .unwrap();
+    MemoryStore::new(h.into())
+        .set_bot("alice", "owl", "Alice's bank is Northwind.")
+        .unwrap();
+    db::open(h).unwrap().execute_batch(
+        "INSERT INTO rooms(id,name,owner_id,approval_mode) VALUES('d','#general · Server','alice','manual'),('r','Room','alice',NULL);
+         INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('d','owl','in-discord'),('r','owl','in-room');
+         INSERT INTO discord_channels(channel_id,guild_id,room_id) VALUES('c1','g1','d');",
+    ).unwrap();
+    let row = bot_row(h, "owl").unwrap();
+    let settings = crate::settings::get(h).unwrap();
+    let open = |stored: &str| {
+        runtime
+            .fresh_options(
+                "alice",
+                "owl",
+                stored,
+                &row,
+                &home.workspace(),
+                &settings,
+                None,
+                None,
+            )
+            .unwrap()
+    };
+    let (prompt, options) = open("in-discord");
+    let names: Vec<&str> = options["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+    assert!(names.contains(&"memory"), "{names:?}");
+    // It reads the rest of its server, and nothing of the owner's.
+    assert!(names.contains(&crate::discord::TOOL), "{names:?}");
+    assert!(
+        names.iter().all(|n| crate::discord::TOOLS.contains(n)),
+        "{names:?}"
+    );
+    assert_eq!(options["restricted"], json!(crate::discord::TOOLS));
+    assert_eq!(options["public"], true);
+    assert_eq!(options["mcpServers"], json!([]));
+    // Strangers get the soul and nothing of the owner's: no About you,
+    // memory, files or teammates.
+    assert!(!prompt.contains("Secret Lane"));
+    assert!(!prompt.contains("Northwind"), "{prompt}");
+    assert!(!prompt.contains(&h.display().to_string()), "{prompt}");
+    assert!(!prompt.contains(crate::team::HEADER), "{prompt}");
+    assert!(prompt.contains("# Discord\nThis conversation is a Discord channel."));
+    let (prompt, options) = open("in-room");
+    assert!(prompt.contains("Secret Lane"));
+    assert!(prompt.contains("Northwind"));
+    assert!(!prompt.contains("# Discord"));
+    assert_eq!(options["public"], false);
+    assert!(options["restricted"].is_null());
+    assert!(
+        options["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["name"] == "message_bot")
+    );
+}
+
+/// Anyone in a Discord channel can talk to the bot, so what it notes there
+/// waits for its dream as an untrusted proposal and it reads nothing back.
+#[tokio::test]
+async fn a_discord_room_session_files_notes_as_proposals() {
+    let (home, runtime, _) = setup();
+    let h = home.path();
+    let memory = MemoryStore::new(h.into());
+    memory.set_bot("alice", "owl", "Likes tea.").unwrap();
+    db::open(h).unwrap().execute_batch(
+        "INSERT INTO rooms(id,name,owner_id,approval_mode) VALUES('d','#general · Server','alice','manual');
+         INSERT INTO room_sessions(room_id,bot,stored_session_id) VALUES('d','owl','in-discord');
+         INSERT INTO discord_channels(channel_id,guild_id,room_id) VALUES('c1','g1','d');",
+    ).unwrap();
+    let session = runtime
+        .open_session_with_tools("alice", "owl", "in-discord", None, None, false)
+        .await
+        .unwrap();
+    let noted = runtime
+        .tool(
+            &session,
+            "memory",
+            &json!({"action":"note","text":"Sam runs the chess club."}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(noted["proposed"], true);
+    let source: String = db::open(h)
+        .unwrap()
+        .query_row(
+            "SELECT job_id FROM memory_proposals WHERE bot='owl'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(source, crate::discord::PROPOSAL_SOURCE);
+    assert_eq!(
+        memory.get_bot("alice", "owl").unwrap()["memory_md"],
+        "Likes tea."
+    );
+    for action in ["read", "add"] {
+        let refused = runtime
+            .tool(&session, "memory", &json!({"action":action,"text":"x"}))
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code, 4202, "{action}");
+    }
+    // Strangers asking for note after note can't push out a scheduled job's proposal.
+    crate::dreaming::propose_memory(
+        h,
+        "alice",
+        "owl",
+        "job-1",
+        "add",
+        &json!({"text":"Prefers mornings."}),
+    )
+    .unwrap();
+    for i in 0..30 {
+        runtime
+            .tool(
+                &session,
+                "memory",
+                &json!({"action":"note","text":format!("Note {i}.")}),
+            )
+            .await
+            .unwrap();
+    }
+    let counts: (i64, i64) = db::open(h)
+        .unwrap()
+        .query_row(
+            "SELECT SUM(job_id='discord'),SUM(job_id='job-1') FROM memory_proposals WHERE bot='owl'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(counts, (20, 1));
+}
+
+#[tokio::test]
+async fn without_cua_a_chat_lists_only_the_computers_it_can_reach() {
+    let (home, runtime, _) = setup();
+    let h = home.path();
+    // An upgraded daemon without Cua: the migration gave owl the bots'
+    // computer's desktop, which nothing here can run.
+    crate::machines::migrate(h).unwrap();
+    common::update_config(h, |c| {
+        c["computer_use"]["command"] = json!("/nonexistent/cua");
+        Ok(())
+    })
+    .unwrap();
+    assert!(crate::machines::has(h, "owl", crate::machines::VM, crate::machines::DESKTOP).unwrap());
+    open(&runtime).await;
+    let prompt = processes(h)[0]["config"]["prompt"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(!prompt.contains("# Computers"), "{prompt}");
+    let saved: String = store::open(h)
+        .unwrap()
+        .query_row(
+            "SELECT options FROM native_sessions WHERE stored_id='first'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let saved: Value = serde_json::from_str(&saved).unwrap();
+    assert_eq!(saved["computers"], json!([]));
+    runtime.shutdown().await;
 }

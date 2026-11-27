@@ -9,6 +9,7 @@ export {
   VisualCard
 } from './ChatScreen'
 export { ComputerSheet, type ComputerSheetProps } from './ComputerSheet'
+export { FileSheet } from './FileSheet'
 export {
   type ConnectionPending,
   ConnectionScreen,
@@ -30,4 +31,5 @@ export { SearchSheet, type SearchSheetProps } from './SearchSheet'
 export { type DaemonArea, SettingsScreen, type SettingsScreenProps } from './SettingsScreen'
 export type * from './types'
 export { type ModelValue, ModelPill, ModelSummary } from './ModelMenu'
+export { ProviderGoneCard, providerGone } from './ProviderGoneCard'
 export { DaemonSwitcher } from './DaemonSwitcher'

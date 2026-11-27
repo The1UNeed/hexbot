@@ -39,6 +39,16 @@ function validUpdateState(value: unknown): boolean {
 }
 const hexbot = Object.freeze({
   ...metadata,
+  // This computer as one of the user's computers (src/main/computer.ts).
+  computer: Object.freeze({
+    state: () => ipcRenderer.invoke('hexbot:computer:state'),
+    allow: (change: { desktop?: boolean; terminal?: boolean }) => ipcRenderer.invoke('hexbot:computer:allow', change),
+    setupDesktop: () => ipcRenderer.invoke('hexbot:computer:setup-desktop'),
+    run: (request: unknown) => ipcRenderer.invoke('hexbot:computer:run', request),
+    release: () => ipcRenderer.invoke('hexbot:computer:release'),
+    cancel: (requestId: string) => ipcRenderer.invoke('hexbot:computer:cancel', requestId),
+    onState: (callback: (value: unknown) => void) => listen('hexbot:computer:state', callback)
+  }),
   daemon: Object.freeze({
     status: () => ipcRenderer.invoke('hexbot:daemon:status'),
     start: () => ipcRenderer.invoke('hexbot:daemon:start'),
@@ -80,8 +90,15 @@ const hexbot = Object.freeze({
     init?: { method?: string; headers?: Record<string, string>; body?: string }
   ) => ipcRenderer.invoke('hexbot:http-fetch', url, init ?? {}),
   notify: (options: unknown) => ipcRenderer.invoke('hexbot:notify', options),
+  openNotificationSettings: () => ipcRenderer.invoke('hexbot:notifications:settings'),
   openExternal: (url: string) => ipcRenderer.invoke('hexbot:open-external', url),
   pickFiles: () => ipcRenderer.invoke('hexbot:pick-files'),
+  // Google's return to 127.0.0.1 on this computer (src/main/oauth-return.ts).
+  oauthReturn: Object.freeze({
+    open: () => ipcRenderer.invoke('hexbot:oauth-return:open'),
+    wait: (port: number) => ipcRenderer.invoke('hexbot:oauth-return:wait', port),
+    close: (port: number) => ipcRenderer.invoke('hexbot:oauth-return:close', port)
+  }),
   updater: Object.freeze({
     state: () => ipcRenderer.invoke('hexbot:updater:state'),
     channel: () => ipcRenderer.invoke('hexbot:updater:channel'),
@@ -103,6 +120,10 @@ const hexbot = Object.freeze({
     uninstall: () => ipcRenderer.invoke('hexbot:service:uninstall'),
     status: () => ipcRenderer.invoke('hexbot:service:status')
   }),
-  onNavigate: (callback: (value: string) => void) => listen('hexbot:navigate', callback)
+  onNavigate: (callback: (value: string) => void) => listen('hexbot:navigate', callback),
+  onWindowShown: (callback: (shown: boolean) => void) =>
+    listen<unknown>('hexbot:window-shown', value => {
+      if (typeof value === 'boolean') callback(value)
+    })
 })
 contextBridge.exposeInMainWorld('hexbot', hexbot)

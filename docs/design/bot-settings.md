@@ -1,7 +1,10 @@
 # Bot settings: two levels
 
 Status: phases 1 and 2 implemented (window, panel, status in the chat,
-connectors). Channels, Spotify, and the skills hub are still to come.
+connectors). Discord is the first channel, as its own Discord tab that
+shows once Discord is on for the bot in Settings, Plugins, where turning it
+on opens that tab (`docs/rooms.md`, Discord rooms); other channels, Spotify, and the skills
+hub are still to come.
 Mockups: https://claude.ai/code/artifact/6430c704-4d70-4363-adf8-affcef0ccfb8
 
 ## The problem
@@ -70,7 +73,7 @@ fourth alone:
 | State | Where it shows | Actions |
 | --- | --- | --- |
 | Idle | Nowhere in the chat. The roster row shows the last-active time. | |
-| Working | The existing status line at the foot of the turn. | Stop |
+| Working | The existing status line at the foot of the turn. | Recall in a bot's chat; Stop in a room |
 | Needs you | The existing approval card, the "Waiting on you" room banner. | Approve, Deny; Allow for now when offered for a Manual or unreviewed request |
 | Stopped | A new inline card at the point of failure: red dot, "<bot> stopped", why, which task did not finish. | Fix <connector>, Retry |
 
@@ -94,7 +97,8 @@ Tabs, in order:
 
 1. **Profile.** Face, name, label, description.
 2. **Persona.** Full-height editor. Role templates as a menu that
-   replaces the text after confirming. Word count.
+   replaces the text after confirming. A character count against the
+   soul limit, and the bot's own limit below; empty follows Settings.
 3. **Model.** Provider and model, curated list pinned on top as today,
    with room for the model's description and price per million tokens.
 4. **Memory.** This bot's notes and user notes, dreaming (enabled, may
@@ -104,9 +108,12 @@ Tabs, in order:
    bot's Memory tab, which reads as if each bot had its own.
 5. **Tools.** Switches grouped as Workspace (terminal, files, and the
    working directory), Senses (vision, built-in voice), and Working with
-   others (message other bots, delegate, scheduling). Computer use is not
-   here: every bot has it, and Settings, Manuals, Computer use holds the
-   computer's size and controls. Code execution and the browser are what
+   others (message other bots, delegate, scheduling). The Terminal switch
+   gives the default computer as an environment or takes every one.
+   Computer Use is a connector (Settings, Plugins), never a tool switch;
+   `computer_use` sent in a tool list is ignored. Settings, Computers
+   chooses which computers exactly, and holds the bots' computer's size
+   and controls. Code execution and the browser are what
    bots do on that computer, not tools of their own. A tool with a missing prerequisite
    shows what to install instead of a switch.
 6. **Connectors.** See below.
@@ -150,16 +157,27 @@ The first catalog, by group:
 
 | Group | Connectors |
 | --- | --- |
-| Search and browsing | Web search (provider choice: Exa, Tavily, Brave, Firecrawl, Parallel, Keenable, SearXNG) |
+| Search and browsing | Web search (provider choice: SearXNG, which Hexbot runs, Tavily, Wikipedia and Marginalia with no key; Exa, Brave, Firecrawl, Parallel and Keenable with one) |
 | Images and voice | Image generation (FAL, Krea, OpenAI, xAI), Video generation, Premium voice (ElevenLabs, OpenAI, Mistral) |
 | Notes and work | Notion, Linear, Airtable |
 | Social and home | X search, Home Assistant, Spotify |
 | Channels (bot scope) | Telegram, Discord, Slack, WhatsApp, Signal, iMessage, Matrix, Mattermost, and the rest the core ships, each with its allowed-users list |
 | MCP servers | Any number, added by command or URL, with a tool count and a running state |
 
-Web search is a connector, not a tool, because it needs a provider
-account. Image generation is the same. The rule is the one in
-Principles: does it work offline with no account.
+The catalog that ships is smaller: Computer Use (under Computers), Web
+search, the Google and Microsoft connectors, IMAP mail, Notion, GitHub, and
+X search (under Social). Image and video generation, Premium voice, Airtable, and
+Home Assistant were removed; anything else connects as an MCP server.
+X search offers three providers: a SuperGrok or X Premium+ sign-in,
+shared with the xAI model provider, an xAI API key, or an X API bearer
+token.
+
+Web search is a connector, not a tool, because it reaches an outside
+service and the user picks which. It is the one connector that is set up
+out of the box: SearXNG runs in Docker on the daemon's computer, and
+until it does, searches go to the free services that need no account.
+X search needs an account. The rule is the one in Principles:
+does it work offline with no account.
 
 ### Icons
 
@@ -167,7 +185,14 @@ Brand connectors (Notion, Linear, Airtable, X, Telegram, Discord,
 Slack, Home Assistant, Spotify, ElevenLabs, GitHub, and the other
 channels) use the Simple Icons glyphs (CC0), bundled as SVG under
 `apps/web/src/assets/connectors/` and drawn white on the brand colour
-in a 28 px rounded square. Capability rows that front several providers
+in a 28 px rounded square. Google's and Microsoft's connectors are the
+exception: their brand guidelines allow their logos only whole, unaltered
+and in the newest version, so those are the owners' own files, drawn as
+images on a white tile with clear space around them and never recoloured or
+cropped, and the sign-in buttons are the owners' own "Sign in with Google"
+and "Sign in with Microsoft" buttons. The files, where each came from and
+the terms that cover them are in `apps/web/src/assets/brands/README.md`;
+replace a file when its owner publishes a newer logo. Capability rows that front several providers
 (web search, image and video generation) use a neutral Lucide glyph on a
 Hexbot colour, since no single brand owns them. MCP servers take a brand
 glyph when their name, or else their URL or command, names one

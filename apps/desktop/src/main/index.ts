@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -28,10 +28,12 @@ import { hexbotHome } from './backend/paths'
 import { resolveWebDevUrl } from './dev-url'
 import { edition, hasRuntime, requireRuntime } from './edition'
 import { parseDeepLink } from './deep-link'
-import { notify } from './notify'
+import { askToNotify, notificationSettingsUrl, notify, reportShown, sendShown } from './notify'
+import { OAuthReturns } from './oauth-return'
 import { pair, pairingReply, pairWithGrant, type GrantPairOptions, type PairOptions } from './pair'
 import { installService, serviceStatus, uninstallService } from './service'
-import { createTray } from './tray'
+import { ThisComputer, type ComputerShare } from './computer'
+import { createTray, setComputerActivity } from './tray'
 import { crashReportsAvailable, setCrashReports, startCrashReports } from './crash-reports'
 import { readDesktopState, updateDesktopState } from './desktop-state'
 import { readUsageData, setUsageData, startUsageData, usageAvailable } from './usage-data'
@@ -67,11 +69,44 @@ let daemon: DaemonManager
 const lifecycle = new WindowLifecycle()
 let tray: Tray | undefined
 let creatingWindow: Promise<BrowserWindow> | undefined
+// This computer as one of the user's computers: off until the user allows it
+// here, with a native question this process asks itself (computer.ts).
+const thisComputer = new ThisComputer(join(app.getPath('userData'), 'computer.json'), {
+  async confirm(what) {
+    const options = {
+      buttons: ['Allow', 'Cancel'],
+      cancelId: 1,
+      defaultId: 1,
+      detail:
+        what === 'terminal'
+          ? 'It becomes an environment you can give bots, and they can run commands here as you, outside any sandbox. In Auto, each command is checked first; in Manual, each one asks; in Bypass, they run without asking. Turn it off here or from the Hexbot icon at any time.'
+          : 'Bots with Computer Use can see this screen, click and type. In Auto and Manual they ask before each app the first time in each conversation (Always allow keeps it); in Bypass they skip that. They never type into terminals, editors or Hexbot. Turn it off here or from the Hexbot icon at any time.',
+      message: what === 'terminal' ? 'Let bots work on this computer?' : "Let Computer Use reach this computer's screen?",
+      type: 'warning' as const
+    }
+    const answer = mainWindow && !mainWindow.isDestroyed() ? await dialog.showMessageBox(mainWindow, options) : await dialog.showMessageBox(options)
+    return answer.response === 0
+  },
+  changed(share: ComputerShare) {
+    for (const window of BrowserWindow.getAllWindows()) window.webContents.send('hexbot:computer:state', share)
+    setComputerActivity({ allowed: share.terminal || share.desktop })
+  },
+  acting(active: boolean) {
+    setComputerActivity({ active })
+  }
+})
+// Google sign-ins come back to the app; the app comes forward to show them finish.
+const oauthReturns = new OAuthReturns(() => void showWindow())
 
 function validString(value: unknown, name: string, max = 1_000): string {
   if (typeof value !== 'string' || !value.trim() || value.length > max)
     throw new TypeError(`Invalid ${name}`)
   return value.trim()
+}
+function validPort(value: unknown): number {
+  if (!Number.isInteger(value) || Number(value) < 1 || Number(value) > 65_535)
+    throw new TypeError('Invalid port')
+  return Number(value)
 }
 function validatePair(value: unknown): PairOptions {
   if (!value || typeof value !== 'object') throw new TypeError('Invalid pair options')
@@ -146,10 +181,22 @@ async function buildWindow(): Promise<BrowserWindow> {
     window.on('page-title-updated', event => event.preventDefault())
   }
   mainWindow = window
+  // The page carries the daemon's requests: when it is lost or reloads,
+  // what bots started on this computer stops. The switch stays.
+  window.webContents.on('render-process-gone', () => void thisComputer.release())
+  // A page that stops responding can't carry the daemon's stops any more.
+  window.on('unresponsive', () => void thisComputer.release())
+  window.webContents.on('destroyed', () => void thisComputer.release())
+  window.webContents.on('did-start-navigation', details => {
+    if (details.isMainFrame && !details.isSameDocument) void thisComputer.release()
+  })
+  reportShown(window)
   guardWindow(window.webContents, url => shell.openExternal(url), webDevUrl)
   window.once('ready-to-show', () => {
     if (lifecycle.exiting) return
     window.show()
+    // macOS asks about notifications now, in front of you (notify.ts).
+    askToNotify()
     if (pendingLink) {
       window.webContents.send('hexbot:navigate', pendingLink)
       pendingLink = undefined
@@ -215,6 +262,7 @@ async function showWindow(): Promise<void> {
   if (window.isMinimized()) window.restore()
   window.show()
   window.focus()
+  sendShown(window)
 }
 function navigate(url: string): void {
   if (lifecycle.exiting) return
@@ -229,6 +277,16 @@ function navigate(url: string): void {
   } else {
     pendingLink = url
     void showWindow()
+  }
+}
+/** The app's macOS bundle id, which names it in System Settings; packaged and Dev copies differ. */
+function bundleId(): string | undefined {
+  if (process.platform !== 'darwin') return undefined
+  try {
+    const plist = readFileSync(join(app.getPath('exe'), '../../Info.plist'), 'utf8')
+    return /<key>CFBundleIdentifier<\/key>\s*<string>([\w.-]+)<\/string>/.exec(plist)?.[1]
+  } catch {
+    return undefined
   }
 }
 function sendProgress(progress: BootstrapProgress): void {
@@ -308,16 +366,37 @@ function registerIpc(): void {
         backgroundOnly: item.backgroundOnly === true,
         title: validString(item.title, 'title', 200),
         body: validString(item.body, 'body', 2_000),
-        sectionId: validString(item.sectionId, 'section id', 256)
+        sectionId:
+          item.sectionId === undefined ? undefined : validString(item.sectionId, 'section id', 256)
       },
-      () => mainWindow
+      () => mainWindow,
+      error => log.warn(`notification refused: ${error}`)
     )
+  })
+  handle('hexbot:notifications:settings', async () => {
+    const url = notificationSettingsUrl(process.platform, bundleId())
+    if (!url) throw new Error('This system has no notification settings to open')
+    await shell.openExternal(url)
+  })
+  handle('hexbot:computer:state', () => thisComputer.state())
+  handle('hexbot:computer:allow', (_event, value: unknown) =>
+    thisComputer.allow(value && typeof value === 'object' ? (value as Record<string, unknown>) : {})
+  )
+  handle('hexbot:computer:setup-desktop', () => thisComputer.setupDesktop())
+  handle('hexbot:computer:release', () => thisComputer.release())
+  handle('hexbot:computer:cancel', (_event, value: unknown) => thisComputer.cancel(value))
+  handle('hexbot:computer:run', (_event, value: unknown) => {
+    if (!value || typeof value !== 'object') throw new TypeError('Invalid request')
+    return thisComputer.run(value as Record<string, unknown>)
   })
   handle('hexbot:open-external', (_event, value: unknown) => {
     const url = new URL(validString(value, 'URL', 2_048))
     if (!['https:', 'http:'].includes(url.protocol)) throw new TypeError('Unsupported URL')
     return shell.openExternal(url.href)
   })
+  handle('hexbot:oauth-return:open', () => oauthReturns.open())
+  handle('hexbot:oauth-return:wait', (_event, port: unknown) => oauthReturns.wait(validPort(port)))
+  handle('hexbot:oauth-return:close', (_event, port: unknown) => oauthReturns.close(validPort(port)))
   handle(
     'hexbot:pick-files',
     async () =>
@@ -406,7 +485,8 @@ else {
     )
     await createWindow()
     try {
-      tray = createTray(daemon, () => void showWindow())
+      tray = createTray(daemon, () => void showWindow(), () => void thisComputer.stop())
+      setComputerActivity({ allowed: thisComputer.allowedNow.terminal || thisComputer.allowedNow.desktop })
     } catch (error) {
       log.warn(`tray unavailable: ${errorMessage(error)}`)
     }
@@ -417,6 +497,10 @@ else {
 }
 app.on('before-quit', () => {
   lifecycle.beginQuit()
+  oauthReturns.closeAll()
+  // Nothing bots started on this computer outlives the app: Cua is killed
+  // at once, since the app may exit before a gentler stop would finish.
+  void thisComputer.release(true)
 })
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()

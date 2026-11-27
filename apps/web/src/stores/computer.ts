@@ -1,7 +1,7 @@
 /**
  * The bots' computer, one Cua sandbox per daemon: what the daemon reports.
  * Loaded when something shows it; `hexbot.computer.changed` keeps it current
- * as it starts, a bot acts, or someone takes over.
+ * as it starts, a bot acts, or the user pauses the bots.
  */
 
 import { create } from 'zustand'
@@ -15,14 +15,20 @@ import {
 } from '../lib/api'
 import type { ComputerQuality, ComputerSize, ComputerStatus } from '../lib/types'
 
-import { useConnection } from './connection'
+import { type ConnectionState, useConnection } from './connection'
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
+
+function currentConnection({ connects, target }: ConnectionState): boolean {
+  const current = useConnection.getState()
+
+  return current.target === target && current.connects === connects
+}
 
 export interface ComputerStoreState {
   apply: (status: Partial<ComputerStatus>) => void
   configure: (size: ComputerSize) => Promise<void>
-  /** Hand the computer to the user, or back to the bots. */
+  /** Pause the bots (`user`), so the user has the computer alone, or resume them (`bot`). */
   control: (holder: 'bot' | 'user') => Promise<void>
   /** The last failed request; the daemon's own errors live in the status. */
   error: null | string
@@ -31,31 +37,35 @@ export interface ComputerStoreState {
   refresh: () => Promise<void>
   status: ComputerStatus | null
   step: (step: 'reset' | 'restart' | 'start' | 'stop') => Promise<void>
-  /** The last request to take control, answered or not. */
-  taking: Promise<void>
   view: (control: boolean, quality?: ComputerQuality) => Promise<null | string>
 }
 
 export const useComputer = create<ComputerStoreState>(set => {
-  const run = async (request: () => Promise<ComputerStatus>) => {
-    const target = useConnection.getState().target
+  let latestRead = 0
+
+  const run = async (request: () => Promise<ComputerStatus>, reading = false) => {
+    const connection = useConnection.getState()
+    const read = reading ? ++latestRead : null
+
+    const current = () => currentConnection(connection) && (read === null || read === latestRead)
 
     try {
       set({ error: null })
       const result = await request()
 
       // An answer from a daemon the app has since left describes another computer.
-      if (useConnection.getState().target !== target) {
-        return false
+      if (!current()) {
+        return
       }
 
-      set(state => ({ status: { ...state.status, ...result } }))
-
-      return true
+      set(state => ({
+        status: { ...state.status, ...result },
+        ...(reading && { read: connection.connects })
+      }))
     } catch (error) {
-      set({ error: message(error) })
-
-      return false
+      if (current()) {
+        set({ error: message(error) })
+      }
     }
   }
 
@@ -67,33 +77,28 @@ export const useComputer = create<ComputerStoreState>(set => {
       await run(() => computerConfigure(size))
     },
     async control(holder) {
-      const request = run(() => computerControl(holder)).then(() => undefined)
-
-      if (holder === 'user') {
-        set({ taking: request })
-      }
-
-      await request
+      await run(() => computerControl(holder))
     },
     error: null,
     read: null,
     async refresh() {
-      const connection = useConnection.getState().connects
-
-      if (await run(computerStatus)) {
-        set({ read: connection })
-      }
+      await run(computerStatus, true)
     },
     status: null,
-    taking: Promise.resolve(),
     async step(step) {
       await run(() => computerStep(step))
     },
     async view(control, quality) {
+      const connection = useConnection.getState()
+
       try {
-        return (await computerView(control, quality)).path
+        const { path } = await computerView(control, quality)
+
+        return currentConnection(connection) ? path : null
       } catch (error) {
-        set({ error: message(error) })
+        if (currentConnection(connection)) {
+          set({ error: message(error) })
+        }
 
         return null
       }

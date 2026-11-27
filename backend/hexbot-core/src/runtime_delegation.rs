@@ -127,7 +127,7 @@ impl Runtime {
             .iter()
             .filter_map(|t| t["name"].as_str().map(str::to_owned))
             // A subagent's reply goes back to its parent bot, not the user.
-            .filter(|n| n != "clarify" && n != "hexbot_show_html")
+            .filter(|n| n != "clarify" && n != "hexbot_show_html" && n != "hexbot_share_file")
             .collect::<Vec<_>>();
         if current_depth + 1 >= max_depth {
             tools.retain(|n| n != "delegate_task");

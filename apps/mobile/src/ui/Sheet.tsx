@@ -3,6 +3,7 @@ import { KeyboardAvoidingView, Modal, Platform, ScrollView, StyleSheet, View } f
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { Button, IconButton } from './Button'
+import { useCover } from './Layer'
 import { Text } from './Text'
 import { HIT, useTheme } from './theme'
 
@@ -35,6 +36,8 @@ export interface ModalSheetProps {
  * system; Android gets a full-screen panel with the same header.
  */
 export function ModalSheet({ visible, ...props }: ModalSheetProps) {
+  useCover(visible)
+
   return (
     <Modal
       animationType="slide"

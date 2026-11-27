@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
 import { Select } from '../../components/ui/select'
+import { Switch } from '../../components/ui/switch'
 import { providerModels } from '../../lib/api'
 import { reasoningOptions, runningLevel } from '../../lib/reasoning'
 import type { Bot, ModelOption, ReasoningEffort } from '../../lib/types'
@@ -52,6 +53,11 @@ export function ModelTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
   // Only providers with a key or sign-in; the bot's own stays listed so it reads correctly.
   const providers = providerRows.filter(row => row.configured || row.id === bot.provider)
 
+  const gone =
+    bot.provider && bot.provider_connected === false
+      ? (providerRows.find(row => row.id === bot.provider)?.label ?? bot.provider)
+      : null
+
   // Only the latest provider choice may save; an earlier, slower one is dropped.
   const latestSwitch = useRef(0)
 
@@ -96,6 +102,12 @@ export function ModelTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
       <Heading description="Which provider and model this bot thinks with, and how hard. Keys live in Settings, Providers.">
         Model
       </Heading>
+      {gone ? (
+        <p className="mb-4 text-[length:var(--text-secondary)] text-danger" role="status">
+          {gone} is no longer connected. Choose another provider, or add its key again in Settings,
+          Providers.
+        </p>
+      ) : null}
       <div className="space-y-8">
         <Group footer="Changes apply from the next message, in the chat and in rooms still on this model.">
           <Row
@@ -104,7 +116,10 @@ export function ModelTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
                 <Select
                   label="Provider"
                   onValueChange={provider => void switchProvider(provider)}
-                  options={providers.map(row => ({ label: row.label, value: row.id }))}
+                  options={providers.map(row => ({
+                    label: row.configured ? row.label : `${row.label}, not connected`,
+                    value: row.id
+                  }))}
                   placeholder="Choose a provider"
                   value={bot.provider ?? undefined}
                 />
@@ -144,6 +159,20 @@ export function ModelTab({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
             title="Reasoning"
           />
         </Group>
+        {current?.fast ? (
+          <Group footer="The same model answers faster and costs more for each token. Applies from the next message. Scheduled jobs and the heartbeat keep the standard speed.">
+            <Row
+              control={
+                <Switch
+                  aria-label="Fast mode"
+                  checked={bot.fast ?? false}
+                  onCheckedChange={fast => void onSave({ fast })}
+                />
+              }
+              title="Fast mode"
+            />
+          </Group>
+        ) : null}
         {current && (current.input_cost || current.output_cost || current.context) ? (
           <Group title="About this model">
             {current.context ? (

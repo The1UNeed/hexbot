@@ -25,10 +25,12 @@ import {
 } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 
+import { ScrollArea } from '../../components/ui/scroll-area'
 import { cn } from '../../lib/cn'
 import type { Message, ToolCall } from '../../lib/types'
+import type { WorkLabel } from '../../lib/work-label'
 
-import { ASKING_TOOL, asks, toolLabel } from './steps'
+import { ASKING_TOOL, asks, toolLabel, workLabel, workSentence } from './steps'
 
 const format = (value: unknown) =>
   typeof value === 'string' ? value : JSON.stringify(value, null, 2)
@@ -43,6 +45,7 @@ const ICONS: Record<string, LucideIcon> = {
   execute_code: Code,
   hexbot_passwords: KeyRound,
   hexbot_plugins: Puzzle,
+  hexbot_share_file: FileText,
   hexbot_show_html: ChartColumn,
   hexbot_soul: Sparkles,
   image_generate: Image,
@@ -73,6 +76,10 @@ export function toolIcon(name: string): LucideIcon {
 function StepMark({ call }: { call: ToolCall }) {
   if (call.status === 'running') {
     return <span className="size-1.5 shrink-0 rounded-full bg-info" />
+  }
+
+  if (call.status === 'unresolved') {
+    return <CircleAlert className="shrink-0 text-warning" size={13} />
   }
 
   return call.status === 'error' ? (
@@ -121,14 +128,24 @@ export function StepRow({ call, meta }: { call: ToolCall; meta?: ReactNode }) {
         <div className="hex-unfold">
           <div className="mt-1 mb-2 ml-[34px] grid gap-1.5">
             {call.args != null ? (
-              <pre className="max-h-40 overflow-auto rounded-[10px] bg-foreground/[0.04] p-2.5 font-mono text-[length:var(--text-meta)] leading-relaxed">
-                {format(call.args)}
-              </pre>
+              <ScrollArea
+                className="max-h-40 overflow-hidden rounded-[10px] bg-foreground/[0.04]"
+                viewportClassName="overflow-auto"
+              >
+                <pre className="p-2.5 font-mono text-[length:var(--text-meta)] leading-relaxed">
+                  {format(call.args)}
+                </pre>
+              </ScrollArea>
             ) : null}
             {call.result !== null ? (
-              <pre className="max-h-60 overflow-auto rounded-[10px] bg-foreground/[0.04] p-2.5 font-mono text-[length:var(--text-meta)] leading-relaxed">
-                {format(call.result)}
-              </pre>
+              <ScrollArea
+                className="max-h-60 overflow-hidden rounded-[10px] bg-foreground/[0.04]"
+                viewportClassName="overflow-auto"
+              >
+                <pre className="p-2.5 font-mono text-[length:var(--text-meta)] leading-relaxed">
+                  {format(call.result)}
+                </pre>
+              </ScrollArea>
             ) : null}
           </div>
         </div>
@@ -148,10 +165,46 @@ const stepRunning = (message: Message) =>
 export const isWorking = (message: Message) => message.streaming || stepRunning(message)
 
 /**
+ * One status line: the bot's face and what it is doing, in two tones. The
+ * specific part ("Taobao" in "Opening Taobao") is drawn stronger than the
+ * verb. No bubble behind it, nothing to open, and it does not move; the face
+ * beside it does.
+ */
+export function StatusLine({
+  face,
+  label,
+  name
+}: {
+  face?: ReactNode
+  label: WorkLabel
+  name: string
+}) {
+  return (
+    <div
+      aria-label={workSentence(name, label)}
+      aria-live="polite"
+      className="flex h-9 max-w-full items-center gap-2 pr-1 text-[length:var(--text-secondary)] text-muted"
+      data-testid="thinking"
+      role="status"
+    >
+      {face}
+      <span className="truncate">
+        {label.verb}
+        {label.object ? <span className="text-foreground/80"> {label.object}</span> : null}
+      </span>
+    </div>
+  )
+}
+
+/**
  * The live line at the foot of a running turn. It stays until the whole turn
- * is done: the bot's face, in the mood of its work, and "General is
- * working", no bubble behind it and nothing to open. A conversation shows what bots say, not how they
- * got there; the side panel's Computer tab still lists every step.
+ * is done: the bot's face, in the mood of its work, and what it is doing
+ * right now: "Thinking…", "Opening Taobao", "Searching the web for CER
+ * dates", "Typing…". The words come from the running step, never from the
+ * model. A page is named by its site and a file by its own name; a command or
+ * a script is never quoted. A conversation shows what bots say, not how they
+ * got there: the line is gone when the turn is, and the side panel's
+ * Computer tab still lists every step.
  */
 export function LiveStatus({
   face,
@@ -168,20 +221,7 @@ export function LiveStatus({
     return null
   }
 
-  const label = `${name} is working`
-
-  return (
-    <div
-      aria-label={label}
-      aria-live="polite"
-      className="flex h-9 max-w-full items-center gap-2 pr-1 text-[length:var(--text-secondary)] text-muted"
-      data-testid="thinking"
-      role="status"
-    >
-      {face}
-      <span className="truncate">{label}</span>
-    </div>
-  )
+  return <StatusLine face={face} label={workLabel(message)} name={name} />
 }
 
 /**

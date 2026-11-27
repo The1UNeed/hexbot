@@ -1,9 +1,14 @@
 # Bot face provenance
 
 Hexbot's faces are its own artwork under the repository's license
-(Apache-2.0, see `LICENSE` and `NOTICE`). The eight 100-unit outlines,
-palette, and ball placement come from `apps/web/src/lib/avatar-builder.ts`
-and now live in `lib/face-geometry.ts`. The eyes are the upright capsules of
+(Apache-2.0, see `LICENSE` and `NOTICE`). The first eight 100-unit outlines,
+the first eleven colours, and ball placement come from
+`apps/web/src/lib/avatar-builder.ts` and now live in `lib/face-geometry.ts`.
+Eleven more outlines (star, heart, flower, clover, ghost, cat, egg, diamond,
+shield, burst, leaf) and ten more colours (Berry, Coral, Peach, Lemon, Lime,
+Pine, Midnight, Blueberry, Lilac, Orchid) were drawn for Hexbot in the same
+100-unit space: arcs, fillets and curves written by hand, no traced or
+imported artwork. Peach, Lemon and Lilac take ink eyes, as Chalk does. The eyes are the upright capsules of
 the Hexbot icon (`CAPSULE_EYE`; at the idle size, the icon's 11.7 by 27
 eye). Every expression is one pose of that capsule: where it sits, how large
 it is, how flat, how it leans, and whether it stands or lies on its side.
@@ -15,8 +20,9 @@ concentrating. Searching, working and happy
 faces now and then turn all the way round, with a sweep in tints of their
 own colour. A face leaving sleeping throws four-point sparks. Thinking,
 writing and loading fold the face into three round dots, a pencil, or a
-whirl round a dot. Ten emotions (curious, surprised, shy, confused,
-frustrated, sad, proud, celebrating, bored, drowsy) are further poses and
+whirl round a dot. Sixteen emotions (curious, surprised, shy, confused,
+frustrated, sad, proud, celebrating, bored, drowsy, excited, amused,
+cheerful, sheepish, determined, relieved) are further poses and
 motions of the same capsules, and `lib/emotions.ts` decides them from the
 conversation with rules written for Hexbot. The kind of motion follows the
 faces proposed in #123, which were preferred to the CSS-only faces that replaced them;
@@ -44,8 +50,8 @@ One animation frame loop drives every visible, moving face, writes only the
 attributes that changed, and stops when no face moves. Held, offscreen,
 hidden-page, and reduced-motion faces do not run; reduced motion draws each
 mood's rest pose, morph included. React draws every SVG node at rest, and
-the engine moves those same nodes. The existing click acts are CSS and hold
-the face at rest while they play.
+the engine moves those same nodes. Acts are CSS and hold the face at rest
+while they play.
 
 The site logo, favicon, and desktop and mobile package icons show the same
 capsule eyes as the faces.

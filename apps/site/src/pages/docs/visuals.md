@@ -24,6 +24,6 @@ On the phone, a visual shows as a card in the chat; tap **Open** to see it on it
 
 A visual follows your light or dark appearance as it changes. It is about as wide as the chat column and grows with its content, up to 2,000 pixels tall.
 
-Each visual runs in a sandboxed frame. It can run scripts and load script and style libraries from a few public CDNs (jsDelivr, unpkg, cdnjs, and esm.sh) and fonts from Google Fonts, but it cannot fetch anything else, open other pages in its frame, or reach your daemon. Its data is written into the page, and images are embedded in it. A link in a visual opens in your browser only after you confirm it.
+Each visual runs in a sandboxed frame. It can run scripts and load script and style libraries from a few public CDNs (jsDelivr, unpkg, cdnjs, and esm.sh) and fonts from Google Fonts, but it cannot fetch anything else, open other pages in its frame, or reach your daemon. Its data is written into the page, and images are embedded in it. A link you click in a visual opens in your browser. A link the page tries to open on its own waits for you to confirm it, and on the phone every link asks first.
 
 A visual is saved with the chat, so it is still there after a reload, on every app you use. A page can be up to 512 KB.

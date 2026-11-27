@@ -5,8 +5,8 @@ describe('plugin icons', () => {
     expect(skillIcon({ category: 'productivity', name: 'notion', source: 'bundled' })).toBe(
       'notion'
     )
-    expect(skillIcon({ category: 'productivity', name: 'new-one', source: 'bundled' })).toBe(
-      'glyph:list-checks'
+    expect(skillIcon({ category: 'documents', name: 'new-one', source: 'bundled' })).toBe(
+      'glyph:file-text'
     )
   })
 
@@ -67,5 +67,28 @@ describe('plugin icons', () => {
       })
     ).toBe(DEFAULT_SERVER_ICON)
     expect(serverIcon('sandbox')).toBe(DEFAULT_SERVER_ICON)
+  })
+})
+
+describe('brand logos', () => {
+  it("draws Google's and Microsoft's own files, never a glyph on a colour", async () => {
+    const { BRAND_ICONS } = await import('./connector-icons')
+    const { BRAND_LOGOS } = await import('./brand-logos')
+
+    const theirs = Object.keys(BRAND_ICONS).filter(key => /^(gmail|google|microsoft)/.test(key))
+
+    // Chrome and Maps are skills' icons, not connectors: still Simple Icons.
+    const official = theirs.filter(key => !['googlechrome', 'googlemaps'].includes(key))
+
+    expect(official).toHaveLength(15)
+
+    for (const key of official) {
+      expect(BRAND_ICONS[key], key).toMatchObject({ logo: true })
+      expect(BRAND_ICONS[key]!.path, key).toBeUndefined()
+      expect(BRAND_LOGOS[key], key).toBeTruthy()
+    }
+
+    // Every file drawn has an entry that names it.
+    expect(Object.keys(BRAND_LOGOS).sort()).toEqual(official.sort())
   })
 })

@@ -8,7 +8,7 @@ import { ActProps, type HexbotActName, useAct } from './hexbot-act'
 
 /**
  * The Hexbot mark: a hexagon face in the text colour, eyes cut from the
- * background. Like every face, a click makes it play a random act.
+ * background.
  */
 export function HexbotMark({
   act,
@@ -32,7 +32,6 @@ export function HexbotMark({
       aria-hidden
       className={cn('hex-face relative inline-block shrink-0 text-foreground', className)}
       data-visible={visible}
-      onClick={playing.play}
       ref={ref}
       style={{ height: size, width: size, ...style }}
     >

@@ -44,9 +44,9 @@ window.faces = {
   gallery: () => render(h('main', { style: { padding: 48, maxWidth: 1150, margin: 'auto' } },
     h('h1', { style: { fontSize: 28, fontWeight: 600, marginBottom: 12 } }, 'Hexbot faces'),
     h('p', { style: { marginBottom: 40 } }, 'Capsule eyes. Expressions follow the work; emotions follow what happens.'),
-    ...[FACE_MOODS, FACE_EMOTIONS].map((moods, row) => h('div', { key: row, style: { display: 'flex', gap: 36, marginBottom: 48 } }, moods.map(mood => h('div', { key: mood, style: { textAlign: 'center' } }, h(Avatar, { name: mood, mood, size: 'xl', style }), h('p', { style: { marginTop: 12 } }, mood))))),
-    h('div', { style: { display: 'flex', gap: 42, marginBottom: 48 } }, avatars.AVATAR_SHAPES.map(shape => h('div', { key: shape.id, style: { textAlign: 'center' } }, h(Avatar, { name: shape.label, size: 'xl', style: { color: 'teal', shape: shape.id } }), h('p', { style: { marginTop: 12 } }, shape.label)))),
-    h('div', { style: { display: 'flex', gap: 20 } }, avatars.AVATAR_COLORS.map(color => h(Avatar, { key: color.id, name: color.label, size: 'lg', style: { color: color.id, shape: 'hexagon' } })))
+    ...[FACE_MOODS, FACE_EMOTIONS].map((moods, row) => h('div', { key: row, style: { display: 'flex', flexWrap: 'wrap', gap: 36, marginBottom: 48 } }, moods.map(mood => h('div', { key: mood, style: { textAlign: 'center' } }, h(Avatar, { name: mood, mood, size: 'xl', style }), h('p', { style: { marginTop: 12 } }, mood))))),
+    h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 42, marginBottom: 48 } }, avatars.AVATAR_SHAPES.map(shape => h('div', { key: shape.id, style: { textAlign: 'center' } }, h(Avatar, { name: shape.label, size: 'xl', style: { color: 'teal', shape: shape.id } }), h('p', { style: { marginTop: 12 } }, shape.label)))),
+    h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 20 } }, avatars.AVATAR_COLORS.map(color => h(Avatar, { key: color.id, name: color.label, size: 'lg', style: { color: color.id, shape: 'hexagon' } })))
   ))
 }
 window.faces.gallery()
@@ -58,11 +58,11 @@ window.faces.gallery()
   page.on('pageerror', error => errors.push(error.message))
   await page.goto(`http://127.0.0.1:${server.httpServer.address().port}/${fixture}`)
   await page.waitForFunction(() => Boolean(window.faces))
-  await page.screenshot({ path: path.join(artifacts, 'faces-light.png') })
+  await page.screenshot({ fullPage: true, path: path.join(artifacts, 'faces-light.png') })
   await page.emulateMedia({ colorScheme: 'dark' })
-  await page.screenshot({ path: path.join(artifacts, 'faces-dark.png') })
+  await page.screenshot({ fullPage: true, path: path.join(artifacts, 'faces-dark.png') })
 
-  // Actual canvas rasterisation and readback, all 8 shapes x 11 colours x 3 formats.
+  // Actual canvas rasterisation and readback, every shape x every colour x 3 formats.
   const roundtrips = await page.evaluate(async () => {
     const f = window.faces
     const failures = []

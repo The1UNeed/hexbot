@@ -279,6 +279,35 @@ async fn run() -> Result<()> {
     let _lock = lock_home(&home)?;
     #[cfg(windows)]
     windows_process_lifetime::retain_until_process_exit()?;
+    // Before any database is opened: this build may be on trial, or the old
+    // build may need to restore the snapshot of an update that failed.
+    let trial = hexbot_core::update_trial::on_start(&home)?;
+    if let Some(trial) = &trial {
+        trial.start_watchdog(
+            tokio::runtime::Handle::current(),
+            hexbot_core::update_trial::WATCHDOG,
+        );
+    }
+    let result = serve(&home, host, port, lan, diagnostics, phase, trial.as_ref()).await;
+    // Anything that fails before the commit fails the trial. The service
+    // starts the old build, which restores the snapshot.
+    if let (Err(error), Some(trial)) = (&result, &trial) {
+        trial.fail(&format!("failed to start: {error}")).await;
+    }
+    result
+}
+
+async fn serve(
+    home: &Path,
+    host: Option<IpAddr>,
+    mut port: u16,
+    lan: Option<bool>,
+    diagnostics: &'static hexbot_core::diagnostics::Diagnostics,
+    phase: Instant,
+    trial: Option<&hexbot_core::update_trial::TrialGuard>,
+) -> Result<()> {
+    let home = home.to_owned();
+    let mut host = host;
     let executable = std::env::current_exe()?;
     common::atomic_write(
         &home.join("runtime/native-running.json"),
@@ -318,7 +347,24 @@ async fn run() -> Result<()> {
             port,
         );
         let phase = Instant::now();
-        let listener = match tokio::net::TcpListener::bind(address).await {
+        // The old build released the port just before it switched, but give
+        // a trial a moment rather than fail it on a port still closing.
+        let mut tries = 0;
+        let bound = loop {
+            match tokio::net::TcpListener::bind(address).await {
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::AddrInUse
+                        && trial.is_some()
+                        && previous.is_none()
+                        && tries < 10 =>
+                {
+                    tries += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+                bound => break bound,
+            }
+        };
+        let listener = match bound {
             Ok(listener) => listener,
             Err(error) => {
                 if let Some(app) = previous.take() {
@@ -341,6 +387,9 @@ async fn run() -> Result<()> {
         };
         if first {
             diagnostics.launch_phase("Start bots, rooms and memory", phase);
+            if let Some(trial) = trial {
+                trial.set_app(app.clone());
+            }
         }
         common::atomic_write(
             &home.join("serve-state.json"),
@@ -353,8 +402,17 @@ async fn run() -> Result<()> {
             app.rooms.reconcile().await?;
             diagnostics.launch_phase("Recover room turns", phase);
             let phase = Instant::now();
+            app.discord.start().await?;
+            diagnostics.launch_phase("Connect bots to Discord", phase);
+            let phase = Instant::now();
             app.dreaming.start().await?;
             diagnostics.launch_phase("Schedule dreaming", phase);
+            // Everything that can fail has run and nothing serves clients
+            // yet: keep the new build. Connect starts after this.
+            if let Some(trial) = trial {
+                trial.commit()?;
+                println!("Update to {} committed", trial.trial().to_version);
+            }
         }
         let phase = Instant::now();
         if let Err(error) = services::start_daemon(&home, port).await {
@@ -376,7 +434,7 @@ async fn run() -> Result<()> {
             })
             .await
         });
-        if let Err(error) = services::prune_current_native(&home) {
+        if let Err(error) = services::prune_current_native(&home, first) {
             eprintln!("Runtime cleanup: {error}");
         }
         if let Err(error) = finish_native_transition(&home) {
@@ -447,10 +505,11 @@ async fn run() -> Result<()> {
         if rebind {
             app.disconnect();
             previous = Some(app);
+            let _ = services::stop_connect(&home).await;
         } else {
             app.shutdown().await;
+            let _ = services::shutdown(&home).await;
         }
-        let _ = services::shutdown(&home).await;
         let _ = std::fs::remove_file(home.join("serve-state.json"));
         let _ = stop.send(());
         if tokio::time::timeout(std::time::Duration::from_secs(10), &mut serving)
@@ -463,21 +522,29 @@ async fn run() -> Result<()> {
         if terminated {
             break;
         }
-        if let Some(executable) = update {
-            let mut next = std::process::Command::new(executable);
-            next.arg("serve")
-                .arg("--host")
-                .arg(address.ip().to_string())
-                .arg("--port")
-                .arg(port.to_string())
-                .env("HEXBOT_HOME", &home);
+        if let Some((update_id, staged)) = update {
+            use hexbot_core::update_trial;
+            let version = staged.version.clone();
+            let next = match services::begin_update(&home, staged, &update_id) {
+                Ok(next) => next,
+                Err(error) => {
+                    eprintln!("Update to {version}: {error}");
+                    update_trial::abandon(&home, &update_id, &version, &error.to_string())?
+                }
+            };
             #[cfg(unix)]
             {
-                use std::os::unix::process::CommandExt;
-                return Err(next.exec().into());
+                let error = update_trial::exec_launcher(&home, &next, address);
+                // Fails the trial if the switch happened; the service restarts.
+                // Without a trial the service starts whatever is selected.
+                if update_trial::read_trial(&home)?.is_some() {
+                    update_trial::abandon(&home, &update_id, &version, &error.to_string())?;
+                }
+                return Err(error.into());
             }
             #[cfg(windows)]
             {
+                let _ = next;
                 // The scheduled task wrapper waits for this process to exit,
                 // resolves the new selection, then starts it in the same job.
                 // No child races this process's home lock or escapes the task.

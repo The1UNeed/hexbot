@@ -23,8 +23,18 @@ data model. The native transport and event projection live in
 
 ## Core methods the client calls directly
 
-- Chat: `prompt.submit {session_id, text, attachments?, input_id?}`,
+- Chat: `prompt.submit {session_id, text, attachments?, input_id?, interrupt?}`,
   `session.interrupt`, `session.steer {session_id, text, input_id?}`.
+  A `prompt.submit` while the bot works answers 4002, unless it sets
+  `interrupt: true`: then the running reply stops first, as
+  `session.interrupt` would, and the message starts the next run once Stop
+  finishes. A `/compact` in progress finishes first, and a `/compact` sent
+  this way is still refused while the bot works. The web and mobile apps
+  send every message from the composer this way.
+  For files without words the apps send "Please review the attached
+  files."; the daemon uses the same words when `attachments` names a file
+  and `text` is empty or left out, and that prompt never names the chat.
+  Empty text with no files answers 4200.
   `session.steer` steers a healthy busy run. During Stop or manual compaction
   it waits before staging input; when idle it starts a fresh run. Close or
   process exit rejects a waiting steer with a session error.
@@ -51,6 +61,25 @@ data model. The native transport and event projection live in
   `file.attach {session_id, data_url, name}`, `pdf.attach {session_id, content_base64}`.
   `attachments.clear {session_id}` clears all unsubmitted attachments and removes
   their staged files. It refuses while the bot is working and keeps the session.
+  `attachments.remove {session_id, id}` → `{removed: true}` takes back one
+  staged upload and removes its files, for a file the user took out of the
+  composer; it works while the bot is working, and an upload a message
+  already took, or one never staged, answers 4204. Clients stage each file
+  the moment it is attached and send only once every one is staged.
+  `attachments.part {session_id, upload, offset, data}` → `{received}` sends
+  a file in parts, so a client can show how much of it the daemon has:
+  `upload` is the client's name for it (1 to 64 letters, digits, `-` or `_`),
+  `offset` the bytes sent so far (0 starts it afresh), `data` base64 of at
+  most 8 MiB. A part out of order answers 4202, a continuation of an
+  unknown upload 4204, and an upload past 45 MiB 4202. Parts wait on disk in
+  the chat's folder, so a new process for the chat keeps them; a new upload
+  drops ones idle for an hour and keeps at most four. Then
+  `image.attach_bytes`, `file.attach` or `pdf.attach` with `upload` in place
+  of `content_base64` or `data_url` stages it with the same checks and drops
+  the parts; a refused attach keeps them, so a PDF the daemon cannot draw
+  (5028) can go as a file. `attachments.clear` drops parts too. A daemon
+  without the method answers -32601, and has no `attachments.remove` either:
+  clients keep files until Send there and send them whole.
   Each attach call answers with an `id`. `prompt.submit` with
   `attachments: [id, ...]` consumes only those staged uploads. Unselected
   uploads remain staged for a later submission, including uploads from another
@@ -58,13 +87,51 @@ data model. The native transport and event projection live in
   An id that is no longer staged answers 4204 and changes nothing. Without
   `attachments`, every staged upload goes with the prompt as before. Rejected
   prompts restore selected uploads alongside unselected and newly staged ones.
-  Retained uploads still count toward staging limits, prevent idle retirement,
-  and survive a tools or model restart. `attachments.clear`, session close and
+  Retained uploads still count toward staging limits and survive a tools or
+  model restart. They do not keep a process: one retiring idle parks them, and
+  the section's next open takes them back. One staged over a day ago and
+  never sent is removed instead, at retirement or by the daemon's
+  maintenance pass, without the chat opening. A background result, a hidden
+  deadline input or a new chat's kickoff never takes staged uploads; a
+  client's own `prompt.submit` without `attachments` still takes them all. `attachments.clear`, session close and
   section deletion remove unused staged files; submitting an exact list does not.
   Images allow 25 MiB decoded; PDFs and generic files allow 45 MiB.
   Larger attachments return 4202 with the size limit. Browser clients check
   before reading or uploading. WebSocket frames and in-flight request bytes
   are capped at 64 MiB per connection.
+- Files beside the chat: `hexbot.files.read {session_id, path}` →
+  `{path, name, size, modified, version, mime, text? | data_url?}` and
+  `hexbot.files.write {session_id, path, text | data_url, version?}` →
+  `{path, size, modified, version}`. Both reach only existing regular files, after
+  symlinks are resolved, inside the folders the session's bot may write: the
+  chat's working folder, the bot's `artifacts` folder, and the chat's
+  `attachments` folder (4302 elsewhere, 4204 when missing); a relative path
+  is taken from the working folder, and a leading `~`, `$HOME` or `${HOME}`
+  is the user's home, as the bot's file tools read it. A read answers `text`
+  for UTF-8 without NUL bytes up to 2 MiB, otherwise a `data_url`, up to
+  45 MiB (4202 over); PDFs, images, video, audio and Office files are always
+  a `data_url` for clients using this form.
+  Clients can pass `stream_media: true` to receive a `media_path` for audio,
+  video and raster images. Resolve this opaque link against the daemon origin.
+  GET streams the file over HTTP and supports single byte ranges for seeking.
+  HEAD returns its size and MIME type. The link expires when the issuing
+  WebSocket closes. Each request checks device access and the chat's file
+  permissions. Treat the link as a credential. Older daemons return
+  `data_url` even when the client requests streaming.
+  An edit or replacement expires the old file revision. Read the file again
+  for a fresh link. The daemon identifies streamed revisions using filesystem metadata.
+  For other reads, `version` is the SHA-256 of the contents. A write replaces a text file up
+  to 2 MiB in one step through a directory handle that refuses symlinks and
+  keeps its permissions, one write at a time; it refuses binary files (4202).
+  A write with a base64 `data_url` replaces a PNG, JPEG or WebP picture or a
+  Word, Excel or PowerPoint file the panel edited, up to 45 MiB, the same
+  way; it must name `version` (4200 without), refuses any other format and
+  bytes that are not the format the file's name says (4202), and answers
+  4209 for a file grown past 45 MiB. Either write, when `version` (from the last read or write) no longer matches the
+  file, answers 4209 and changes nothing. In Auto and Manual a bot's `edit`
+  takes the same turn and is refused the same way when the file changed
+  after the bot read it, so it cannot undo a save made in between; the bot
+  reads the file again. In Bypass the bot's tools write directly.
 - Approvals: `approval.respond {session_id, request_id, choice}`
   with `choice` in `once | session | deny`. `session` ("Allow for now")
   quiets the same kind of Manual or unreviewed request until the section's
@@ -89,7 +156,41 @@ data model. The native transport and event projection live in
   for that provider are read. With `setup`, a field with nothing saved must
   be filled (4202, and the card keeps waiting). The values are saved as
   `hexbot.connectors.setup` or `hexbot.plugins.configure` saves them, and,
-  like a sign-in, reach no event, log or history row. Questions arrive as `clarify.request` and
+  like a sign-in, reach no event, log or history row. A `form` with
+  `kind: "email_draft"` is the draft card `hexbot_mail` shows: `{service:
+  "google" | "microsoft" | "imap"` (the account), `service_name` (Gmail,
+  Outlook, or IMAP mail's service, such as iCloud Mail), `from, grant, to, cc, bcc, subject,
+  body, reply_to}`, the address lists as arrays. A `reply_to` that names no
+  message returns its error to the bot (4215, or 4202 for a malformed id)
+  and shows no card. `grant` names the sign-in
+  the card was written under, or for IMAP mail a hash of its address, user
+  name and servers; a sign-in or new settings since then won't send it.
+  IMAP mail's card also has `thread: {message_id, references}`, the
+  headers of the message a reply answers, read when the card showed, so a
+  reply still goes in its thread once that message was archived. It is shown in every approval
+  mode, Bypass included. Answer `once` with `mail_action: "send" | "save"`
+  and `draft: {to, cc, bcc, subject, body, reply_to}` as the user left it,
+  or `deny` to discard it. The reply comes once the mailbox took the
+  email, so the card settles only then. An address that isn't one address,
+  a line break in an address or the subject, or `send` with nobody to send
+  to returns 4202; a mailbox that refuses it, an account signed in as
+  someone other than `from`, or the connector turned off for the bot
+  returns its error; 5244 means the service took it but never answered, so
+  it may have gone out or been saved, and the message says where to look.
+  In every such case the card keeps waiting, and any other answer while one
+  is going out, Discard included, returns 4204. `approval.resolved`
+  for this card also carries `mail_action` and `draft`, the email as it
+  went. An SMTP send that gets no answer within 120 seconds ends as 5244 too.
+  A card a tool shows carries `tool_id`, the Pi tool call that showed it,
+  when the call came from Pi. Answered cards are kept nowhere else: clients
+  draw them again from the history row of that call, its arguments and
+  result. A closed card's tool returns "The user closed the draft without
+  sending it.", "The user closed the sign-in card." or "The user said no.",
+  and a failure after the user agreed on a sign-in or plugin card starts
+  "The user agreed on the card, but it didn't work:"; clients rely on these
+  words. Plugin results name the plugin (`name`). A card-showing call made
+  from code (clarify, a draft, a sign-in, installing, turning on or setting
+  up a plugin) is refused; the bot makes it itself. Questions arrive as `clarify.request` and
   `pending_clarify` on section open; use `clarify.respond` to answer.
   Every card that stops waiting is settled once, to every client of the
   owner, by its `request_id`. An answer sends `approval.resolved
@@ -127,7 +228,11 @@ data model. The native transport and event projection live in
   questions arriving while the turn is stopping are cancelled before Pi's abort
   finishes, without publishing new cards. A client answer that Stop has already
   claimed returns 4204. An answer committed to Pi before Stop can finish;
-  duplicate answers cannot commit again. Partial clarification answers remain
+  duplicate answers cannot commit again. Once the user agreed on a draft,
+  sign-in or plugin card, Stop waits for its tool to finish (the email to
+  go, the keys or login to be saved) and hand Pi the outcome, so the chat
+  keeps it; a refused send reopens the card and Stop goes on. Every step
+  has its own limit, under a 10-minute ceiling. Partial clarification answers remain
   waiting, and a failed final enqueue leaves the last question retryable.
   Queued input arriving during Stop waits until Stop finishes and the stopped
   run or command completes, then starts or joins a fresh run. Input already
@@ -162,7 +267,9 @@ data model. The native transport and event projection live in
 - Health: `gateway.ping`, `gateway.capabilities`.
 
 Events the client renders: `message.start`, `message.delta`, `message.interim`,
-`message.complete` (turn end), `reasoning.delta`, `thinking.delta`, `tool.start`, `tool.complete`,
+`message.complete` (turn end; at the end of a run it also carries `bot`,
+`section_id` and `chat`, true when the run was in a bot's own chat, which every
+client notifies about), `reasoning.delta`, `thinking.delta`, `tool.start`, `tool.complete`,
 `approval.request`, `approval.resolved`, `approval.expire`, `clarify.request`,
 `clarify.resolved`, `clarify.expire`, `status.update`, `session.info`, `session.usage {usage,
 context}` (the section's totals and its context meter, see Sections), `error`.
@@ -213,7 +320,10 @@ Tool-event `message_id` names the assistant that actually owns `toolCallId`.
 Unknown, nested or ambiguous owners omit it. An explicit `parentToolCallId`
 prevents direct-call attribution even when the nested ID equals an earlier
 top-level tool ID. Tool-result history keeps its
-own distinct `row_id` and `tool_call_id`. Cards may omit fragment association.
+own distinct `row_id` and `tool_call_id`. An approval or question card carries
+the `turn_id` and the `message_id` of the assistant fragment whose tool asked,
+so clients keep it under that fragment once history is read again. A card
+asked outside a run carries neither.
 
 Terminal metadata is captured at `agent_end`, rather than read from a newer
 operation at settlement. Unmatched settlement cannot finish a known active
@@ -241,8 +351,9 @@ mutation methods check ownership.
 
 - `hexbot.info {}` → `{version, hermes_version, daemon_name, install_id,
   auth_required, lan_enabled, addresses: [string], platform, sandbox, home,
-  update_capability, one_chat, transcript_identity?}`. See optional transcript
-  identity above. `one_chat` is true once
+  update_capability, one_chat, transcript_identity?, approval_rules?}`. See optional transcript
+  identity above. `approval_rules` is true once the daemon supports
+  `hexbot.approvals.rules.*` persistent Auto-mode rules. `one_chat` is true once
   `hexbot.sections.create` returns the bot's one chat; older daemons leave it
   out. `update_capability` is `desktop` when the Hexbot app
   on that machine runs the daemon, `service` when launchd or systemd does,
@@ -258,44 +369,99 @@ mutation methods check ownership.
   only if the original file has no ID.
 - `hexbot.settings.get {}` → `{approval_mode, lan_enabled,
   service_installed, workspace_dir, billing_notice_ack, dream_time, dream_enabled,
-  usage_data}`. `approval_mode` defaults to `smart` (Auto). `usage_data`
+  review_model, usage_data}`. `approval_mode` defaults to `smart` (Auto).
+  `review_model` (`provider/model`, default `null`) is the model that reviews
+  Auto mode's steps for every bot; `null` uses each bot's own. `usage_data`
   (default `false`) lets the daemon send anonymous usage data
   (`docs/usage-data.md`); turning it off deletes `<HEXBOT_HOME>/usage.json`.
   Bots cannot change it.
 - `hexbot.settings.set {patch}` → same shape; only whitelisted keys.
-  Room settings are `room_bot_turns_per_human_turn` (default 8),
+  `soul_char_limit` (default 4000) and `memory_char_limit` (default 2200)
+  are the character limits for every bot without its own, each a whole
+  number from 500 to 20000 (4202 otherwise). Room settings are `room_bot_turns_per_human_turn` (default 8),
   `room_budget_tokens_per_human_turn` (default null), and
   `bot_daily_token_budget` (default null).
+- `hexbot.approvals.rules.list {}` → `{rules: [{id, kind, text, source, tool, computer, created_at}]}`.
+  Owner-scoped Auto-mode rules (`kind` is `allow` for Allow automatically or
+  `ask` for Ask first; `source` is `manual` or `card`). Ask first always overrides
+  Allow automatically; card-saved rules carry their target `computer`.
+- `hexbot.approvals.rules.add {kind, text, tool?, computer?}` → `{rule}`.
+  Deduplicates case-insensitively per owner and kind; caps at 40 rules per kind
+  and 500 characters per rule (4202 otherwise). Emits `hexbot.approvals.changed`.
+- `hexbot.approvals.rules.remove {id}` → `{removed: boolean}`. Owner-scoped.
+  Emits `hexbot.approvals.changed`.
+- `hexbot.approvals.rules.clear {kind?}` → `{removed: number}`. Removes all
+  rules for the owner (or only the given `kind`). Emits `hexbot.approvals.changed`.
+  Non-critical Auto-mode `approval.request` cards may carry reviewer-authored
+  `title`, the computer-scoped `rule` that `choice: "always"` will save, and
+  `choices: ["once", "always", "deny"]`; clicking `always` validates and saves
+  the rule before settling and returns 4202 if the rule cannot be stored.
 
 ### Bots
 
-Bot shape: `{name, display_name, title, description, primary, persona, tools: [string], available_tools: [string], skills: [string],
-provider, model, reasoning_effort | null, avatar: {mime, data} | null, face: {shape, color} | null,
+Bot shape: `{name, display_name, title, description, primary, pinned_at, persona, tools: [string], available_tools: [string], skills: [string],
+provider, provider_connected | null, model, reasoning_effort | null, fast, avatar: {mime, data} | null, face: {shape, color} | null, kept_face: {shape, color} | null,
 created_at, updated_at, last_activity_at,
 owner_id, dream_enabled, notify, approval_mode, workdir | null,
+soul_char_limit | null, memory_char_limit | null, soul_cap, memory_cap,
 status, status_detail | null, sections_total, sections_recent: [Section]}`
 
-`available_tools` lists the `tools` keys whose program or service exists on
-the daemon computer: computer use needs the cua driver, vision a key or
-endpoint for its vision provider, and voice edge-tts or its provider's key.
-The others are always available. Every bot has `computer_use` while it is
-available, whatever its saved toolsets say; bots run code and browse there.
-`code_execution` and `browser` ran on the daemon's computer and are never
-offered. `tools` only reports available tools,
-and a tool that isn't available is never offered to a model; a frozen section
-that still lists one gets an error when calling it.
-Provider key changes broadcast `hexbot.bots.changed` to every user so paired
-clients refresh tool availability. Speech calls check the requested provider
+`soul_char_limit` and `memory_char_limit` are the bot's own limits, stored
+under `memory:` in its `config.yaml`; null follows the setting of the same
+name. `soul_cap` and `memory_cap` are the limits in effect: a managed
+config's value, else the bot's own, else the setting. A new bot starts
+with neither of its own.
+
+`available_tools` lists the `tools` keys whose program or service exists:
+vision needs a key or endpoint for its vision provider, and voice edge-tts
+or its provider's key. The others are always available. `terminal` follows
+the bot's computers (`hexbot.computers.*`): a bot has bash while it works on
+some computer. Computer Use is the `computer_use` connector
+(`hexbot.connectors.set_for_bot`), not a tool switch: with it the bot has
+`computer_use` on the screens of its computers that are shared.
+`code_execution`, `browser` and `computer_use` sent in `tools` by older
+clients are accepted and ignored; `code_execution` and `browser` ran on the
+daemon's computer and are never offered. A tool
+that isn't available is never offered to a model; a frozen section that
+still lists one gets an error when calling it.
+Provider key changes and finished sign-ins broadcast `hexbot.bots.changed` to
+every user so paired clients refresh tool availability and
+`provider_connected`. Speech calls check the requested provider
 when it overrides the default.
+`provider` is stored as given; `provider_connected` judges it by what the
+name resolves to, so `claude`, `codex` and `openai` count as their
+providers, and a custom endpoint by its name or `custom:<name>`. A provider
+whose sign-in the daemon cannot see, Copilot ACP through its CLI, Bedrock
+through the AWS SDK, Vertex through Google application credentials, counts
+until the user turns it off, and the Qwen CLI's sign-in, which the daemon
+imports to run a bot, counts too. A bot's own key, sign-in, or endpoint in its
+profile counts for that bot, as does a key inline in the daemon's model
+config that the bot inherits. The primary bot's tools store the connected
+provider's id from `hexbot.providers.list`, whatever name the bot used.
+`provider_connected` is whether the bot's `provider` has a key or sign-in
+right now, and null for a bot with no provider of its own. While it is
+false, the apps show a card above the chat's composer that asks for a new
+provider and model, before the user types; `hexbot.bots.update` with both
+clears it.
 
 `status` is `idle`, `working`, `needs_you`, or `stopped` (priority in that
 reverse order), folded by the daemon from live session state, room turns,
 room `waiting.human` events, and open incidents. Only a bot's chat and its
-room sessions make it `working`; heartbeats, scheduled jobs, dreams, CLI runs
-and subagents never do, though one waiting on the user still makes it
-`needs_you`. `status_detail` is
-`{text, section_id, room_id, session_id, since, action, in_chat}` where `action` is
-null, `{kind: "fix_connector", connector}`, or `{kind: "retry"}`. A stopped
+room sessions make it `working`; threads between bots (`peer_bot` non-null),
+heartbeats, scheduled jobs, dreams, CLI runs and subagents do only while
+waiting on the user (`needs_you`) or when they act on the bots' computer
+(`status_detail.text` "Using the computer"). For heartbeats, scheduled jobs,
+dreams, CLI runs and subagents, `working` starts on the first `computer_use`
+call on the bots' computer (emitting `hexbot.bots.changed {name}`) and stays
+until the run ends (no section or room). For a thread between bots, `working`
+lasts only while a `computer_use` call on the bots' computer is active and
+clears when it finishes, emitting `hexbot.bots.changed {name}` on both
+transitions, with `status_detail.section_id` and `status_detail.peer_bot` set.
+`status_detail` is
+`{text, section_id, room_id, session_id, since, action, in_chat, peer_bot}` where `action` is
+null, `{kind: "fix_connector", connector}`, or `{kind: "retry"}`. While a bot
+uses the bots' computer or waits in a thread, `peer_bot` names the bot that
+asked it, so an app can open that thread without listing threads. A stopped
 bot's `in_chat` is true when the failure has no room and no conversation of
 its own, such as a dream's, a scheduled job's or a CLI run's; clients show it
 in the bot's chat. A room's
@@ -323,18 +489,38 @@ already running, a message queued behind it, and files already attached
 finish on the model they started with. Switching models costs the cached
 prefix once. A section on something else, like a scheduled job with
 its own model or `reasoning_effort`, keeps it.
-`face` is the shape and colour of a face picked in an app (ids from
-`apps/web/src/lib/avatar-builder.ts`, such as `{shape: "pill", color:
-"orange"}`), stored in the profile's `assets/face.json`. The app saves the
-face as the `avatar` PNG too, for clients that only show pictures; clients
-that know `face` draw it live and wash the bot's bubbles with its colour.
-It is null when no face was picked, and it is cleared whenever the avatar
-changes without one (a photo, `avatar: null`, or `profiles.set_asset`), so it
-never describes a picture it did not come with. `hexbot.bots.update` refuses
-a non-null `face` without an `avatar` in the same call (4202), so a face never
-lands on a photo. Older daemons leave it out and refuse `face` in writes
-(4201 `unknown bot field: face`); the web app then sends the write again
-without it, and the face is kept as the picture alone.
+`fast` turns on fast mode, stored as `model.fast: true` in the profile's
+`config.yaml` (false removes it). It applies only where the section's model
+offers it (`Model.fast`), and never in a scheduled job, a heartbeat, or their
+delegates. Each section reads it as a run starts, so it moves no section: the
+extension adds `speed: "fast"` to an Anthropic request and `service_tier:
+"priority"` to a ChatGPT one, and never to a fallback model. Anthropic replies
+that ran fast are billed at twice the standard price; Pi prices ChatGPT's tier
+from the reply. Requests at a new speed do not share the cached prefix, so the
+first reply after a change costs it once.
+`face` is the shape and colour of the bot's face (ids from
+`apps/web/src/lib/face-geometry.ts`, such as `{shape: "pill", color:
+"orange"}`), stored in the profile's `assets/face.json`. The daemon keeps any
+short lowercase ids, so shapes and colours can be added without a new daemon;
+an app from before a shape or colour draws Round or Chalk in its place until
+it is updated. Every bot without a
+photo has one. `hexbot.bots.create` without `face` or `avatar` picks one at
+random, one none of the owner's other bots has, shown or kept behind a
+photo, while any is left; the bot's name never changes it. The apps pick a
+random face the same way, counting `face` and `kept_face`, and send it,
+HexBot's included. Bots from before stored faces keep the face their display
+name gave them, saved once at start. The web and mobile apps save a face
+picked there as the `avatar` PNG too, for clients that only show pictures; clients that
+know `face` draw it live and wash the bot's bubbles with its colour.
+`face` is null while the bot shows an uploaded photo: a photo, or any change
+of the avatar without a face, puts the face aside in `assets/face.kept.json`,
+read as `kept_face`, and `avatar: null` or clearing the asset brings it back,
+so a face never describes a picture it did not come with. `hexbot.bots.update`
+refuses a non-null `face` without an `avatar` in the same call (4202), so a
+face never lands on a photo. Older daemons leave both out and refuse `face`
+in writes (4201 `unknown bot field: face`); the web and mobile apps then send
+the write again without it. A picked face is then kept as the picture
+alone; a bot made on mobile draws its face from its name there.
 `workdir` and the `workspace_dir` setting are refused (4202) when they resolve
 inside the Hexbot home, symlinks included.
 
@@ -342,7 +528,11 @@ inside the Hexbot home, symlinks included.
 others (`DESIGN.md`, "The primary bot"). There is at most one per owner.
 
 - `hexbot.bots.list {all?}` → `{bots: [Bot]}`, the primary bot first, then by
-  `last_activity_at` desc.
+  `last_activity_at` desc. `last_activity_at` is the last message in the
+  bot's chat with you: yours when you send it (`prompt.submit` or
+  `session.steer`, which broadcast `hexbot.bots.changed`), the bot's when its
+  turn ends or a heartbeat message lands. Threads between bots, rooms, jobs,
+  heartbeat runs, dreams, and renaming or touching a section leave it.
 - `hexbot.bots.get {name}` → `{bot: Bot}`
 - `hexbot.bots.create {name, display_name?, title?, description?, persona?,
   provider, model, avatar?, face?}` → `{bot: Bot, section: Section}` (creates the
@@ -371,14 +561,33 @@ others (`DESIGN.md`, "The primary bot"). There is at most one per owner.
   once they have navigated to the section. Refused (4243) once the section
   has messages.
 - `hexbot.bots.update {name, display_name?, title?, description?, persona?,
-  provider?, model?, reasoning_effort?, avatar?, face?, dream_enabled?,
-  tools?, skills?, notify?, approval_mode?, workdir?}` →
-  `{bot: Bot}`. `tools` accepts `terminal`, `files`, `computer_use`,
+  provider?, model?, reasoning_effort?, fast?, avatar?, face?, dream_enabled?,
+  tools?, skills?, notify?, approval_mode?, workdir?, soul_char_limit?,
+  memory_char_limit?}` →
+  `{bot: Bot}`. A limit is a whole number from 500 to 20000, or null to
+  follow Settings (4202 otherwise). A `persona` longer than the soul limit
+  this update leaves is refused with 4221 before anything is written. `tools` accepts `terminal`, `files`,
   `vision`, `voice`, `message_bots`, `delegate`, and `scheduling`; older
-  clients may still send `code_execution` and `browser`, which are dropped; toolsets owned by connectors (web, image_gen, mcp-*) are left
+  clients may still send `code_execution`, `browser` and `computer_use`,
+  which are ignored; toolsets owned by connectors (web, x_search, mcp-*) are left
   as they are. Both capability lists use replace semantics. A tool missing
-  from `available_tools` is dropped from `tools` on write. Combined model and
-  tool edits use the new provider when checking availability.
+  from `available_tools` is dropped from `tools` on write. `terminal` gives or
+  takes environments: turning it on gives the default computer (the bots'
+  computer when it can run, otherwise this computer), and leaving it out takes
+  every computer the bot works on. While the bots' computer is switched off,
+  or can't run here (no Cua), its environment doesn't count: it gives no bash
+  and isn't in the bot's computers, and a list without `terminal` leaves what
+  was saved there, so installing Cua brings it back;
+  `hexbot.computers.grant` sets each computer exactly. Computer Use is the
+  `computer_use` connector (`hexbot.connectors.set_for_bot`), which
+  a tool list never changes. Combined model and tool edits use the new provider
+  when checking availability.
+- `hexbot.bots.pin {name, pinned?}` → `{bot: Bot}`. Pins the bot's chat in
+  the list, or unpins it with `pinned: false`. `pinned_at` keeps the time it
+  was first pinned, so pinning again keeps its place. The primary bot starts
+  pinned, when it is created or made primary and once when an existing
+  database upgrades; after that it stays as the user leaves it. Emits
+  `hexbot.bots.changed`.
 - `hexbot.bots.clear_status {name}` → `{bot: Bot}`. Closes every open incident
   for the bot.
 - `hexbot.bots.delete {name}` → `{deleted: true}` (deletes the profile
@@ -537,26 +746,40 @@ returned by `open`.
   caller's thread on `bot` whose sender is `peer`. It never creates one.
 - `hexbot.sections.open {id, history_cursor?}` → `{section: Section,
   messages: [Message], history_cursor: string, history_delta: boolean,
-  context: Context, pending_clarify?, busy, pending_requests}` (resumes the
+  context: Context, pending_clarify?, busy, pending_requests, asks?}` (resumes the
   stored session on the bot's profile; idempotent if live). If the bot is waiting on an approval,
   the daemon sends its `approval.request` event again so a reloaded client
   gets the card back; clients dedupe on `request_id`. `busy` says whether a
-  turn runs at this read and `pending_requests` lists the `request_id` of
-  every approval and question still waiting. A client that missed events,
+  turn runs at this read, `pending_requests` lists the `request_id` of
+  every approval and question still waiting, and when `busy` is true `asks`
+  lists the `message_bot` calls seen during the active turn (`{tool_id, args,
+  context, status, occurrence_id?, parent_tool_call_id?, parent_occurrence_id?,
+  message_id?, turn_id?, section_id?, result?}`) so cold or reconnecting clients
+  restore active and settled asks even when history trails the live turn. A client that missed events,
   such as while it was offline, drops the unanswered cards it showed before
   the read that are not listed, and ends a turn it showed when `busy` is
   false. Answered cards and anything received during the read stay. The web
-  app reads a chat again each time it opens it and after a reconnect. The
+  app reads a chat again each time it opens it and after a reconnect, with
+  the cursor of the history it holds, so an unchanged chat costs no rows. The
   three fields come from one moment.
   A missing catalog section returns code `4204`. Ordinary web bot-chat routes
   resolve the daemon's canonical chat before opening history, displaying it,
   or enabling input, including saved routes and already-loaded live IDs.
   Explicit peer threads keep their own route. Metadata or open failures keep
   the selected route and offer Retry, including when canonical resolution
-  returns the same ID. Late replies from an obsolete route or daemon do not
-  redirect the current view.
+  returns the same ID. A failed read over messages already on screen keeps
+  them, with a small card under them that offers Retry. Late replies from an
+  obsolete route or daemon do not redirect the current view.
 
-Both history methods always return an opaque `history_cursor`. Keep it with
+- `hexbot.sections.history {id, history_cursor?}` → `{messages: [Message],
+  history_cursor: string, history_delta: boolean}`: the section's stored
+  history, read without starting its bot, so it carries no `busy`, cards or
+  live session. Apps read every bot's chat ahead with it and keep it current,
+  so switching to a bot shows its chat at once; `hexbot.sections.open` still
+  makes the chat live before input. Owner-only; a missing section returns
+  `4204`. Daemons that have it say `section_history: true` in `hexbot.info`.
+
+All three history methods always return an opaque `history_cursor`. Keep it with
 exactly the displayed snapshot for that conversation on that daemon, then send
 it with the next read. If `history_delta` is true, append `messages` in order;
 an unchanged conversation returns an empty array. If false, replace the entire
@@ -570,6 +793,9 @@ private; clients must not construct or interpret it. After a canonical chat
 replacement, resolve and open the new ID as above; an old conversation's cursor
 cannot make that replacement return a delta, even when message IDs were copied.
 Older daemons omit both cursor fields and always return full history.
+A row's `content` keeps its text parts, but its image parts carry no `data`:
+apps show a row's words, and screenshots from the bots' computer alone can
+make one chat's history tens of megabytes. The stored row keeps the image.
 
 `Context = {tokens, window, compact_at, compacting, recounting, seq}` is how
 full the section's context is: Pi's own estimate of the tokens the next
@@ -648,10 +874,16 @@ context of its own; the meter belongs to bot sections.
   kept. `hexbot.bots.delete` purges the bot's owned history, including retained
   sections whose catalog rows have already gone.
 - `hexbot.sections.touch {id}` is internal; activity is stamped by the plugin
-  on `message.complete`. It also sets the section's `done_at`.
+  on `message.complete`. It leaves `done_at` alone: the daemon sets it when the
+  turn ends, before `message.complete`, so a touch cannot undo a read made on
+  another device.
 - `hexbot.sections.mark_read {id}` → `{section: Section}` clears `done_at`:
   the user has seen the finished work. Broadcasts `hexbot.sections.changed`,
-  so the green dot clears on every device.
+  so the green dot clears on every device. Clients call it only while the chat
+  is on screen and the app or tab is in front: a reply in a bot's chat that is still unread 30 seconds after
+  it finished wakes the owner's phones (see `hexbot.devices.set_push`). A
+  failed or stopped turn, a thread between bots, an archived chat and a bot
+  whose Notify me is off wake nothing.
 
 ### Memory
 
@@ -661,7 +893,8 @@ context of its own; the meter belongs to bot sections.
   prompt, including About you, after ownership is folded.
 - `hexbot.memory.user.set {text}` → same as get. Broadcasts
   `hexbot.memory.user.changed`.
-- `hexbot.memory.bot.get {bot}` → `{memory_md, cap: 2200}`
+- `hexbot.memory.bot.get {bot}` → `{memory_md, cap, updated_at}`. `cap` is
+  the bot's memory limit (`memory_cap` on the bot), 2200 by default.
 - `hexbot.memory.bot.set {bot, memory_md}` → same as get.
 - `hexbot.memory.notes.list {bot}` → `{days: [{date, text}], today, cap:
   4000, retention_days: 30}`. The bot's daily notes, newest day first, each
@@ -730,43 +963,61 @@ on or off for every bot through `hexbot.settings.set`.
 
 The daemon has one computer that its bots share: a Cua sandbox, a Linux
 desktop made from the `linux` image the first time a bot or the user turns
-it on. Every bot with Computer use (`computer_use` in its tools) works on
-it. The daemon drives it with the `cua` CLI on its own computer
+it on. A bot works on it once it is one of the bot's environments, and sees
+and uses its screen with the Computer Use connector. The daemon drives it with the `cua` CLI on its own computer
 (`computer_use.command` in config, `HEXBOT_CUA_CMD`, or `cua` on the path)
 and runs `cua mcp` for the bots' actions. It passes `CUA_TELEMETRY=0` unless
 `computer_use.telemetry` is true. The sandbox is named
 `hexbot-computer-<hash>`, unique per daemon home. Deleting a bot leaves the
 computer and removes only its cursor.
 
+The computer stays on once it runs, until the user turns it off; `on` in
+`computer.json` says so, beside the container engine it last ran in. Every
+minute, and when the daemon starts, a watchdog looks at it. One that should be
+on and is stopped, or that Cua reports `missing` because Docker does not
+answer, as after the daemon's computer restarts, is repaired as Turn on does:
+the daemon starts the engine (Colima, OrbStack, Docker Desktop, or Docker as a
+user service; `computer_use.engine_start` in config names a command for any
+other), waits for Docker, and resumes the computer with its files. When that
+fails, the primary bot posts the reason once in its chat, with the push a
+heartbeat message gets, and the watchdog tries again ten minutes later. The
+watchdog never makes a new computer: one Cua reports failed is reported the
+same way and left for Turn on or a bot to make again, and a container gone
+while Docker answers waits for Reset.
+
 The desktop has one pointer and one focused window, so bots take turns one
 action at a time; a bot that waits more than two minutes gets error 4209.
+The user's screen takes clicks and keys at the same time, and the user can
+pause the bots to have it alone.
 The daemon records where each bot last acted so clients can draw its
 cursor there.
 
 - `hexbot.computer.status {}` → `{available, state, control, actor,
   activity, cursors: [{bot, x, y, action, at}], error, size, sizes: [{name,
   cpu, memory_gb}], image}`. `available` is false when the daemon's computer
-  has no Cua. `state` is `absent`, `starting`, `running`, `stopping`,
-  `stopped`, `restarting`, `resetting` or `error`. When Cua knows the
-  computer but finds no container for it, most often because Docker is not
-  running, `state` is `error` at once and the bots' actions fail with the
-  same `error`; the computer is kept, not made again. `control` is `bot`, or
-  `user` while the user has taken over; the bots' actions are refused until
-  it is `bot` again. `actor` and `activity` are the bot acting and its action,
+  has no Cua. `state` is `absent`, `starting`, `repairing`, `running`,
+  `stopping`, `stopped`, `restarting`, `resetting` or `error`. When Cua
+  reports the computer `missing`, `state` is `error` at once with the reason,
+  and a bot's action repairs it as Turn on does or fails with that reason;
+  the computer is kept, not made again. `control` is `bot`, or `user` while
+  the user has paused the bots; their actions are refused with error 4302
+  until it is `bot` again. A pause outlasts a restart or reset. `actor` and `activity` are the bot acting and its action,
   such as `click`. A cursor's `x` and `y` are fractions of the screen and
   `at` is when it last acted, in seconds.
 - `hexbot.computer.start|stop|restart|reset {}` → the status. The step runs
-  on and reports by event; a first start downloads the image. Reset deletes
+  on and reports by event; a first start downloads the image, and a start
+  repairs a computer lost with its engine, as the watchdog does. Reset deletes
   the computer and makes a new one at the chosen size. Error 4209 while
   another step runs.
-- `hexbot.computer.control {holder: "user" | "bot"}` → the status.
+- `hexbot.computer.control {holder: "user" | "bot"}` → the status. `user`
+  pauses the bots once the action one has under way ends; `bot` resumes
+  them. Neither opens nor closes a screen.
 - `hexbot.computer.view {control?, quality?}` → `{path, control,
   expires_at}`. `path` is relative to the daemon,
   `/hexbot/computer/<token>/viewer/#ticket=…`: Cua's viewer, served by the
   daemon for an hour, so it works over LAN, Tailscale and Connect. Without
-  `control` it only watches. With `control` the user takes over and the page
-  takes clicks and keys. Handing the computer back closes the pages that
-  could type. The token in the path is the credential; the daemon drops
+  `control` it only watches. With `control` the page takes clicks and keys
+  while the bots keep working; it does not pause them. The token in the path is the credential; the daemon drops
   cookies and the viewer's own ticket authorises its calls. The daemon also
   serves `…/<token>/viewer` as the page, because Hex Connect's edge drops
   the trailing slash.
@@ -774,9 +1025,11 @@ cursor there.
   `{type: "hexbot.computer.screen", status}` to the page around it
   (`window.parent`, or `ReactNativeWebView` in the phone app) each time the
   viewer's state changes: `connecting`, `streaming` once the picture is up,
-  `reconnecting` or `failed`. A client switching links, as taking control
-  and giving it back do, keeps the old screen in sight until the new one
-  streams.
+  `reconnecting` or `failed`. A client switching links, as a new quality
+  does, keeps the old screen in sight until the new one streams.
+  Hexbot draws each bot's cursor itself, so the daemon refuses the viewer's
+  presence calls (`cua.env.v1.PresenceService/*`) and the viewer draws none
+  of its own.
   The viewer decodes H.264 with WebCodecs, which browsers offer only on a
   secure page: over HTTPS (Connect) or on the daemon's own computer. A page
   at a plain `http://` address on the network gets no video; clients say so
@@ -808,6 +1061,82 @@ cursor there.
 - Changes broadcast `hexbot.computer.changed {state, control, actor,
   activity, cursors, error}`.
 
+### Computers
+
+Every place a bot can act (`machines.rs`): the bots' computer `vm`, this
+computer `host`, and the user's computers `device:<device id>`. Each is given
+to bots as one of their environments (`terminal`); its screen (`desktop`)
+comes with the Computer Use connector where it is shared.
+
+- `hexbot.computers.list {}` → `{computers: [{id, kind: "vm" | "host" |
+  "device", name, os, online, on, available, terminal, desktop, apps}]}`.
+  `terminal` and `desktop` are `{available, bots}`: `terminal.bots` are the
+  bots it is an environment of, `desktop.bots` those of them with the
+  Computer Use connector where its screen is shared; this computer's terminal
+  adds `sandboxed` (false on Windows) and its desktop `on`, `ready` and a
+  `note` when it can't be shared. `apps` is `{bot: [app, ...]}`: what each
+  bot may always use there. A user's computer is listed while it is online
+  or has grants.
+- `hexbot.computers.grant {computer, capability: "terminal", bot, on}` makes
+  the computer one of the bot's environments, or takes it. `"desktop"` is
+  refused: a desktop comes with the Computer Use connector. A user's
+  computer must be one of the owner's paired devices.
+- `hexbot.computers.set {computer: "vm", on}` uses the bots' computer or
+  stops using it (turning it off stops it). `{computer: "host", desktop}`
+  shares this computer's desktop, setting Cua up first (`cua host setup
+  --direct 127.0.0.1:3211 --no-provide-spaces`), or stops sharing it.
+  Returns the list.
+- `hexbot.computers.defaults {host_terminal?, computer_use?}`: whether bots
+  made from now on get this computer, and Computer Use, as setup chose. A new bot always gets the
+  bots' computer when Cua can run it. When `host_terminal` is unset, it gets
+  this computer's terminal only if the bots' computer can't run; an explicit
+  `false` gives it no terminal here, even then. A daemon that already had
+  bots when computers arrived records `host_terminal` from its default
+  toolsets, so new bots keep this computer's terminal as before. When
+  `computer_use` is unset, a new bot gets Computer Use where a screen is in
+  reach: the bots' computer can run, or it gets this computer and its
+  desktop is shared.
+- `hexbot.computers.remove_app {computer, bot, app}` takes an app off a bot's
+  Always allow list.
+- `hexbot.computers.forget {computer}` forgets a user's computer: its grants
+  and allowed apps. When it is online the daemon first sends it a `release`
+  request and waits up to 5 s; the result is `{ok, released}`, plus a `note`
+  telling the user to stop bots there when it didn't confirm. Revoking the
+  device forgets it the same way.
+- Changes broadcast `hexbot.computers.changed {}`; read the list again.
+
+A desktop app connected to a daemon on another computer offers its own
+computer on its own connection:
+
+- `hexbot.computers.attach {terminal, desktop, name, os}` says what the user
+  allowed in that app. Neither withdraws the offer; closing the connection
+  takes the computer offline. The daemon's own app (the local device) is
+  refused: its computer is `host`.
+- The daemon then sends `hexbot.computers.request {request_id, kind:
+  "terminal", command, timeout}` or `{request_id, kind: "desktop", tool,
+  args, final}` as an event on that connection only. `tool` is one of Cua's
+  computer tools (screenshot, click, double click, move, drag, scroll, type,
+  key, hotkey, launch, window list, screen size). Opening a file or link is
+  refused on the user's computers, since the app that handles it can't be
+  checked: a bot launches the app and uses it instead. `final: true` marks
+  the action itself, after the daemon's last check: run it only on the Cua
+  session already up, never starting one, and fail otherwise.
+- `{request_id, kind: "cancel", cancels}` stops request `cancels`: refuse it
+  if it hasn't started, end it (and Cua, for a desktop action) if it has,
+  and answer `cancels` with an error once it can no longer act. A cancel
+  needs no reply.
+- `{request_id, kind: "release"}` (Forget): stop everything bots started
+  there, then reply `{request_id, result: {released: true}}` once nothing
+  can still land. The same request with `reason: "replaced"` comes on a new
+  connection that replaced one with requests still waiting: stop and
+  confirm the same way, but keep offering the computer on the new
+  connection. The old requests fail once it confirms; until then they wait
+  for the old connection to close or time out.
+- The app answers with `hexbot.computers.reply {request_id, result}` or
+  `{request_id, error}`. A terminal result is `{output, exit_code,
+  timed_out}`; a desktop result is Cua's MCP tool result. Only the device
+  that was asked can answer.
+
 ### Scheduled jobs
 
 Paired apps manage the scheduler through the same owner checks and job storage
@@ -816,7 +1145,7 @@ broadcast `hexbot.jobs.changed`.
 
 - `hexbot.jobs.list {bot, include_disabled?}` returns `{jobs}`.
 - `hexbot.jobs.create {bot, name?, prompt?, schedule, script?, workdir?, model?,
-  provider?, reasoning_effort?, skills?, repeat?}` returns `{job}`. Jobs need
+  provider?, reasoning_effort?, skills?, repeat?, notify?}` returns `{job}`. Jobs need
   instructions or a script. Wall-clock schedules use the daemon's timezone.
 - `hexbot.jobs.update {bot, job_id, ...changes}` returns `{job}`.
 - `hexbot.jobs.pause {bot, job_id}` / `hexbot.jobs.resume {bot, job_id}` return `{job}`.
@@ -825,7 +1154,17 @@ broadcast `hexbot.jobs.changed`.
 
 The daemon enforces unattended approval rules and script workspace restrictions.
 The mobile app displays the last status, error and up to 12,000 characters of output
-stored on the daemon. Jobs do not send push notifications.
+stored on the daemon.
+
+A job with `notify: true` posts each finished run in the bot's chat, like a
+heartbeat message: `**<name>** finished.` and up to 4,000 characters of its
+output, or `**<name>** did not finish: <error>`. It sends
+`hexbot.heartbeat.message` and the same phone push, so the bot's Notify me
+switch silences it on devices. A monitor run with nothing new posts nothing.
+Jobs a bot creates with `cronjob_manage` or `hexbot_jobs` default to
+`notify: true`, and the bot tells the user what it scheduled; it sets `false`
+when the user asks for no notifications. Jobs the user creates from an app
+default to off.
 
 Scheduled jobs and their delegates cannot call `message_bot`. Jobs use Auto
 when the bot's approval mode is Bypass; Manual remains Manual. Scheduled
@@ -836,7 +1175,10 @@ for the next dream, and soul writes are refused. See [Dreaming](dreaming.md).
 ### Rooms
 
 Room shape: `{id, name, owner_id, main_bot, approval_mode, limits,
-created_at, updated_at, last_activity_at, archived_at, members}`. Member rows
+created_at, updated_at, last_activity_at, archived_at, pinned_at, members,
+discord}`. `discord` is null, or for a room that is a Discord channel
+`{guild_id, channel_id, guild_name, channel_name, url}` (see Discord below;
+`modes` and `latest_seq` are there too, for the room engine, not clients). Member rows
 include `display_name` for bots and for the owner, and keep `left_at` after
 departure so old transcripts retain their identities.
 `limits` is `{bot_turns_per_human_turn?, budget_tokens_per_human_turn?}`,
@@ -882,6 +1224,9 @@ and its bots run as the owner.
   Removing the last bot uses this same decision; pending cleanup is reported
   as `room.history_pending`. Neither operation changes bot memory or notes.
 - `hexbot.rooms.mark_read {id, seq}` → `{room}`
+- `hexbot.rooms.pin {id, pinned?}` → `{room}`. Pins the room in the list, or
+  unpins it with `pinned: false`, like `hexbot.bots.pin`. Pins live in
+  `room_pins`, so older daemons still create rooms in the same database.
 
 Room turns use hidden sessions on each bot profile. The daemon waits
 for the corresponding assistant row through `session.history` after
@@ -890,10 +1235,167 @@ The live session's events (`message.delta`, `tool.*`, `approval.*`,
 `clarify.*` and the rest) reach the owner, who answers approvals and
 questions; `session.events.since` replays a room session. Opening a room with
 `hexbot.rooms.get` re-sends pending cards for each running turn. In
-`hexbot.rooms.get` and `hexbot.rooms.list`, each running turn with a live
-session carries `pending_requests`, the cards it still waits on; a client
-that missed events drops the other cards it showed before that read. Tool labels in
+`hexbot.rooms.get` and `hexbot.rooms.list`, each running turn carries `id` (its
+`room_turns` row id) and, when it has a live session, `turn_id` (the active Pi
+turn id), `pending_requests` (the cards it still waits on), and `asks` (the
+`message_bot` calls seen in the active turn, same shape as `hexbot.sections.open`);
+a client that missed events drops the other cards it showed before that read.
+When a room turn posts a `message.bot` event after calling `message_bot`, the
+event payload includes `asks`: `[{to, section_id?, waited, failed}]` in
+first-call order, where `waited` and `failed` are SQLite `0`/`1` flags (legacy
+`bot_messages` rows from before the `waited` column default to `waited: 1`,
+`failed: 0`). Tool labels in
 rooms and sections stay in the present tense until the tool completes.
+
+### Discord
+
+A bot joins Discord servers as its own Discord app (`discord.rs`). The user
+makes an app in the Discord Developer Portal, turns on Message Content
+Intent, and pastes its bot token. The daemon keeps one Gateway connection per
+connected bot, an outbound WebSocket, so Headless daemons behind NAT work.
+The token is in `accounts/discord/<bot>.json`, owner-only, which bots' tools
+can't read except in Bypass.
+
+Discord is turned on for a bot in Plugins first: it is the connector
+`discord` in `hexbot.plugins.list` (group `social_home`, `scope: "bot"`,
+always `ready`), with `discord: {<bot>: {status, error, username}}` for each
+bot it is on for, `status` being `not_connected` before a token.
+`hexbot.plugins.set_bots` and a bot's `hexbot_plugins` turn it on and off
+(`discord_plugin`); turning it off for a connected bot answers 4254, so the
+app disconnects it first. Bot rows carry `discord: true` while it is on, and
+the apps show a bot's Discord settings only then. Deleting the bot forgets it.
+
+- `hexbot.discord.get {bot}` → `{discord: Discord | null, enabled}`
+- `hexbot.discord.list` → `{bots: [Discord]}`, the owner's bots with an app
+- `hexbot.discord.connect {bot, token}` → `{discord}`. 4251 while Discord is
+  off for the bot. Checks the token with
+  Discord before saving it: 4250 when Discord refuses it, 4253 when the app
+  lacks Message Content Intent, 4252 when another bot already has this app.
+  A leading `Bot ` is dropped. Connecting again replaces the token.
+- `hexbot.discord.set_mode {bot, mode, guild_id?}` → `{discord}`. `mode`
+  is required: a mode, or null with `guild_id`. How the
+  bot acts: `mentions` (answers mentions and replies, and sees only those
+  messages and the start of what each one replies to), `reads` (answers them, reads its channels and the rest of the
+  server; the default, and what every bot did before modes), `active`
+  (reads every channel it can see and speaks when it has something to add)
+  or `everyone` (answers every message from a person). Without `guild_id`
+  it sets the bot's default; with one, that server's own mode, and `mode:
+  null` follows the default again. 4202 for another mode, 4251 while Discord
+  is off for the bot or for a server it isn't in.
+- `hexbot.discord.disconnect {bot}` → `{discord: null}`. Closes the
+  connection, deletes the token, and takes the bot out of its Discord rooms
+  (`member.left`). The rooms stay; once connected again, a mention brings it
+  back. Deleting the bot does the same.
+
+Discord shape: `{bot, application_id, user_id, username, status, error,
+connected_at, invite_url, rooms, mode, servers}`. `status` is `connecting`, `online` or
+`error`, with `error` saying why in words (a refused token, a missing intent,
+a token that needs pasting again after the file was lost). `invite_url` adds
+the app to a server with View Channels, Send Messages, Send Messages in
+Threads and Read Message History. `rooms` is `[{id, guild_name,
+channel_name}]`, the Discord rooms the bot is in. `mode` is its default and
+`servers` is `[{id, name, mode}]`, the servers its app is in as its Gateway
+reports them (READY, GUILD_CREATE, GUILD_DELETE), `mode` null following the
+default; a server it leaves keeps its mode in case it comes back.
+`hexbot.discord.changed {bot}` is sent when any of these change.
+
+The first time someone mentions a bot in a server channel or thread, or
+replies to its message, or anyone writes where a bot is `active` or
+`everyone`, that channel becomes a room named `#<channel> · <server>`,
+starting with the 20 messages before (when the app can read history, and
+not when every bot it brings sees only mentions). After that every ordinary
+message in the channel lands in the room once, however many connected bots
+saw it, as a `message.user` event with `actor_kind: "discord"`, `actor_id`
+the Discord user's id, and payload `{text, author: {id, name, bot},
+mentions, reply_to, discord: {message_id}}`, `reply_to` being `{name, text}`
+for the message it replies to (the first 200 characters on one line) or
+null. A message that addresses none of the owner's bots is not kept when
+every bot in the room sees only mentions. The
+messages before the first mention also carry `history: true` and never start
+a turn. A mention of another connected bot sent in the minute before, which
+may still be on its way through that bot's connection, is not history: it and
+what followed are taken as they would have been, so that bot answers it.
+What was said before the channel's last room was deleted stays history, and a
+late copy of it is dropped. In
+`text`, a mention of a connected bot is its `@handle` and anyone
+else's is their name. `mentions` holds the handles a reply addressed. A bot
+joins the room when it is mentioned there, including by another of the
+owner's bots, which is how one bot hands a question to another, and a bot
+that was removed comes back the same way. Every connected bot a message
+mentions joins before the message is saved, whichever bot's connection saw
+it first. A bot that listens joins the first time its own connection sees a
+person write there, as of that message. One that left before its app was
+last connected or added to the server, as when it was disconnected or taken
+out of the server, joins again that way; one the owner removed since stays
+out until it is mentioned. A bot taken out of a server is brought back by
+nothing said there until it is added again. A bot whose app is taken out of a server leaves
+that server's rooms (`member.left`), and so does a bot whose post Discord
+refuses (403) until it is mentioned again; a reply Discord refuses only for
+lack of Read Message History (code 160002) goes out as a plain message
+instead. A
+listening bot joins only where it can post. A message no bot keeps leaves no
+claim, so another connection's copy can still save it. A message addresses a bot only if it was said once the bot was in
+the room: a bot is in it from that moment, or, when another bot's reply
+brings it in, from that reply (found by the reply's nonce). So a bot that
+joins or comes back never answers older mentions. A mentioned bot that can't
+see the channel still joins; its reply fails with a `warning`. A message from another app's Discord
+bot (`author.bot`) lands in the room but starts no turn, opens no room and
+brings no bot in; so does anything said while the room is archived
+(`history: true`). Only the first copy of a person's message brings bots in,
+a reply counts as addressing a bot only when a person replies, and a bot's
+reply never brings back a bot removed after it was written, so a late copy
+never undoes a removal. Direct messages are not read.
+
+The room engine decides who answers, as in any room. A Discord room never
+waits on the human; a bot that another bot mentions answers even when the
+message is a question. A bot that is `active` or `everyone` there is also
+picked for the room's newest person message that addresses none of the
+room's bots (`latest_seq`) when it hasn't read it in an earlier turn, so what is said during a turn is answered
+together by the next; its turn prompt says when to speak, and `(pass)`
+posts nothing. Another Discord bot's message, or one of the owner's, never
+picks a listening bot. A bot that sees only mentions gets only the messages
+that address it and its own replies in its turn prompt. Each reply is posted by the bot's own app as a reply
+to the message that started the turn, mentions of connected bots become
+Discord mentions, nothing else can ping (`allowed_mentions` parses nothing
+and `replied_user` is false), and long replies are cut into parts of 2000
+characters. What was posted is tracked in `discord_channels.posted_seq` and,
+part by part, in `discord_messages`; each part carries a nonce
+(`<seq>.<part>.<room>`) Discord enforces, and the bot's own post arriving on
+its Gateway records the part too, so a part Discord took after its answer was
+lost isn't sent again. When Discord can't be reached or answers 5xx, or the
+database is busy, the reply waits and is tried again every 30 seconds, so
+neither an outage nor a restart loses or repeats one. A reply whose bot was
+disconnected before it went out is dropped with a `warning`. While a bot's turn starts, Discord shows it typing.
+
+People in a Discord channel are not the owner. A Discord room's approval
+mode is Manual and `hexbot.rooms.update` refuses another (4251). Its
+sessions are opened with `restricted` set to `memory`, `web_search`,
+`web_extract` and `hexbot_discord`, no MCP servers and no file or shell
+tools. `hexbot_discord {action: channels | read, channel?, limit?, before?}`
+lists the text and announcement channels and active public threads (a
+forum's posts among them) of the room's own server that the bot can see and
+that are at least as public as the channel it is asked in (nothing denies
+View Channel or Read Message History on them, and each @everyone, role or
+person overwrite that lets people into the asking channel lets them see and
+scroll back there too, or @everyone or base permissions do, and every role
+that sees channels by default brings Read Message History; the asking
+channel itself needs only the history part; when its permissions can't be read the tool
+answers 5250, try again), as Discord works out permissions from roles and
+overwrites; at most 200, with `more`
+saying how many were left out), or reads up to 50 messages of one of them,
+by id or `#name`, oldest first, with who wrote each; never another server or
+a channel it can't see. It answers 4302 where the bot sees only mentions. The memory tool
+takes only `note` there, and a note is saved as a memory proposal
+(`job_id` `discord`, at most 20 pending, listed after the jobs') that the
+bot's dream reviews as untrusted. Their prompt
+is the bot's soul and the Discord rules, without memory, About you, files,
+teammates or skills. The bot's dream leaves Discord rooms out.
+`hexbot.rooms.send` and `hexbot.rooms.add_member` answer 4251 for a Discord
+room: replies happen in Discord, and a bot joins by being mentioned there,
+or by listening there.
+`hexbot.rooms.update` also refuses a main bot (4251). Removing a bot,
+limits, archive and delete work as in any room; deleting the room forgets
+the channel, so a later mention opens a new one.
 
 ### Bot activity
 
@@ -915,7 +1417,8 @@ result that finds the section idle keeps its originating hop count but no
 requesters, since nobody waits on that turn, so the bot can pass the answer on.
 
 The `hexbot_soul {action: read | write, text?}` tool lets a bot read or
-replace its own `SOUL.md` (capped at 4000 characters). It sits in its own
+replace its own `SOUL.md`, up to the bot's soul limit (`soul_cap`, 4000
+by default). It sits in its own
 plugin toolset, `hexbot-soul`, which is never written to
 `known_plugin_toolsets`, so the core keeps it on for every bot. A write calls
 `profiles.configure {soul}` and broadcasts `hexbot.bots.changed`; it reaches
@@ -948,18 +1451,91 @@ writes the page into it after a bootstrap that applies the theme as CSS
 variables (`--background`, `--foreground`, `--chart-1` to `--chart-6`, ...),
 reports the page's height, and passes http(s) link clicks to the app. Host
 and frame talk in MCP Apps messages (`ui/notifications/host-context-changed`,
-`ui/notifications/size-changed`, `ui/open-link`). The page cannot prove a
-click was the user's, so a link only appears as an Open button under the
-visual, and the browser opens it from there. Daemon pages (and `pnpm dev`)
-send `Content-Security-Policy: frame-src 'self'`, so a visual cannot navigate
-its frame to another site; the Electron app's own policy does the same, it
-serves the frame page without that policy, and it blocks any frame
-navigation other than to it.
+`ui/notifications/size-changed`, `ui/open-link`). With the page, the app
+hands the frame a `MessageChannel` port that the bootstrap takes before the
+page's own scripts run, and it sends a link on that port only from a trusted
+click on it. The app answers only the frame page's first ready, so a visual
+cannot ask for another port. The app opens such a link at once while the click's activation
+of its window lasts (`navigator.userActivation`). A `ui/open-link` the page
+posts any other way appears as an Open button under the visual, and the
+browser opens it from there.
+Daemon pages (and `pnpm dev`) send
+`Content-Security-Policy: frame-src 'self'`, so a visual cannot navigate its
+frame to another site; the Electron app's own policy does the same, it serves
+the frame page without that policy, and it blocks any frame navigation other
+than to it.
+
+The `hexbot_share_file {path}` tool hands the user one file the bot chose: a
+document, an export, a finished result. Like a visual it is a base tool, left
+out of rooms, threads between bots, subagents and scheduled jobs, and the file
+stays in the call's arguments. The daemon checks that `path` names an existing
+file `hexbot.files.read` can open (the chat's working folder, the bot's
+`artifacts` folder or the chat's `attachments`; 4302 elsewhere, 4204 when
+missing, 4202 over the 45 MiB a read returns) and answers `{shared: true, name, size, note}`. Clients show each
+file a message shared once, as a card under the bot's reply that opens it
+beside the chat; files the bot only wrote or edited do not show. A picture, video or audio
+file shows or plays there instead of its card.
+
+Reactions. One emoji left on a message in a bot's chat: the owner's on what
+the bot said, the bot's on the owner's latest message. Each side has at most
+one on a message, and a new one replaces it. Daemons that have them say
+`reactions: true` in `hexbot.info`. They are kept in `message_reactions`,
+beside the history, by the message's `row_id`, and go with the chat when it
+is deleted. Rooms, threads between bots (`peer_bot`), an earlier Check-ins
+(`purpose`) and scheduled jobs have none: `4204` for such a section.
+
+- `hexbot.reactions.list {section_id}` → `{reactions: [Reaction]}`, oldest
+  first. `Reaction = {message_id, emoji, by: "user"|"bot", bot?, at}`; `bot`
+  names the bot when `by` is `bot`, and `at` is Unix seconds. Owner-only.
+- `hexbot.reactions.set {section_id, message_id, emoji}` → `{section_id,
+  message_id, reactions: [Reaction]}`, the message's reactions now. A null or
+  empty `emoji` takes the owner's reaction back. `emoji` is one emoji: up to
+  12 characters with no letters, digits, spaces or controls (`4202`
+  otherwise). `message_id` names an assistant row the chat still shows:
+  `4204` when it does not, `4202` for the owner's own message. Owner-only.
+- Event `hexbot.reactions.changed {section_id, message_id, reactions,
+  input_id?}` follows every change, the bot's included. `input_id` is the
+  input the owner's message was sent as, when the row carries one, so a
+  client still showing its own copy of that message finds it.
+
+The `hexbot_react {emoji?}` tool leaves the bot's emoji on the owner's latest
+visible message in its chat and answers `{reacted, note}`; without `emoji` it
+takes the reaction back. Like a visual it is a base tool, left out of rooms,
+threads between bots, subagents and scheduled jobs. The owner's reactions
+never change the conversation Pi holds. The daemon hands them to the chat
+with the owner's next message, as a hidden note after it, by the way
+heartbeat messages enter (`hexbot_heartbeat_context`, whose ids for
+reactions are `reaction:<row_id>:<emoji>`): at most the eight newest, offered at
+most twice, marked taken when Pi reports the note. A reaction on a message
+the chat no longer shows, such as a recalled one, is dropped.
+
+Tags. The prompt's `# Tags` section teaches bots to name things as Markdown
+links the apps make clickable: a web page (`https://…`), a bot (`@handle`), a
+file (an absolute path), and `hexbot:room/<name>`, `hexbot:jobs/<handle>`,
+`hexbot:settings/<page>`, `hexbot:plugin/<name>` and `hexbot:skill/<name>`.
+The daemon neither parses nor checks them; the apps read them with
+`apps/web/src/lib/tags.ts`, and a target that names nothing reads as plain
+words. The section is part of the prompt layout, so a chat takes it with its
+next message, as it takes a tool change.
+
+Media in a chat. A message's files are named in its stored text: a user row
+ends with `\n\nAttached files:\n` and one kept path per line, which clients
+show as attachments rather than words. A bot's media tools name each file they
+made as `MEDIA:<path>` in the result: `text_to_speech` (`file_path`, in the
+bot's `artifacts/audio`). Chats from before image and video generation were
+removed may still hold `image_generate` (each of `images[].path`) and
+`video_generate` (`file_path`, or only the `video` link) results, which
+clients show the same way. Clients read each file
+through `hexbot.files.read` and show it with the files the message shared,
+under the bot's reply: a picture, a video or an audio file inline, anything
+else as a file card. The web UI and the Electron app play from an object URL
+(the app's CSP allows `blob:` media, not `data:`); the mobile app keeps one
+copy per path in its cache.
 
 ### Connectors and skills
 
-A connector is an outside service a bot can reach (web search, image
-generation, Notion, X search, Home Assistant, an MCP server, ...). Credentials
+A connector is an outside service a bot can reach: web search, Google's and
+Microsoft's services, Notion, GitHub, X search, or an MCP server. Credentials
 are stored once for the daemon; each bot has its own on/off switch.
 Native tool configuration for a bot overrides matching fields in the daemon configuration.
 Nested objects merge recursively, preserving unspecified fields; lists and
@@ -967,24 +1543,67 @@ other values replace the daemon value. Native tool configuration rejects profile
 that contain symlinks. Browser private-URL settings use the same merge.
 
 A tool that belongs to a connector (`web_search`, `web_extract`,
-`image_generate`, `video_generate`, `x_search`, the Home Assistant tools) is
-left out of every session's tool schema until that connector is `ready`.
-The core alone would offer some of them without a key (its keyless web search
-tier, or an xAI model key); `connectors.gate_tools` adds the "set up" condition
-to each tool's core availability check when the plugin registers. Onboarding
-offers the search and media connectors before the first bot is created
+`x_search`) is left out of every session's tool schema until that connector
+is `ready`. Image generation, video generation, Premium voice, Airtable and
+Home Assistant were removed; their toolsets (`image_gen`, `video_gen`,
+`homeassistant`) are dropped from saved bot settings like
+`code_execution` and `browser`, and the Voice tool keeps the built-in voice
+and custom command voices.
+The core alone would offer some of them without a key (an xAI model key);
+`connectors.gate_tools` adds the "set up" condition to each tool's core
+availability check when the plugin registers. Onboarding offers the
+connectors before the first bot is created
 (`hexbot.connectors.setup` without a `bot`).
 
+A provider whose catalog entry lists no `keys` is set up as soon as it is
+chosen. Web search is `ready` out of the box: its `default_provider` is
+SearXNG, which the daemon runs itself (`searxng.rs`) in whatever Docker
+answers on its computer, as the container `hexbot-searxng-<hash of the home>`
+from a pinned image, published on a localhost port Docker picks. The settings
+go in with `docker cp`, so no folder has to be shared with the engine's VM.
+It starts with the first web search, or with `hexbot.connectors.setup` or
+`test`, and stops with the daemon; the daemon never starts a container engine
+for it. Each start removes the containers this computer made for homes that no
+longer exist (labels `app.hexbot.home` and `app.hexbot.host`). Until it
+answers, `web_search` uses Tavily's keyless tier, then Wikipedia. `web.searxng.docker` in
+config.yaml names the Docker CLI, or `off` keeps SearXNG off this computer.
+The other providers that need no key are Tavily (a key raises its limits),
+Wikipedia, and Marginalia (the shared `public` key, or the user's own). When
+the provider in use cannot read pages and no reading service has a key,
+`web_extract` uses the built-in reader: the daemon fetches each page under the same private-address
+rules and turns its HTML into Markdown, preferring `<main>` or `<article>`.
+
 Connector shape: `{id, name, description, group, icon, scope, ready, state, state_text,
-providers | null, provider | null, fields: [{key, provider, label, help, url,
-secret, advanced, set, hint}], enabled_for_bot | null, enabled_bots: [string],
+providers: [{id, label, description, sign_in, configured}] | null, provider | null,
+fields: [{key, provider, label, help, url, secret, advanced, optional?, set,
+hint}], enabled_for_bot | null, enabled_bots: [string],
 last_error | null, mcp?: {name, transport, tool_count, test_failed, running}}`. `state` is
-`not_set_up`, `ready`, or `error`; `icon` is a Simple Icons slug or `glyph:*`.
+`not_set_up`, `ready`, or `error`; `icon` is a brand icon's key (`BRAND_ICONS`) or `glyph:*`.
 `fields` carries every provider's fields, each tagged with its `provider`
 (`null` = common to all), so a client can show the right ones before a choice
-is saved. `state_text` says "Connected" only after a probe answered (Notion,
-Airtable, ElevenLabs, Home Assistant, xAI make one small authenticated GET);
-connectors with only an offline check say "Key saved". A failed probe keeps
+is saved. `optional` fields, such as a free provider's own key, may stay
+empty. `state_text` says "Connected" only after a probe answered (Notion,
+GitHub, xAI and the X API make one small authenticated GET, X's to its free usage
+summary; a web search that needs no key runs one search; a sign-in asks
+xAI's `/models` with a fresh token); connectors with only an offline check say "Key saved", a
+provider that needs no key says "Ready", and one signed in but not yet
+tested says "Signed in".
+
+A provider with `sign_in` uses a model provider's browser sign-in instead of
+a key: X search's `supergrok` names `xai-oauth`, so the client runs
+`hexbot.providers.login_start` with that id, then `hexbot.connectors.setup`
+with the provider. Its `configured` is true once that sign-in is saved for
+the daemon or, in a bot's list, for that bot. A sign-in xAI refuses, revoked
+or without API access, tests as failed and stays in `error`
+(`HEXBOT_XAI_BASE_URL` points xAI elsewhere for tests). X search's providers are
+`supergrok`, `xai` (`XAI_API_KEY`, shared with the xAI model provider,
+kept when X search is cleared, and unused while that provider is turned off) and `x_api` (`X_BEARER_TOKEN`; X's recent
+search, or its full archive when a date is older than seven days;
+`HEXBOT_X_API_BASE_URL` points it elsewhere for tests). With none chosen, a
+saved key comes before a sign-in. The plugin card's `providers` carry
+`sign_in` and `configured` too.
+For the SearXNG the daemon runs, it adds why it is not running yet, such as
+"Ready · SearXNG (Docker isn't running)". A failed probe keeps
 the row in `error` with the probe's message until the next successful setup
 or a clear.
 
@@ -995,12 +1614,144 @@ or a clear.
   process environment (`bot_only` writes only that bot's profile), records the
   backend choice where the core reads it, runs the check or probe, and, when
   it passes, turns the connector on for `bot` unless `enable_for_bot` is
-  false. A failed probe leaves the connector off for the bot.
+  false. A failed probe leaves the connector off for the bot. The backend
+  choice is the daemon's: with `bot_only`, a provider other than the one the
+  bot already uses is refused (4202), so other bots never move.
 - `hexbot.connectors.test {id, bot?}` → `{ok, message, tool_count?}`. A successful
   connected-server probe counts all tool pages and saves `tool_count`. The connector
-  list reports the last probe count, or null when untested.
-- `hexbot.connectors.clear {id, bot?, bot_only?}` → `{connector}`.
-- `hexbot.connectors.set_for_bot {id, bot, enabled}` → `{connector}`.
+  list reports the last probe count, or null when untested. For Computer Use
+  it says which screens bots can reach from here (the bots' computer, set up
+  and on, or this computer's shared screen) and what is missing, and saves
+  nothing, so the connector is never marked broken.
+- `hexbot.connectors.clear {id, bot?, bot_only?}` → `{connector}`. Clearing
+  web search returns it to its free default, and it stays on for every bot.
+- `hexbot.connectors.set_for_bot {id, bot, enabled}` → `{connector}`. A
+  connector that is not `ready` for the bot can be turned off but not on:
+  4209, "Set up NAME before giving it to a bot."
+- Google and Microsoft have one connector per service: `gmail`,
+  `google_calendar`, `google_drive`, `google_docs`, `google_sheets`,
+  `google_slides`, `google_tasks`; `outlook`, `outlook_calendar`, `onedrive`,
+  `word`, `excel`, `powerpoint`, `microsoft_todo`. Each is connected by
+  signing in, not with a key. Their rows carry `family: "google" |
+  "microsoft"`, `abilities` (what a bot can do, a few words each) and
+  `account: {service, provider, email, signed_in}`, where `service` is the
+  connector's own id, which a sign-in and a disconnect name, and `provider`
+  the account. `ready` means signed in with a grant that still works,
+  `state_text` is the account's address, "Not connected" before a sign-in,
+  and a revoked grant reads `error`, "Sign in again". Their fields hold only
+  the user's own OAuth client (`GOOGLE_OAUTH_CLIENT_ID`,
+  `GOOGLE_OAUTH_CLIENT_SECRET`, `MICROSOFT_OAUTH_CLIENT_ID`), which every
+  connector of the account uses in place of Hexbot's (with it, a return
+  through Hex Connect needs the user's own web client too,
+  `GOOGLE_OAUTH_WEB_CLIENT_ID` and `GOOGLE_OAUTH_WEB_CLIENT_SECRET` in
+  `.env`, whose redirect URI is Connect's); `test` makes a light
+  request on the connector's own API. The `google` and `microsoft`
+  connectors of earlier versions, which did mail alone, are `gmail` and
+  `outlook`: a bot that had one has the other, and its grant moves at start.
+- `hexbot.accounts.sign_in_start {service, also?, return_port?,
+  return_via?}` → `AccountSignIn {login_id, service, services, provider,
+  mode, status, url, code?, redirect_uri?, message}`. `service` is a
+  connector; `also` lists others of the same account to connect with the
+  same sign-in (4202 for one of another account). The sign-in asks for each
+  connector's permissions, once. Microsoft's `mode` is `device`: open `url`
+  and enter `code`. Google's is `browser`: open `url`; Google returns to
+  `redirect_uri`. By default that is the daemon's own
+  `http://127.0.0.1:<port>/oauth/google`, which finishes the sign-in when the
+  browser runs on the daemon's computer. The desktop app names its own
+  loopback port as `return_port`: Google returns to the app, which passes
+  the address on with `sign_in_finish`. A browser or phone elsewhere sends
+  `return_via: "connect"`: when the daemon is on Hex Connect and has a
+  Google web client, Google returns to
+  `https://connect.hexbot.app/oauth/google`, which sends the browser on to
+  the daemon's tunnel (the state starts with the Connect daemon id) once it
+  is signed in to Connect as the daemon's owner, and
+  the sign-in finishes there; otherwise it stays on loopback. `return_port`
+  wins over `return_via`; 4202 for a port out of range or another
+  `return_via`. When another connector of the
+  account is signed in, Google is offered that address first. 4210 when the
+  build has no client of its own and none is saved. Starting another for
+  the same connector replaces a pending one.
+- `hexbot.accounts.sign_in_poll {login_id}` and `sign_in_cancel {login_id}`
+  → `AccountSignIn`; `status` is `pending | done | error | cancelled`, and
+  `done` carries `email`, `connected` (the connectors it connected) and
+  `skipped` (those whose permissions the user left unticked at Google, which
+  stay not connected). A sign-in that connected none is an `error`. Only the
+  user who started it can read it.
+- `hexbot.accounts.sign_in_finish {login_id, url}` → `AccountSignIn`: the
+  address a browser on another computer ended on, for Google. Its `state`
+  must match the sign-in. 4202 for an address with no code.
+- `hexbot.accounts.disconnect {service}` → `{disconnected}`: that
+  connector's grant is deleted; the account's other connectors stay
+  connected. Google's grant is revoked there only with the account's last
+  connector, since Google ends every grant an account gave at once. Bots
+  keep the connector on and wait for a new sign-in. Finishing and
+  disconnecting send `hexbot.connectors.changed`.
+- A grant lives in `accounts/<connector>.json`, owner-only and in the
+  credential policy, so no bot shell or file tool reads it in Manual or
+  Auto; Bypass has no sandbox (`SECURITY.md`). Tokens refresh
+  when under a minute is left; a refused refresh marks the connector expired.
+  `accounts.google.endpoint` and `accounts.microsoft.endpoint` in the root
+  `config.yaml` point every request for that account at one server, for
+  tests; HTTP only on loopback. A token is sent only to the provider's own
+  hosts or that endpoint.
+- `hexbot_mail {action: search | read | draft, account?, query?, max?, id?,
+  to?, cc?, bcc?, subject?, body?, reply_to?}` is a bot's tool once it has
+  Gmail, Outlook or IMAP mail, in its own chat and its scheduled jobs; rooms, threads
+  between bots and heartbeats never get it. `search` and `read` need no
+  approval and return plain text. `draft` shows the draft card and returns
+  `{sent | saved_to_drafts: true, to, cc, subject, body}` as the user left
+  it; there is no other way to send. A job can't draft (4302). `account`
+  (`google`, `microsoft` or `imap`) is needed only when the bot has more
+  than one. IMAP mail (`imap.rs`) searches with `from:`, `to:`, `cc:`,
+  `subject:`, `is:unread|read|starred`, `after:`, `before:`, `in:<folder>`
+  and plain words (non-ASCII words as LITERAL+ literals where the server
+  offers them), reads with `BODY.PEEK`, sends with
+  SMTP, then files a copy in Sent (`filed_in_sent: false` when it couldn't),
+  and saves to Drafts with IMAP `APPEND`. Its message ids are
+  `<uidvalidity>.<uid>.<folder in base64url>`.
+- The other Google and Microsoft tools are offered in the same places, each
+  once either of its connectors is on and connected for the bot. `account`
+  (`google` or `microsoft`) is needed only when the bot has both. The
+  daemon sends the action as the call's summary. Every action below after
+  the semicolon is a change: it runs in Bypass, is reviewed in Auto, asks in
+  Manual, and is refused where nobody can answer.
+  - `hexbot_calendar` (Google Calendar, Outlook Calendar): `list {from?,
+    to?, query?, calendar?, max?}`, `calendars`; `create {title, start,
+    end?, time_zone?, location?, description?, attendees?, calendar?}`,
+    `update {id, calendar?, …}`, `delete {id, title, calendar?}`. Times are
+    the calendar's local time (`2026-11-12T09:00`) or a date for a whole
+    day, whose last day is included; answers name `time_zone`. An `update`
+    with a new `start` and no `end` keeps the event's length. `delete` needs
+    the event's title. A `list` over every shown calendar reads at most 12,
+    and `calendars_not_read` names any it left out or could not read.
+  - `hexbot_tasks` (Google Tasks, Microsoft To Do): `lists`, `list {list?,
+    done?, max?}`; `add {title, notes?, due?, list?}`, `update {id, list?,
+    title?, notes?, due?, done?}`, `delete {id, title, list?}`. `due` is a
+    date; To Do's is read and written in the mailbox's time zone. A `list`
+    over every list reads at most 20, and `lists_not_read` names the rest.
+  - `hexbot_drive` (Google Drive, OneDrive): `search {query?, type?,
+    folder?, max?}`, `read {id, offset?}`, `download {id}` (saved among the
+    chat's attachments, a Google file as its Office kind); `upload {path,
+    name?, folder?, replace?}`. A new file never writes over another;
+    `replace` makes the next version of one, in Drive only of a file Hexbot
+    added. Credential files are refused.
+  - `hexbot_documents` (Google Docs, Word): `search`, `read {id, offset?}`;
+    `create {title, content}`, `append {id, content}`, `replace {id, find,
+    replace_with}`. `content` is Markdown.
+  - `hexbot_spreadsheets` (Google Sheets, Excel): `search`, `read {id,
+    sheet?, range?, formulas?}`; `create {title, rows? | sheets?}`, `write
+    {id, sheet?, range, rows}`, `append {id, sheet?, rows}`. A cell is a
+    number, text, a boolean, text starting with `=` for a formula, empty
+    text to clear it, or null to leave it. Text stays text; in Google
+    Sheets a date like `2026-11-12` becomes a date. One read holds at most
+    20,000 cells and 60,000 characters, and `next_range` names the rest. A
+    row longer than that is refused, with the part of it to read first. In
+    Google Sheets `append` adds under the table that starts at A1.
+  - `hexbot_presentations` (Google Slides, PowerPoint): `search`, `read
+    {id}`; `create {title, slides}`, `add {id, slides}`, `replace {id, find,
+    replace_with}`. A slide is `{title, body}`, the body one line per line.
+  A Word, Excel or PowerPoint change is refused with 4209 when the file
+  changed since it was read or is locked for editing elsewhere.
 - `hexbot.connectors.add_mcp {name, command?, args?, env?, url?, transport?,
   bots?, bot?}` → `{connector}`; `hexbot.connectors.remove_mcp {name}` →
   `{removed: true}`. MCP servers are defined once, in the root `config.yaml`,
@@ -1086,8 +1837,9 @@ settings mirroring.
 ### Plugins
 
 Plugins are connectors (MCP servers among them), skills and packages. Each is
-set up once for the daemon and given to bots. Computer use is not a plugin:
-every bot has it, and `hexbot.computer.*` looks after it.
+set up once for the daemon and given to bots. Computers are not plugins:
+`hexbot.computers.*` gives them to bots, and `hexbot.computer.*` looks after
+the bots' computer.
 
 A package installs an MCP server with the skills that explain it, or several
 skills, as one plugin. It lives in `<home>/plugins/<name>/` as `plugin.json`
@@ -1110,11 +1862,22 @@ bot, including bots created later; a list keeps bots created later off.
   `skills: [{name, description}]`, `installed_by`, `connector` and `server`
   for a package with a server, and count as given to a bot while any part is. Every row has `kind` (`connector`, `skill`,
   `package`), `id`, `name`, `description`, `ready` and `bots`, the caller's
-  bots it is given to. Connector rows are the `Connector` shape; one is
-  `ready` when its required keys are saved or its MCP server is enabled,
-  independently of an earlier connection error. Skill rows are the `Skill` shape
-  without `path`, and their `bots` are the bots whose grant is on, ready or
-  not. With `bot`, rows add `enabled_for_bot`.
+  bots it is given to. A plugin is given to a bot only once it is set up for
+  that bot: one left on by default before setup (new bots start with Web
+  search and every skill on) lists no bots,
+  and reaches them when it is set up. A switched-off server keeps its bots. Connector rows are the `Connector` shape; one is
+  `ready` when its required keys are saved, or its MCP server is enabled
+  with no empty value, independently of an earlier connection error. A
+  package with a server is `ready` when its server is. Skill rows are the `Skill` shape
+  without `path`, and their `bots` are the bots whose grant is on and that
+  have what the skill needs. A package's skills also wait for the values its
+  server was added without. Connector, skill and skills-only package rows add
+  `ready_bots`, the bots it is set up for, as through a key in a bot's own `.env`: those bots
+  can be given it while `ready` is false. Every row adds `waiting_bots`, the
+  bots it is on for but not yet set up for, which it reaches once set up;
+  clients add them to the `bots` they send to `set_bots`, so changing one bot
+  keeps them, and leave them out when turning it off for every bot. With `bot`, rows add
+  `enabled_for_bot`.
 - `hexbot.plugins.set_bots {kind, id, bots}` → `{plugin: Plugin}`. Gives the
   plugin to exactly the caller's bots in `bots` and takes it from the
   caller's others; other owners' bots are untouched. A plugin that is not
@@ -1159,8 +1922,9 @@ empty environment values and headers (all of them when none is empty); it
 saves them, tests the plugin, and returns `{plugin, ready, note}`. A plugin
 with nothing to fill in gets 4202; a job, or a section that cannot ask,
 gets 4302. A bot's own install is on for that bot only, and stays off for
-bots created later. `disable` for itself does not ask. The chat takes the new
-server at its next message (`tools_stale`).
+bots created later. A plugin whose keys are left empty on the card reaches
+no bot until they are filled in; `enable` then gets 4209. `disable` for
+itself does not ask. The chat takes the new server at its next message (`tools_stale`).
 
 Successful skill mutations emit `hexbot.skills.changed` and `hexbot.bots.changed`.
 Library changes reach all users with `{name}`; private changes reach the caller
@@ -1213,8 +1977,16 @@ need approval in a section with no visible chat or room entry fail immediately
 and tell the bot to use a visible section. Server stderr, up to the last 2 KB,
 may reach the model in tool errors.
 
-Live `tool.start` and `tool.complete` include `parent_tool_call_id` for nested
-calls. Stored parent tool rows include Pi's `nested_calls` record. Clients show
+Live `tool.start` and `tool.complete` include `parent_tool_call_id` (and
+`parent_occurrence_id` when the parent call has a unique active occurrence) for
+nested calls, and `occurrence_id` (also persisted on assistant `tool_calls` entries
+and `tool` result rows) to distinguish repeated calls that reuse a provider
+`tool_id`; `occurrence_id` is omitted when parallel same-ID calls in one
+assistant fragment cannot be uniquely attributed by completion order. Failed
+`message_bot` completions and persisted `tool` rows include `section_id` when a
+peer thread was already created before delivery failed. Stored parent tool rows
+include Pi's `nested_calls` record, with `section_id` enriched onto nested
+`message_bot` entries. Clients show
 nested steps below the code step both live and after reload. Pi retains nested
 arguments and status, not full nested result bodies; its record is bounded.
 
@@ -1281,12 +2053,16 @@ and [provider setup guide](https://hexbot.app/docs/providers/).
   store in `auth.json`, read by `backend/hexbot-core/src/providers.rs`. `label` is the provider's display
   name, never the raw slug.
 - `hexbot.providers.set_key {provider, key}` / `hexbot.providers.clear_key {provider}`.
+  Clearing a key, like `model.disconnect`, also sets `default_model` and
+  `fallback_model` to null when they were on that provider, so nothing still
+  points at it; bots on it keep their model and say so with
+  `provider_connected`.
   Key changes and completed sign-ins refresh existing Pi credential copies.
   Open sections use the updated credentials on their next provider request.
   Disconnect removes the provider from those copies, including bots that are idle.
 - `hexbot.models.list {provider?, include_unconfigured?, refresh?}` →
   `{curated: [Model], all: [Model], all_source, error?}` with
-  `Model = {provider, id, label, context?, input_cost?, output_cost?, reasoning_levels?}`,
+  `Model = {provider, id, label, context?, input_cost?, output_cost?, reasoning_levels?, fast?}`,
   built from `model.options`. Ids come from the profile list and the pinned
   Pi catalog. Naming a configured provider also asks it for its current list
   when that list holds only models an agent can run: OpenAI Codex (its
@@ -1295,7 +2071,10 @@ and [provider setup guide](https://hexbot.app/docs/providers/).
   catalog of its own. Other providers are asked only with `refresh: true`. `reasoning_levels` are the thinking levels both Pi and the provider
   accept, in Pi's order, or whichever of them knows the model; it is absent
   when neither does. Levels a provider reports for a model newer than the
-  pinned Pi are kept in `live_model_levels.json` and given to Pi. A
+  pinned Pi are kept in `live_model_levels.json` and given to Pi. `fast` is
+  true on a model that runs in fast mode: Claude Opus 5.5 on Anthropic, and
+  each OpenAI Codex model whose live list offers the priority tier ChatGPT
+  calls Fast, kept in `live_model_fast.json`. A
   recommended model the provider no longer lists is left out of `curated`. `provider` accepts the friendly aliases
   `openai` (→ `openai-api`), `chatgpt` (→ `openai-codex`), `claude`,
   `grok`, `glm`. `include_unconfigured` defaults to true when the named
@@ -1318,11 +2097,14 @@ and [provider setup guide](https://hexbot.app/docs/providers/).
 - `hexbot.pairing.code {}` → `{code, expires_at, link}` (loopback or paired
   device). `link` is `hexbot://pair?host=...&port=...#code=...`.
 - `hexbot.devices.list {}` → `{devices: [{id, name, platform, created_at,
-  last_seen_at, current: bool}]}`
+  last_seen_at, current: bool, push: bool}]}`. `push` marks a phone that takes
+  pushes; the token stays on the daemon.
 - `hexbot.devices.revoke {id}` → `{revoked: true}`
 - `hexbot.devices.set_push {token, platform}` → `{ok: true}` stores the
   calling device's Expo push token (`ExponentPushToken[...]`) and platform
-  (`ios` or `android`) for heartbeat message pushes; `{token: null}` stops them. Only
+  (`ios` or `android`) for pushes about heartbeat messages, unread replies
+  in a bot's chat, and approval and question cards there still unanswered 30
+  seconds after they appeared; `{token: null}` stops them. Only
   the calling connection's own paired device changes.
 
 ### Local daemon identity
@@ -1364,8 +2146,11 @@ See [Connect trust](connect.md#trust) for the TLS and compatibility limits.
 A client newer than the daemon asks the daemon to update itself
 (`docs/channels.md`, "Updating a daemon from a client").
 
-- `hexbot.update.request {version}` → `{accepted: true, method,
-  version}`. `method` is the daemon's `update_capability`. With `desktop` the
+- `hexbot.update.request {version, update_id?}` → `{accepted: true, method,
+  version, update_id}`. `update_id` names this update in `outcome`; a client
+  may pass its own (letters, digits, `-` and `_`, at most 64), otherwise the
+  daemon makes one. 4216: not enough free space for the snapshot a service
+  update takes first (`docs/channels.md`, "Trial and rollback"). `method` is the daemon's `update_capability`. With `desktop` the
   app running the daemon downloads and installs its own update and relaunches;
   with `service` the daemon fetches
   `daemon/native/<version>/<target>/manifest.json`, verifies the target archive
@@ -1415,7 +2200,9 @@ A client newer than the daemon asks the daemon to update itself
   before anything downloads, and the SHA-256 in the signed manifest then pins
   the archive.
 - `hexbot.update.status {}` → `{capability, status, requested, version,
-  percent, message, at}`. `status` is `idle`, `requested`, `checking`,
+  update_id, percent, message, at, outcome}`. `outcome` is the last service
+  update's result, `{id, from, to, status, reason, at}` with `status`
+  `committed`, `rolled-back`, `failed` or `superseded`, or null. `status` is `idle`, `requested`, `checking`,
   `downloading`, `installing`, `restarting`, `up-to-date`, or `failed`.
   A successful update ends with the connection dropping and the daemon
   coming back on a verified runtime that satisfies the requesting client.
@@ -1439,6 +2226,21 @@ devices, and removes the invite and update methods.
   The name is trimmed, nonempty (4200) and at most 64 characters (4202).
 - `hexbot.usage.summary {since?}` → `{input_tokens, output_tokens,
   estimated_cost_usd, by_bot}`.
+- `hexbot.usage.report {edges}` → `{since, until, rows, previous, earlier}`,
+  what Settings, Usage charts. `edges` are 2 to 8000 ascending Unix timestamps:
+  each bucket's start, then the window's end. The client computes them in its
+  own time zone, so a day stays midnight to midnight across daylight-saving
+  changes. `rows` holds one entry per bucket, bot, model and place: `{t, bot,
+  model, provider, place, calls, input, cache_read, cache_write, output, cost}`,
+  where `t` is the bucket's edge. `place` is `chat`, `thread` (between bots),
+  `room`, `job`, `subagent`, `heartbeat`, `dream` or `other` (deleted
+  conversations and messages sent with `hexbot send`). Zeroed copies of earlier
+  calls, made when a conversation is copied, are left out. `previous` is
+  `{calls, tokens, cost}` for the window as long just before the first edge.
+  `earlier` is `{tokens, cost}` from before the native runtime, which kept
+  running totals with no time per call, so it is on no day and in no window; a
+  profile whose old database can't be read is skipped. Bad edges return 4202.
+  Clients fall back to `hexbot.usage.summary` on an unknown-method error.
 
 ### Diagnostics
 
@@ -1475,8 +2277,20 @@ span holds message text, only names, timings, token counts and error messages.
     numbers, ids, quoted text and URLs are set aside.
 - `hexbot.diagnostics.trace {trace}` → `{trace, spans}`: one run's spans,
   the run first.
+- `hexbot.diagnostics.logs {file?, before?, query?, errors?}` → `{files, file,
+  lines, size, before, more}` (`backend/hexbot-core/src/log_files.rs`): the
+  plain files in `<home>/logs` (`name`, `size`, `modified` in Unix ms, newest
+  first) and one page of one of them, read from the end. Without `file` it
+  reads the daemon's own output: `daemon.log` under the app,
+  `service-error.log` under the service, otherwise the newest file; `file`
+  null means the folder is empty. A name not in `files` answers 4204.
+  `lines` are oldest first, at most 1000, each `{offset, text, level}` with
+  `level` `error`, `warning` or null guessed from its words; a line keeps
+  16,000 characters. `query` matches case-insensitively and `errors` keeps
+  only error lines. One page reads at most 16 MiB; while `more`, pass
+  `before` for the page before it.
 
-Polling `gateway.ping` and the two diagnostics methods are not recorded.
+Polling `gateway.ping` and the diagnostics methods are not recorded.
 
 ### Hex Connect
 
@@ -1504,7 +2318,9 @@ chat's process. While a turn runs, `reload` is false and a second
 `hexbot.sections.changed {id, bot, reload: true}` follows when that turn
 ends, always after the report is stored: when it settles, when a manual
 compaction finishes or fails, when Pi refuses the message, or when its
-process exits.
+process exits. Persisting an out-of-band hidden user question in a peer thread
+(including after a write retry) also emits `hexbot.sections.changed {id,
+reload: true}` so open thread viewers reload the incoming question.
 Connect registration and disconnection emit `hexbot.connect.changed {}`.
 Room mutations emit `hexbot.rooms.changed {id, deleted?}`; `add_member` and
 `remove_member` also name the bot in `bot` and `name`. Room deletion,
@@ -1512,7 +2328,7 @@ including last-member removal, sets `deleted: true`. Deletion, `add_member` and
 `remove_member` then emit an owner-scoped, session-less `hexbot.bots.changed
 {}`. Every persisted room event
 emits `hexbot.rooms.event {room_id, event}`. Turn state changes emit
-`hexbot.rooms.turn {room_id, bot, live_session_id, status}`. Room events go
+`hexbot.rooms.turn {id, room_id, bot, live_session_id, status}`. Room events go
 to the owner.
 Dream triggers emit `hexbot.dreaming.changed {bot}`.
 Password changes emit `hexbot.passwords.changed {}`.
@@ -1607,9 +2423,10 @@ on the pairing code or grant's single-use protection instead. CORS exposes
   every bot's heartbeat on or off, shows a bot's checklist and recent runs,
   runs one, or replaces its checklist. Status, now, and set need the daemon
   running.
-- `hexbot computer [on | off | restart | reset | give-back | size
+- `hexbot computer [on | off | restart | reset | pause | resume | size
   small|medium|large]`: shows the bots' computer or changes it, through the
-  running daemon.
+  running daemon. `pause` and `resume` stop and restart the bots' actions on
+  it; `give-back`, the earlier name, still resumes them.
 - `hexbot diagnostics`: prints `hexbot.diagnostics.get` as JSON from the
   running daemon, the same report as Settings, Advanced, Diagnostics.
 - `hexbot devices list|revoke`, `hexbot bots list|create|delete`,

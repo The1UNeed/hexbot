@@ -1,52 +1,40 @@
-import { ChevronDown, Plus, Search, X } from 'lucide-react'
+import { ChevronRight, Plus, Search } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 
+import { Avatar } from '../../components/ui/avatar'
 import { Button } from '../../components/ui/button'
-import { confirm } from '../../components/ui/confirm'
 import { ConnectorIcon } from '../../components/ui/connector-icon'
 import { Input } from '../../components/ui/input'
 import { SkeletonLines } from '../../components/ui/skeleton'
 import { Switch } from '../../components/ui/switch'
 import { Textarea } from '../../components/ui/textarea'
-import {
-  connectorsClear,
-  connectorsRemoveMcp,
-  connectorsTest,
-  type PluginInstallInput,
-  skillsSetGlobal
-} from '../../lib/api'
+import { type PluginInstallInput, skillsSave } from '../../lib/api'
+import { botFace } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
-import type { Plugin, PluginValue } from '../../lib/types'
+import {
+  canGive,
+  CONNECTOR_SHELVES,
+  discordBotText,
+  isConnected,
+  isDiscord,
+  namedPlugin,
+  shelfOf
+} from '../../lib/plugin-rows'
+import { skillContent, skillFileName } from '../../lib/skill-file'
+import type { Bot, Plugin } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
 import { usePlugins } from '../../stores/plugins'
-import { ConnectorSetupSheet } from '../bot-settings/connector-setup'
-import { errorText, fieldLabel, Group, Heading } from '../bot-settings/shared'
+import { useUi } from '../../stores/ui'
+import { cardClass, errorText, fieldLabel, Group, Heading } from '../bot-settings/shared'
 
-const CONNECTOR_GROUPS: { id: string; title: string }[] = [
-  { id: 'search', title: 'Search and browsing' },
-  { id: 'media', title: 'Images and voice' },
-  { id: 'work', title: 'Notes and work' },
-  { id: 'social_home', title: 'Social and home' }
-]
-
-/** `software-development` reads as "Software development". */
-const categoryTitle = (category: string) => {
-  const words = category.replace(/[-_]+/g, ' ').trim()
-
-  return words ? words.charAt(0).toUpperCase() + words.slice(1) : 'Other'
-}
-
-/** A bot as the page names it. */
-interface PluginBot {
-  display_name: string
-  name: string
-}
+import { PluginSheet, useDiscordSwitch } from './plugin-sheet'
+import { PluginsAccess } from './plugins-access'
 
 const keyOf = (plugin: Plugin) => `${plugin.kind}:${plugin.id}`
 
 /** Who a plugin is on for, in a few words. */
-function botsText(plugin: Plugin, bots: PluginBot[]): string {
+function botsText(plugin: Plugin, bots: Bot[]): string {
   const on = bots.filter(bot => plugin.bots.includes(bot.name))
 
   if (!bots.length || !on.length) {
@@ -75,7 +63,7 @@ const CATEGORIES: {
 }[] = [
   {
     description:
-      'Services Hexbot supports. Keys are stored once on this daemon; each bot you turn one on for uses them.',
+      'Services your bots can work in. Connect one once on this daemon, then choose the bots that get it.',
     empty: 'No connector matches that.',
     id: 'connectors',
     label: 'Connectors',
@@ -91,7 +79,7 @@ const CATEGORIES: {
   },
   {
     description:
-      "Instructions bots follow for particular jobs. Skills a bot writes for itself stay in that bot's settings.",
+      "Instructions bots follow for particular jobs. A connector's skills come with it. Skills a bot writes for itself stay in that bot's settings.",
     empty: 'No skill matches that.',
     id: 'skills',
     label: 'Skills',
@@ -102,7 +90,14 @@ const CATEGORIES: {
 const categoryOf = (plugin: Plugin): Category =>
   plugin.category === 'mcp' ? 'servers' : plugin.kind === 'connector' ? 'connectors' : 'skills'
 
+/** Settings, Plugins: the page below, or the table once it is switched on in Settings, Experimental. */
 export function PluginsSettings(): React.JSX.Element {
+  const table = useUi(state => state.accessTable)
+
+  return table ? <PluginsAccess /> : <PluginsToday />
+}
+
+function PluginsToday(): React.JSX.Element {
   const byName = useBots(state => state.byName)
   const order = useBots(state => state.order)
 
@@ -113,7 +108,7 @@ export function PluginsSettings(): React.JSX.Element {
         .map(name => byName[name])
         .filter(bot => bot !== undefined)
         .sort((a, b) => Number(Boolean(b.primary)) - Number(Boolean(a.primary)))
-        .map(bot => ({ display_name: bot.display_name || bot.name, name: bot.name })),
+        .map(bot => ({ ...bot, display_name: bot.display_name || bot.name })),
     [byName, order]
   )
 
@@ -124,8 +119,7 @@ export function PluginsSettings(): React.JSX.Element {
   const [category, setCategory] = useState<Category>('connectors')
   const [query, setQuery] = useState('')
   const [focus, setFocus] = useState<null | string>(null)
-  const [expanded, setExpanded] = useState<null | string>(null)
-  const [sheet, setSheet] = useState<null | string>(null)
+  const [open, setOpen] = useState<null | string>(null)
   const [adding, setAdding] = useState(false)
   // Load again after any reconnect or a switch to another daemon.
   const target = useConnection(state => state.target)
@@ -138,6 +132,22 @@ export function PluginsSettings(): React.JSX.Element {
     return () => usePlugins.setState({ loaded: false })
   }, [refresh, target, epoch, connects])
 
+  // A tag in a message named a plugin or a skill: show its tab, searched for it.
+  const sought = usePlugins(state => state.sought)
+  const loaded = usePlugins(state => state.loaded)
+  useEffect(() => {
+    // Not before the list is in: the first visit starts with none.
+    if (!sought || loading || !loaded) {
+      return
+    }
+
+    const found = namedPlugin(plugins, sought.kind, sought.name)
+
+    setCategory(found ? categoryOf(found) : sought.kind === 'skill' ? 'skills' : 'connectors')
+    setQuery(found?.name ?? sought.name)
+    usePlugins.setState({ sought: null })
+  }, [loaded, loading, plugins, sought])
+
   // A bot that was deleted while it was chosen falls back to every bot.
   const focused = bots.find(bot => bot.name === focus) ?? null
   const current = CATEGORIES.find(item => item.id === category)!
@@ -149,7 +159,9 @@ export function PluginsSettings(): React.JSX.Element {
       item =>
         categoryOf(item) === category &&
         (!needle ||
-          `${item.name} ${item.description} ${item.category}`.toLowerCase().includes(needle))
+          `${item.name} ${item.description} ${item.category} ${shelfOf(item)}`
+            .toLowerCase()
+            .includes(needle))
     )
   }, [category, plugins, query])
 
@@ -165,17 +177,27 @@ export function PluginsSettings(): React.JSX.Element {
 
   const skillPackages = visible.filter(item => item.kind === 'package')
   const skills = visible.filter(item => item.kind === 'skill')
-  const skillCategories = [...new Set(skills.map(item => item.category))].sort()
-  const sheetPlugin = plugins.find(item => keyOf(item) === sheet)?.connector
+  const builtIn = skills.filter(item => item.source === 'bundled')
+  const added = skills.filter(item => item.source !== 'bundled')
+  const connected = visible.filter(isConnected)
+  const opened = plugins.find(item => keyOf(item) === open)
 
   const row = (plugin: Plugin) => (
     <PluginRow
       bots={bots}
-      expanded={expanded === keyOf(plugin)}
       focus={focused}
       key={keyOf(plugin)}
-      onExpand={() => setExpanded(expanded === keyOf(plugin) ? null : keyOf(plugin))}
-      onSetup={() => setSheet(keyOf(plugin))}
+      onOpen={() => setOpen(keyOf(plugin))}
+      plugin={plugin}
+    />
+  )
+
+  const card = (plugin: Plugin) => (
+    <ConnectorCard
+      bots={bots}
+      focus={focused}
+      key={keyOf(plugin)}
+      onOpen={() => setOpen(keyOf(plugin))}
       plugin={plugin}
     />
   )
@@ -187,7 +209,8 @@ export function PluginsSettings(): React.JSX.Element {
       </Heading>
       <div
         aria-label="Plugin kinds"
-        className="mb-5 flex gap-6 border-b border-foreground/[0.08]"
+        // The same pill segments as the bot panel's tabs: no rule underneath.
+        className="mb-5 flex w-fit max-w-full gap-0.5 rounded-full bg-foreground/[0.05] p-[3px]"
         role="tablist"
       >
         {CATEGORIES.map(item => (
@@ -195,15 +218,14 @@ export function PluginsSettings(): React.JSX.Element {
             aria-controls="plugins-panel"
             aria-selected={category === item.id}
             className={cn(
-              'hex-focus -mb-px flex h-9 items-center gap-1.5 border-b-2 text-[length:var(--text-body)] transition-colors duration-[var(--hex-motion-fast)]',
+              'hex-focus flex h-8 items-center gap-1.5 rounded-full px-3.5 text-[length:var(--text-secondary)] font-medium whitespace-nowrap transition-colors duration-[var(--hex-motion-fast)]',
               category === item.id
-                ? 'border-foreground font-medium text-foreground'
-                : 'border-transparent text-muted hover:text-foreground'
+                ? 'bg-background text-foreground shadow-card'
+                : 'text-muted hover:text-foreground'
             )}
             key={item.id}
             onClick={() => {
               setCategory(item.id)
-              setExpanded(null)
               setAdding(false)
             }}
             role="tab"
@@ -241,7 +263,8 @@ export function PluginsSettings(): React.JSX.Element {
               <button
                 aria-selected={(focused?.name ?? null) === (bot?.name ?? null)}
                 className={cn(
-                  'h-[30px] rounded-full px-3 text-[length:var(--text-secondary)] whitespace-nowrap transition-colors',
+                  'flex h-[30px] items-center gap-1.5 rounded-full text-[length:var(--text-secondary)] whitespace-nowrap transition-colors',
+                  bot ? 'pr-3 pl-1.5' : 'px-3',
                   (focused?.name ?? null) === (bot?.name ?? null)
                     ? 'bg-foreground text-background'
                     : 'bg-foreground/[0.07] text-foreground hover:bg-foreground/[0.11]'
@@ -251,6 +274,11 @@ export function PluginsSettings(): React.JSX.Element {
                 role="tab"
                 type="button"
               >
+                {bot ? (
+                  <span aria-hidden className="inline-flex">
+                    <Avatar {...botFace(bot)} name={bot.display_name} size="sm" />
+                  </span>
+                ) : null}
                 {bot ? bot.display_name : 'Every bot'}
               </button>
             ))}
@@ -264,18 +292,34 @@ export function PluginsSettings(): React.JSX.Element {
       ) : null}
       {loading && !plugins.length ? <SkeletonLines label="Loading plugins" /> : null}
       {plugins.length ? (
-        <div className="space-y-6" id="plugins-panel" role="tabpanel">
-          {category === 'connectors'
-            ? CONNECTOR_GROUPS.map(group => {
-                const rows = visible.filter(item => item.category === group.id)
+        <div className="space-y-8" id="plugins-panel" role="tabpanel">
+          {category === 'connectors' ? (
+            <>
+              {connected.length ? (
+                <Shelf
+                  description={
+                    focused
+                      ? `Switch each one on or off for ${focused.display_name}.`
+                      : 'Open one to choose its bots, test it or disconnect it.'
+                  }
+                  title="Connected"
+                >
+                  {connected.map(card)}
+                </Shelf>
+              ) : null}
+              {CONNECTOR_SHELVES.map(shelf => {
+                const rows = visible.filter(
+                  item => !isConnected(item) && shelfOf(item) === shelf.id
+                )
 
                 return rows.length ? (
-                  <Group key={group.id} title={group.title}>
-                    {rows.map(row)}
-                  </Group>
+                  <Shelf description={shelf.description} key={shelf.id} title={shelf.title}>
+                    {rows.map(card)}
+                  </Shelf>
                 ) : null
-              })
-            : null}
+              })}
+            </>
+          ) : null}
           {category === 'servers' ? (
             <Group>
               {visible.map(row)}
@@ -297,70 +341,246 @@ export function PluginsSettings(): React.JSX.Element {
           ) : null}
           {category === 'skills' ? (
             <>
+              <Group title="Yours">
+                {added.map(row)}
+                {adding ? (
+                  <AddSkillForm
+                    bots={bots}
+                    focus={focused}
+                    onDone={name => {
+                      setAdding(false)
+
+                      if (name) {
+                        setOpen(`skill:${name}`)
+                      }
+                    }}
+                  />
+                ) : (
+                  <button
+                    className="flex min-h-[52px] w-full items-center gap-3 px-4 py-2.5 text-left text-muted transition-colors hover:text-foreground"
+                    onClick={() => setAdding(true)}
+                    type="button"
+                  >
+                    <span className="inline-flex size-7 items-center justify-center rounded-[8px] bg-foreground/[0.07]">
+                      <Plus size={16} />
+                    </span>
+                    Add skill
+                  </button>
+                )}
+              </Group>
               {skillPackages.length ? (
                 <Group title="Skill packages">{skillPackages.map(row)}</Group>
               ) : null}
-              {skillCategories.map(name => (
-                <Group key={name} title={categoryTitle(name)}>
-                  {skills.filter(item => item.category === name).map(row)}
-                </Group>
-              ))}
+              {builtIn.length ? <Group title="Built into Hexbot">{builtIn.map(row)}</Group> : null}
             </>
           ) : null}
-          {!visible.length && (category !== 'servers' || query.trim()) ? (
+          {!visible.length && (category === 'connectors' || query.trim()) ? (
             <p className="px-1 text-[length:var(--text-secondary)] text-muted">
               {query.trim() ? current.empty : 'Nothing here yet.'}
             </p>
           ) : null}
         </div>
       ) : null}
-      {sheetPlugin ? (
-        <ConnectorSetupSheet
-          connector={sheetPlugin}
-          onClose={() => {
-            setSheet(null)
-            void refresh()
-          }}
-        />
+      {opened ? (
+        <PluginSheet bots={bots} focus={focused} onClose={() => setOpen(null)} plugin={opened} />
       ) : null}
     </>
   )
 }
 
-function PluginRow({
+/** A titled grid of connector cards. */
+function Shelf({
+  children,
+  description,
+  title
+}: {
+  children: React.ReactNode
+  description?: string
+  title: string
+}) {
+  return (
+    <section aria-label={title}>
+      <div className="mb-3 px-1">
+        <h3 className="text-[length:var(--text-body)] font-semibold">{title}</h3>
+        {description ? (
+          <p className="mt-0.5 text-[length:var(--text-secondary)] text-muted">{description}</p>
+        ) : null}
+      </div>
+      <div className="grid grid-cols-1 gap-3 @min-[640px]:grid-cols-2">{children}</div>
+    </section>
+  )
+}
+
+/** The faces of the bots a plugin is on for, with who they are in words. */
+function BotStack({ bots, plugin }: { bots: Bot[]; plugin: Plugin }) {
+  const on = bots.filter(bot => plugin.bots.includes(bot.name))
+
+  if (!on.length) {
+    return <span className="text-warning">No bot yet</span>
+  }
+
+  return (
+    <span className="flex min-w-0 items-center gap-1.5">
+      <span aria-hidden className="flex shrink-0 -space-x-1">
+        {on.slice(0, 3).map(bot => (
+          <Avatar
+            {...botFace(bot)}
+            className="rounded-full ring-2 ring-[var(--hex-card,var(--hex-background))]"
+            key={bot.name}
+            name={bot.display_name}
+            size="xs"
+          />
+        ))}
+      </span>
+      <span className="truncate">{botsText(plugin, bots)}</span>
+    </span>
+  )
+}
+
+/**
+ * One connector as a card. Not connected, it says what it is for and offers
+ * to connect it; connected, it shows its account and its bots. The whole
+ * card opens its sheet; with a bot in view its switch sits on the card.
+ */
+function ConnectorCard({
   bots,
-  expanded,
   focus,
-  onExpand,
-  onSetup,
+  onOpen,
   plugin
 }: {
-  bots: PluginBot[]
-  expanded: boolean
-  focus: null | PluginBot
-  onExpand: () => void
-  onSetup: () => void
+  bots: Bot[]
+  focus: Bot | null
+  onOpen: () => void
+  plugin: Plugin
+}) {
+  const setBots = usePlugins(state => state.setBots)
+  const discordSwitch = useDiscordSwitch()
+  const [error, setError] = useState<null | string>(null)
+  const connected = isConnected(plugin)
+  const account = Boolean(plugin.connector?.account)
+
+  const toggle = (bot: string, on: boolean) => {
+    setError(null)
+    // Discord turned on for a bot opens its Discord settings to connect it.
+    const target = bots.find(item => item.name === bot)
+
+    void (
+      isDiscord(plugin) && target
+        ? discordSwitch(plugin, target, on)
+        : setBots(plugin, on ? [...plugin.bots, bot] : plugin.bots.filter(name => name !== bot))
+    ).catch(cause => setError(errorText(cause)))
+  }
+
+  const action =
+    plugin.state === 'error' ? (
+      <Button onClick={onOpen} size="sm" variant="primary">
+        Fix
+      </Button>
+    ) : focus && (canGive(plugin, focus.name) || plugin.bots.includes(focus.name)) ? (
+      <Switch
+        aria-label={`${plugin.name} for ${focus.display_name}`}
+        checked={plugin.bots.includes(focus.name)}
+        onCheckedChange={on => toggle(focus.name, on)}
+      />
+    ) : !connected ? (
+      <Button onClick={onOpen} size="sm">
+        {account ? 'Connect' : 'Set up'}
+      </Button>
+    ) : null
+
+  return (
+    <div
+      className={cn(
+        cardClass,
+        'relative flex min-h-[112px] flex-col gap-3 p-4 transition-shadow duration-[var(--hex-motion-fast)] focus-within:ring-2 focus-within:ring-foreground/20 hover:shadow-[var(--hex-card-shadow),0_4px_14px_rgb(0_0_0/0.06)]'
+      )}
+      data-testid={`plugin-${keyOf(plugin)}`}
+    >
+      <div className="flex items-start gap-3">
+        <ConnectorIcon className="size-9" icon={plugin.icon} />
+        <div className="min-w-0 flex-1">
+          {/* The name is the button; its hit area is the whole card. */}
+          <button
+            className="block max-w-full truncate text-left text-[length:var(--text-body)] font-medium outline-none after:absolute after:inset-0 after:rounded-2xl"
+            onClick={onOpen}
+            type="button"
+          >
+            {plugin.name}
+          </button>
+          <p
+            className={cn(
+              'mt-0.5 text-[length:var(--text-secondary)]',
+              connected ? 'truncate' : 'line-clamp-2',
+              plugin.state === 'error' ? 'text-danger' : 'text-muted'
+            )}
+            title={connected ? plugin.state_text : undefined}
+          >
+            {connected
+              ? focus && isDiscord(plugin)
+                ? discordBotText(plugin, focus.name)
+                : plugin.state_text
+              : plugin.description}
+          </p>
+        </div>
+      </div>
+      <div className="mt-auto flex min-h-[30px] items-center justify-between gap-3 text-[length:var(--text-secondary)] text-muted">
+        {/* One that needs fixing says so; its bots wait until it works. */}
+        {connected && plugin.state !== 'error' ? (
+          <BotStack bots={bots} plugin={plugin} />
+        ) : (
+          <span />
+        )}
+        {/* Above the card's hit area, so the control takes its own clicks. */}
+        {action ? <span className="relative z-10 shrink-0">{action}</span> : null}
+      </div>
+      {error ? (
+        <p className="text-[length:var(--text-secondary)] text-danger" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
+/** An MCP server or a skill as a row: its state, and its bots or a switch. */
+function PluginRow({
+  bots,
+  focus,
+  onOpen,
+  plugin
+}: {
+  bots: Bot[]
+  focus: Bot | null
+  onOpen: () => void
   plugin: Plugin
 }) {
   const setBots = usePlugins(state => state.setBots)
   const [error, setError] = useState<null | string>(null)
 
-  const choose = (next: string[]) => {
+  const toggle = (bot: string, on: boolean) => {
     setError(null)
-    void setBots(plugin, next).catch(cause => setError(errorText(cause)))
+    void setBots(
+      plugin,
+      on ? [...plugin.bots, bot] : plugin.bots.filter(name => name !== bot)
+    ).catch(cause => setError(errorText(cause)))
   }
 
-  const toggle = (bot: string, on: boolean) =>
-    choose(on ? [...plugin.bots, bot] : plugin.bots.filter(name => name !== bot))
-
-  // A connector or skill can be ready for one bot through a key in its own
-  // `.env`, so only the daemon can tell whether a bot may have it.
+  // Until it is set up, a plugin can be taken away from bots but not given,
+  // except to a bot whose own settings hold its key.
   const control = focus ? (
-    <Switch
-      aria-label={`${plugin.name} for ${focus.display_name}`}
-      checked={plugin.bots.includes(focus.name)}
-      onCheckedChange={on => toggle(focus.name, on)}
-    />
+    !canGive(plugin, focus.name) && !plugin.bots.includes(focus.name) ? (
+      plugin.kind === 'skill' ? null : (
+        <Button onClick={onOpen} size="sm">
+          Set up
+        </Button>
+      )
+    ) : (
+      <Switch
+        aria-label={`${plugin.name} for ${focus.display_name}`}
+        checked={plugin.bots.includes(focus.name)}
+        onCheckedChange={on => toggle(focus.name, on)}
+      />
+    )
   ) : (
     <span className="shrink-0 text-[length:var(--text-secondary)] text-muted">
       {botsText(plugin, bots)}
@@ -369,22 +589,24 @@ function PluginRow({
 
   return (
     <div data-testid={`plugin-${keyOf(plugin)}`}>
-      <div className="flex min-h-[56px] items-center gap-3 px-4 py-2.5">
+      <div className="relative flex min-h-[56px] items-center gap-3 px-4 py-2.5 transition-colors hover:bg-foreground/[0.025]">
         <ConnectorIcon icon={plugin.icon} />
-        <button
-          aria-expanded={expanded}
-          className="min-w-0 flex-1 text-left outline-none"
-          onClick={onExpand}
-          type="button"
-        >
+        <div className="min-w-0 flex-1">
           <span className="flex items-baseline gap-2">
-            <span>{plugin.name}</span>
+            {/* The name is the button; its hit area is the whole row. */}
+            <button
+              className="truncate text-left outline-none after:absolute after:inset-0"
+              onClick={onOpen}
+              type="button"
+            >
+              {plugin.name}
+            </button>
             <span
               className={cn(
                 'min-w-0 truncate text-[length:var(--text-meta)]',
                 plugin.state === 'error'
                   ? 'text-danger'
-                  : plugin.state === 'not_set_up' && plugin.kind !== 'connector'
+                  : plugin.state === 'not_set_up'
                     ? 'text-warning'
                     : 'text-muted'
               )}
@@ -396,18 +618,11 @@ function PluginRow({
           <span className="mt-0.5 block truncate text-[length:var(--text-secondary)] text-muted">
             {plugin.description}
           </span>
-        </button>
-        {control}
-        <ChevronDown
-          aria-hidden
-          className={cn(
-            'shrink-0 text-muted transition-transform duration-[var(--hex-motion-fast)]',
-            expanded && 'rotate-180'
-          )}
-          size={15}
-        />
+        </div>
+        <span className="relative z-10 flex shrink-0 items-center">{control}</span>
+        <ChevronRight aria-hidden className="shrink-0 text-muted" size={15} />
       </div>
-      {error && !expanded ? (
+      {error ? (
         <p
           className="px-4 pb-3 pl-[56px] text-[length:var(--text-secondary)] text-danger"
           role="alert"
@@ -415,337 +630,16 @@ function PluginRow({
           {error}
         </p>
       ) : null}
-      {expanded ? (
-        <div className="hex-fade grid gap-4 px-4 pt-1 pb-4 pl-[56px] text-[length:var(--text-secondary)]">
-          {bots.length ? (
-            <BotPicker bots={bots} chosen={plugin.bots} name={plugin.name} onChange={choose} />
-          ) : null}
-          {error ? (
-            <p className="text-danger" role="alert">
-              {error}
-            </p>
-          ) : null}
-          <PluginDetails bots={bots} onSetup={onSetup} plugin={plugin} />
-        </div>
-      ) : null}
     </div>
   )
 }
 
-/** One pill per bot; a filled pill is on. */
-function BotPicker({
-  bots,
-  chosen,
-  name,
-  onChange
+export function AddServerForm({
+  onDone
 }: {
-  bots: PluginBot[]
-  chosen: string[]
-  name: string
-  onChange: (bots: string[]) => void
+  /** With the new server's name once it is added. */
+  onDone: (name?: string) => void
 }) {
-  const all = bots.every(bot => chosen.includes(bot.name))
-
-  return (
-    <div>
-      <div className="mb-1.5 flex items-center gap-3">
-        <span className="text-muted">Bots</span>
-        {bots.length > 1 ? (
-          <button
-            className="text-[length:var(--text-meta)] text-muted underline-offset-2 hover:text-foreground hover:underline disabled:pointer-events-none disabled:opacity-50"
-            onClick={() => onChange(all ? [] : bots.map(bot => bot.name))}
-            type="button"
-          >
-            {all ? 'Turn off for every bot' : 'Turn on for every bot'}
-          </button>
-        ) : null}
-      </div>
-      <div aria-label={`Bots that use ${name}`} className="flex flex-wrap gap-1.5" role="group">
-        {bots.map(bot => {
-          const on = chosen.includes(bot.name)
-
-          return (
-            <button
-              aria-pressed={on}
-              className={cn(
-                'h-[30px] rounded-full px-3 whitespace-nowrap transition-colors disabled:pointer-events-none disabled:opacity-50',
-                on
-                  ? 'bg-accent text-accent-fg'
-                  : 'bg-foreground/[0.07] text-foreground hover:bg-foreground/[0.11]'
-              )}
-              key={bot.name}
-              onClick={() =>
-                onChange(on ? chosen.filter(item => item !== bot.name) : [...chosen, bot.name])
-              }
-              type="button"
-            >
-              {bot.display_name}
-            </button>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
-function PluginDetails({
-  bots,
-  onSetup,
-  plugin
-}: {
-  bots: PluginBot[]
-  onSetup: () => void
-  plugin: Plugin
-}) {
-  const refresh = usePlugins(state => state.refresh)
-  const remove = usePlugins(state => state.remove)
-  const [busy, setBusy] = useState(false)
-  const [message, setMessage] = useState<null | { ok: boolean; text: string }>(null)
-  const connector = plugin.connector
-
-  const run = (action: () => Promise<unknown>) => {
-    setBusy(true)
-    setMessage(null)
-    void action()
-      .catch(cause => setMessage({ ok: false, text: errorText(cause) }))
-      .finally(() => setBusy(false))
-  }
-
-  const test = () =>
-    run(async () => {
-      const result = await connectorsTest(connector!.id)
-
-      setMessage({ ok: result.ok, text: result.message })
-      await refresh()
-    })
-
-  // A server added on its own; a package goes with its server and skills.
-  const looseServer = plugin.kind === 'connector' && Boolean(plugin.server)
-  const removable = plugin.kind === 'package' || looseServer
-
-  return (
-    <>
-      {plugin.kind === 'connector' && connector?.fields.length ? (
-        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
-          {connector.fields
-            .filter(field => !field.provider || field.provider === connector.provider)
-            .map(field => (
-              <div className="contents" key={field.key}>
-                <dt className="text-muted">{field.label}</dt>
-                <dd>{field.set ? (field.hint ? `Saved ${field.hint}` : 'Saved') : 'Not set'}</dd>
-              </div>
-            ))}
-        </dl>
-      ) : null}
-      {plugin.server ? (
-        <p className="font-mono break-all text-muted">
-          {plugin.server.url ?? [plugin.server.command, ...(plugin.server.args ?? [])].join(' ')}
-        </p>
-      ) : null}
-      {plugin.server ? <ServerValues plugin={plugin} /> : null}
-      {plugin.skills?.length ? (
-        <div>
-          <p className="mb-1 text-muted">Skills</p>
-          <ul className="grid gap-1">
-            {plugin.skills.map(skill => (
-              <li key={skill.name}>
-                <span className="font-medium">{skill.name}</span>
-                {skill.description ? (
-                  <span className="text-muted"> · {skill.description}</span>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-      {plugin.installed_by ? (
-        <p className="text-muted">
-          Asked for by{' '}
-          {bots.find(bot => bot.name === plugin.installed_by)?.display_name ?? plugin.installed_by}.
-        </p>
-      ) : null}
-      {plugin.kind === 'skill' ? (
-        <p className="text-muted">
-          {plugin.disabled_globally
-            ? 'Off for every bot in Settings, whatever its switch here says.'
-            : plugin.source === 'bundled'
-              ? 'Comes with Hexbot.'
-              : 'In your skill library.'}
-        </p>
-      ) : null}
-      {message ? (
-        <p
-          className={message.ok ? 'text-success' : 'text-danger'}
-          role={message.ok ? 'status' : 'alert'}
-        >
-          {message.text}
-        </p>
-      ) : null}
-      <div className="flex flex-wrap gap-2">
-        {plugin.kind === 'skill' && plugin.disabled_globally ? (
-          <Button
-            busy={busy}
-            onClick={() => run(() => skillsSetGlobal(plugin.id, true).then(refresh))}
-            size="sm"
-            variant="primary"
-          >
-            Undo Off for every bot
-          </Button>
-        ) : null}
-        {plugin.kind === 'connector' && connector?.fields.length ? (
-          <Button onClick={onSetup} size="sm">
-            {plugin.state === 'not_set_up' ? 'Set up' : 'Edit'}
-          </Button>
-        ) : null}
-        {connector && (plugin.kind !== 'connector' || plugin.state !== 'not_set_up') ? (
-          <Button busy={busy} onClick={test} size="sm">
-            Test
-          </Button>
-        ) : null}
-        {plugin.kind === 'connector' &&
-        plugin.state !== 'not_set_up' &&
-        connector?.fields.length ? (
-          <Button
-            onClick={() =>
-              void confirm({ title: `Remove the keys for ${plugin.name}?` }).then(yes =>
-                yes ? run(() => connectorsClear(plugin.id).then(refresh)) : undefined
-              )
-            }
-            size="sm"
-            variant="ghost"
-          >
-            Remove keys
-          </Button>
-        ) : null}
-        {removable ? (
-          <Button
-            onClick={() =>
-              void confirm({ title: `Remove ${plugin.name} for every bot?` }).then(yes =>
-                yes
-                  ? run(() =>
-                      looseServer ? connectorsRemoveMcp(plugin.name).then(refresh) : remove(plugin)
-                    )
-                  : undefined
-              )
-            }
-            size="sm"
-            variant="ghost"
-          >
-            Remove
-          </Button>
-        ) : null}
-      </div>
-    </>
-  )
-}
-
-/** An MCP server's environment (a command) or headers (a URL), set one name at a time. */
-function ServerValues({ plugin }: { plugin: Plugin }) {
-  const configure = usePlugins(state => state.configure)
-  const server = plugin.server!
-  const kind = server.transport === 'http' ? 'headers' : 'env'
-  const values: PluginValue[] = server[kind]
-  const [drafts, setDrafts] = useState<Record<string, string>>({})
-  const [newKey, setNewKey] = useState('')
-  const [newValue, setNewValue] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<null | string>(null)
-
-  const save = (change: Record<string, null | string>) => {
-    setBusy(true)
-    setError(null)
-    void configure(plugin, { [kind]: change })
-      .then(() => {
-        setDrafts({})
-        setNewKey('')
-        setNewValue('')
-      })
-      .catch(cause => setError(errorText(cause)))
-      .finally(() => setBusy(false))
-  }
-
-  const changed = Object.fromEntries(Object.entries(drafts).filter(([, value]) => value.trim()))
-  const label = kind === 'headers' ? 'Headers' : 'Environment'
-
-  return (
-    <form
-      className="grid gap-2"
-      onSubmit={event => {
-        event.preventDefault()
-        const change: Record<string, string> = { ...changed }
-
-        if (newKey.trim()) {
-          change[newKey.trim()] = newValue
-        }
-
-        save(change)
-      }}
-    >
-      <span className="text-muted">{label}</span>
-      {values.map(value => (
-        <div className="flex items-center gap-2" key={value.key}>
-          <span className="w-44 shrink-0 truncate font-mono" title={value.key}>
-            {value.key}
-          </span>
-          <Input
-            aria-label={`${value.key} for ${plugin.name}`}
-            autoComplete="off"
-            className="min-w-0 flex-1"
-            onChange={event => setDrafts({ ...drafts, [value.key]: event.target.value })}
-            placeholder={value.set ? (value.hint ? `Saved ${value.hint}` : 'Saved') : 'Not set'}
-            type="password"
-            value={drafts[value.key] ?? ''}
-          />
-          <button
-            aria-label={`Remove ${value.key}`}
-            className="grid size-8 shrink-0 place-items-center rounded-full text-muted hover:bg-foreground/[0.07] hover:text-foreground"
-            onClick={() => save({ [value.key]: null })}
-            type="button"
-          >
-            <X size={14} />
-          </button>
-        </div>
-      ))}
-      <div className="flex items-center gap-2">
-        <Input
-          aria-label={`New ${kind === 'headers' ? 'header' : 'environment'} name`}
-          autoComplete="off"
-          className="w-44 shrink-0 font-mono"
-          onChange={event => setNewKey(event.target.value)}
-          placeholder={kind === 'headers' ? 'Authorization' : 'API_TOKEN'}
-          value={newKey}
-        />
-        <Input
-          aria-label="New value"
-          autoComplete="off"
-          className="min-w-0 flex-1"
-          onChange={event => setNewValue(event.target.value)}
-          placeholder="Value"
-          type="password"
-          value={newValue}
-        />
-        <span className="size-8 shrink-0" />
-      </div>
-      {error ? (
-        <p className="text-danger" role="alert">
-          {error}
-        </p>
-      ) : null}
-      <div>
-        <Button
-          busy={busy}
-          disabled={!Object.keys(changed).length && !newKey.trim()}
-          size="sm"
-          type="submit"
-        >
-          Save values
-        </Button>
-      </div>
-    </form>
-  )
-}
-
-function AddServerForm({ onDone }: { onDone: () => void }) {
   const install = usePlugins(state => state.install)
   const [name, setName] = useState('')
   const [target, setTarget] = useState('')
@@ -785,7 +679,7 @@ function AddServerForm({ onDone }: { onDone: () => void }) {
         }
 
         void install(input)
-          .then(onDone)
+          .then(() => onDone(plugin))
           .catch(cause => setError(errorText(cause)))
           .finally(() => setBusy(false))
       }}
@@ -849,7 +743,145 @@ function AddServerForm({ onDone }: { onDone: () => void }) {
         >
           Add server
         </Button>
-        <Button onClick={onDone} size="sm" variant="ghost">
+        <Button onClick={() => onDone()} size="sm" variant="ghost">
+          Cancel
+        </Button>
+      </div>
+    </form>
+  )
+}
+
+/**
+ * A skill of your own: a description and instructions, or a SKILL.md you
+ * load. It starts on for the bot in view, or for every bot.
+ */
+export function AddSkillForm({
+  bots,
+  focus,
+  onDone
+}: {
+  bots: Bot[]
+  focus: Bot | null
+  /** With the new skill's name once it is added, so its sheet can open. */
+  onDone: (name?: string) => void
+}) {
+  const refresh = usePlugins(state => state.refresh)
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  const [instructions, setInstructions] = useState('')
+  const [file, setFile] = useState<null | { content: string; name: string }>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<null | string>(null)
+  const ready = name.trim() && (file || (description.trim() && instructions.trim()))
+
+  const load = (picked: File | undefined) => {
+    if (!picked) {
+      return
+    }
+
+    setError(null)
+    void picked
+      .text()
+      .then(content => {
+        setFile({ content, name: picked.name })
+        setName(current => current || skillFileName(content))
+      })
+      .catch(cause => setError(errorText(cause)))
+  }
+
+  return (
+    <form
+      className="hex-fade grid gap-3 px-4 py-4"
+      onSubmit={event => {
+        event.preventDefault()
+        setBusy(true)
+        setError(null)
+        const skill = name.trim()
+
+        void skillsSave({
+          botsDisabled: focus
+            ? bots.filter(bot => bot.name !== focus.name).map(bot => bot.name)
+            : [],
+          content: file ? file.content : skillContent(description, instructions),
+          name: skill
+        })
+          .then(() => refresh())
+          .then(() => onDone(skill))
+          .catch(cause => setError(errorText(cause)))
+          .finally(() => setBusy(false))
+      }}
+    >
+      <label className="block">
+        <span className={fieldLabel}>Name</span>
+        <Input
+          aria-label="Skill name"
+          autoFocus
+          onChange={event => setName(event.target.value.toLowerCase())}
+          placeholder="release-notes"
+          value={name}
+        />
+      </label>
+      {file ? (
+        <div className="flex items-center justify-between gap-3 rounded-[10px] bg-foreground/[0.04] px-3 py-2.5 text-[length:var(--text-secondary)]">
+          <span className="min-w-0 truncate">{file.name}</span>
+          <Button onClick={() => setFile(null)} size="sm" variant="ghost">
+            Remove
+          </Button>
+        </div>
+      ) : (
+        <>
+          <label className="block">
+            <span className={fieldLabel}>When to use it</span>
+            <Input
+              aria-label="When to use the skill"
+              onChange={event => setDescription(event.target.value)}
+              placeholder="Write release notes from merged pull requests in the team's format."
+              value={description}
+            />
+          </label>
+          <label className="block">
+            <span className={fieldLabel}>Instructions</span>
+            <Textarea
+              aria-label="Skill instructions"
+              onChange={event => setInstructions(event.target.value)}
+              placeholder="The steps a bot follows, the tools it uses, and what to avoid."
+              rows={6}
+              value={instructions}
+            />
+          </label>
+        </>
+      )}
+      <p className="text-[length:var(--text-meta)] text-muted">
+        {focus
+          ? `On for ${focus.display_name}. Choose more bots once it is added.`
+          : 'On for every bot. Choose its bots once it is added.'}{' '}
+        A skill built into Hexbot can't be added again.
+      </p>
+      {error ? (
+        <p className="text-[length:var(--text-secondary)] text-danger" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <div className="flex flex-wrap gap-2">
+        <Button busy={busy} disabled={!ready} size="sm" type="submit" variant="primary">
+          Add skill
+        </Button>
+        {file ? null : (
+          <label className="hex-focus inline-flex h-8 cursor-pointer items-center rounded-full px-3 text-[length:var(--text-secondary)] text-muted transition-colors hover:bg-foreground/[0.06] hover:text-foreground">
+            Load SKILL.md
+            <input
+              accept=".md,text/markdown,text/plain"
+              aria-label="Load a SKILL.md file"
+              className="sr-only"
+              onChange={event => {
+                load(event.target.files?.[0])
+                event.target.value = ''
+              }}
+              type="file"
+            />
+          </label>
+        )}
+        <Button onClick={() => onDone()} size="sm" variant="ghost">
           Cancel
         </Button>
       </div>

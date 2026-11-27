@@ -40,6 +40,7 @@ const RECENT_TRACES: usize = 50;
 const QUIET_METHODS: &[&str] = &[
     "gateway.ping",
     "hexbot.diagnostics.get",
+    "hexbot.diagnostics.logs",
     "hexbot.diagnostics.trace",
 ];
 const OTHER_STATEMENTS: &str = "(other statements)";

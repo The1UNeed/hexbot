@@ -1,5 +1,6 @@
 import { Ionicons } from '@expo/vector-icons'
 import {
+  type ComponentProps,
   createContext,
   type ReactNode,
   useCallback,
@@ -9,7 +10,15 @@ import {
   useRef,
   useState
 } from 'react'
-import { ActivityIndicator, AppState, BackHandler, Platform, StyleSheet, View } from 'react-native'
+import {
+  ActivityIndicator,
+  AppState,
+  BackHandler,
+  Linking,
+  Platform,
+  StyleSheet,
+  View
+} from 'react-native'
 import { SafeAreaProvider } from 'react-native-safe-area-context'
 import { StatusBar } from 'expo-status-bar'
 import { router } from 'expo-router'
@@ -17,10 +26,19 @@ import * as ExpoLinking from 'expo-linking'
 import * as WebBrowser from 'expo-web-browser'
 import * as Crypto from 'expo-crypto'
 import { avatarSrc } from './src/core/avatar'
-import { encodeAnswer, imageMime } from './src/core/chat-send'
+import { offersComputer } from './src/core/computer'
+import { waitingStatus } from './src/core/status'
+import { reactionsOn } from './src/core/reactions'
+import {
+  attachInParts,
+  encodeAnswer,
+  forgetWholeOnly,
+  imageMime,
+  WholeFilesOnly
+} from './src/core/chat-send'
 import { daemonBehind } from './src/core/version-skew'
 import { version as appVersion } from '../desktop/package.json'
-import { pickFile } from './src/core/pickFile'
+import { type AttachSource, type PickedFile, pickAttachments } from './src/core/pickFile'
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import {
   ChatChooser,
@@ -29,14 +47,18 @@ import {
   ComputerSheet,
   ConnectionScreen,
   DaemonSwitcher,
+  FileSheet,
   type HomeScreenProps,
   LibraryScreen,
   ModelSummary,
+  ProviderGoneCard,
+  providerGone,
   SearchSheet,
   SettingsScreen,
   type ApprovalChoice,
   type CardAnswer,
   type AttachmentView,
+  type ComposerAttachment,
   type BotStatus,
   type BotSummary,
   type ChatItem,
@@ -56,13 +78,14 @@ import {
   LayerRoot,
   Row,
   Text,
+  faceColor,
   ThemeProvider,
   useTheme
 } from './src/ui'
-import { MarkdownText } from './src/MarkdownText'
+import { MarkdownText, type ResolveTag } from './src/MarkdownText'
 import { VisualFrame } from './src/VisualFrame'
 import { visualDocument } from './src/core/visual'
-import { parseArgs } from './src/core/chat'
+import { askItemId, mergeTurnTools, parseArgs, sharedFiles, turnAskGroups } from './src/core/chat'
 import { type SearchDocument, searchEntries } from './src/core/search'
 import { Management, type Panel } from './src/Management'
 import { useMobile } from './src/core/useMobile'
@@ -70,15 +93,50 @@ import { USAGE_DOCS_URL } from '@hermes/shared'
 import { captureUsage, sendDailyUsage, useUsageData, watchUsageErrors } from './src/core/usage'
 import { useFeeling } from './src/core/feelings'
 import { clearTapped, useTappedSection } from './src/core/tapped'
-import { chatPreview, pulseTarget, purposeOf, stoppedIn } from './src/core/routes'
+import { useNotificationsPrompt } from './src/core/notificationsPrompt'
+import {
+  botStatusOf,
+  chatPreview,
+  pulseTarget,
+  purposeOf,
+  stoppedIn,
+  unreadOf as unreadOfBot
+} from './src/core/routes'
 import { previewLine } from '../web/src/lib/preview'
+import { attachmentPrompt, mediaKind, mediaOf, mediaSource, mimeOf } from '../web/src/lib/media'
+import { type FileComment, withComments } from '../web/src/lib/file-comments'
+import { asksOf, askTarget, askWords } from '../web/src/lib/asks'
+import { settledCard } from '../web/src/lib/settled-cards'
+import { namedPlugin, pluginRows } from '../web/src/lib/plugin-rows'
+import { mediaUri } from './src/core/media'
+import type { OpenedFile } from './src/core/files'
+import { mixHex } from '../web/src/app/conversation/visual'
 import { CONNECT_ORIGIN, parseConnectCallback } from './src/core/links'
 import { clearConnectSession, loadConnectSession, saveConnectSession } from './src/core/storage'
 import { connectGrant, request, RevokedError } from './src/core/transport'
-import type { Bot, ConnectDaemon, Room, Section } from './src/core/types'
+import type { Bot, ChatTool, ConnectDaemon, PluginsList, Room, Section } from './src/core/types'
 WebBrowser.maybeCompleteAuthSession()
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const ms = (seconds: number | null | undefined) => (seconds == null ? undefined : seconds * 1000)
+/**
+ * The page of this app a Settings tag opens, by the page's name on the
+ * desktop. Appearance, Privacy, About and Diagnostics have no page here.
+ */
+const SETTINGS_PANELS: Partial<Record<string, Panel['kind']>> = {
+  approvals: 'settings',
+  computer: 'computer',
+  connect: 'connect',
+  memory: 'about',
+  network: 'network',
+  notifications: 'notifications',
+  passwords: 'passwords',
+  plugins: 'plugins',
+  providers: 'providers',
+  updates: 'updates',
+  usage: 'usage'
+}
+/** One empty list, so a chat without comments keeps the same one. */
+const NO_COMMENTS: FileComment[] = []
 /** Which status a conversation shows when several bots are busy in it. */
 const URGENCY: Partial<Record<BotStatus, number>> = { needs_you: 3, stopped: 2, working: 1 }
 const PINNED: Record<string, number> = { needs_you: 0, stopped: 1, working: 2 }
@@ -156,9 +214,21 @@ export interface AppScreens {
   library: ReactNode
   /** The chat route was left, by its native back button or swipe. */
   onChatClosed: () => void
+  /** A peer thread opened from another chat/room: Back returns there before leaving to Home. */
+  hasThreadReturn: boolean
   /** Files are uploading: the chat stays open until they are sent. */
   uploading: boolean
+  /**
+   * Pages opened from Settings, a profile or a room's settings, in order. On
+   * iOS each is pushed on the system's navigation stack beside the sidebar.
+   */
+  panels: Panel[]
+  /** Draws the page at `index` of `panels` inside `frame`. */
+  renderPanel: (index: number, frame: NonNullable<ManagementFrame>) => ReactNode
+  /** Keeps the first `count` pages, as the system's back button or swipe leaves the rest. */
+  keepPanels: (count: number) => void
 }
+type ManagementFrame = ComponentProps<typeof Management>['frame']
 const Screens = createContext<AppScreens | null>(null)
 export function useAppScreens(): AppScreens {
   const screens = useContext(Screens)
@@ -179,9 +249,17 @@ export default function App({ children }: { children?: ReactNode }) {
     </SafeAreaProvider>
   )
 }
+/** Where a composer file is staged: the daemon, its process (`replay_epoch`) and the chat's live session. */
+type Staging = { daemon: string | null; epoch: string | null; session: string | null }
+
 function MobileApp({ children }: { children?: ReactNode }) {
   const mobile = useMobile()
   const usage = useUsageData()
+  const notificationsPrompt = useNotificationsPrompt(
+    mobile.rpc,
+    mobile.active?.deviceId,
+    mobile.connection === 'connected'
+  )
   // Counted once a day while the app is used, including after it comes back
   // from the background; nothing unless usage data is on.
   useEffect(() => {
@@ -204,6 +282,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
   const [connectPending, setConnectPending] = useState(false)
   const [connectSession, setConnectSession] = useState<string | null>(null)
   const [visual, setVisual] = useState<{ title: string; html: string } | null>(null)
+  const [file, setFile] = useState<AttachmentView | null>(null)
   /** The bots' computer card is open. */
   const [computerOpen, setComputerOpen] = useState(false)
   /** Search in the open conversation, and the message it last asked the transcript to show. */
@@ -211,7 +290,11 @@ function MobileApp({ children }: { children?: ReactNode }) {
   const [focus, setFocus] = useState<{ id: string; nonce: number } | null>(null)
   const [searchMemory, setSearchMemory] = useState('')
   const [draft, setDraft] = useState('')
-  const [attachments, setAttachments] = useState<AttachmentView[]>([])
+  // What was typed while a tapped chat opened, by its row: that chat's first draft.
+  const [early, setEarly] = useState<{ row: string; text: string } | null>(null)
+  const earlyRef = useRef(early)
+  earlyRef.current = early
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
   const [question, setQuestion] = useState<{
     requestId: string
     questionId: string
@@ -225,11 +308,22 @@ function MobileApp({ children }: { children?: ReactNode }) {
       {
         method: string
         params: Record<string, unknown>
-        /** Where the file was uploaded, and the id the daemon gave it. */
-        upload?: { session: string | null; id?: string }
+        /** Where the file was uploaded, and the id and path the daemon gave it. */
+        upload?: Staging & { id?: string; path?: string }
+        /** The upload on its way; another one, or none, means its answer no longer counts. */
+        going?: object
+        /** Its turn came while the chat had no live session, as during a reconnect. */
+        waiting?: boolean
+        /**
+         * Kept on the phone for a daemon from before part uploads, which
+         * could not take it back: it goes with Send, as before.
+         */
+        kept?: boolean
       }
     >()
   )
+  /** Files upload one after another, each as soon as it is picked. */
+  const uploads = useRef<Promise<void>>(Promise.resolve())
   const [uploading, setUploading] = useState(false)
   const [questionAnswer, setQuestionAnswer] = useState('')
   const [questionChoices, setQuestionChoices] = useState<string[]>([])
@@ -314,8 +408,18 @@ function MobileApp({ children }: { children?: ReactNode }) {
     })().catch(e => mobileRef.current.setError(messageOf(e)))
   }, [nativeUrl, callback])
   useEffect(() => {
+    const opened = mobile.route
+    const row =
+      opened?.kind === 'room'
+        ? `room-${opened.room.id}`
+        : opened?.kind === 'section' && !opened.section.peer_bot
+          ? `bot-${opened.bot.name}`
+          : null
+    const typed = earlyRef.current
     setVisual(null)
-    setDraft('')
+    setFile(null)
+    setDraft(typed && typed.row === row ? typed.text : '')
+    setEarly(null)
     setAttachments([])
     attachmentData.current.clear()
     setQuestion(null)
@@ -349,15 +453,33 @@ function MobileApp({ children }: { children?: ReactNode }) {
     route?.kind === 'section' ? route.section.id : route?.kind === 'room' ? route.room.id : null
   const openChat = useRef(chatKey)
   openChat.current = chatKey
+  // Comments left on files in a bot's chat, waiting above its composer for
+  // the next message, by daemon and chat. Not kept: they belong to this run.
+  const [fileComments, setFileComments] = useState<Record<string, FileComment[]>>({})
+  const commentKey =
+    route?.kind === 'section' && mobile.active ? `${mobile.active.id}:${route.section.id}` : null
+  const chatComments = (commentKey && fileComments[commentKey]) || NO_COMMENTS
+  const setChatComments = (key: string, change: (list: FileComment[]) => FileComment[]) =>
+    setFileComments(all => ({ ...all, [key]: change(all[key] ?? []) }))
   // Opening a chat or a room, from the list, a link or Settings, shows it in
   // the Chats tab's native stack; its back button closes it again.
   const shownChat = useRef<string | null>(null)
   const openKey = chatKey ?? (demo ? botPage : null)
   const [selected, setSelected] = useState<'chat' | 'settings' | 'library' | null>(null)
+  // The row tapped beside the iOS list whose chat the daemon has not named yet.
+  const [asked, setAsked] = useState<ConversationSummary | null>(null)
+  // A lookup that ends without opening a chat, such as a dismissed chooser, lets go.
   useEffect(() => {
+    if (asked && !mobile.loading && !mobile.error && !mobile.choosing) setAsked(null)
+  }, [asked, mobile.loading, mobile.error, mobile.choosing])
+  useEffect(() => {
+    if (openKey) setAsked(null)
     if (openKey && openKey !== shownChat.current) {
-      if (Platform.OS === 'ios') setSelected('chat')
-      else router.navigate('/chat')
+      if (Platform.OS === 'ios') {
+        setSelected('chat')
+        // Pages pushed beside the list belong to what was there, such as New bot.
+        setPanels([])
+      } else router.navigate('/chat')
     }
     if (!openKey) setSelected(current => (current === 'chat' ? null : current))
     shownChat.current = openKey
@@ -454,37 +576,192 @@ function MobileApp({ children }: { children?: ReactNode }) {
       setConnectPending(false)
     }
   }
-  const attach = async () => {
+  const attach = async (source: AttachSource) => {
     if (mobile.route?.kind !== 'section') return
     const sessionId = mobile.liveSessionId()
     if (!sessionId) throw new Error('Open this chat again before attaching a file.')
-    const asset = await pickFile()
-    if (!asset) return
-    const image = imageMime(asset.name, asset.mimeType)
-    const pdf = asset.mimeType === 'application/pdf' || asset.name.toLowerCase().endsWith('.pdf')
-    if (image && asset.bytes > 25 * 1024 * 1024)
-      throw new Error('Choose an image smaller than 25 MiB.')
-    const id = Crypto.randomUUID()
-    attachmentData.current.set(id, {
-      method: image ? 'image.attach_bytes' : pdf ? 'pdf.attach' : 'file.attach',
-      params:
-        image || pdf
-          ? { content_base64: asset.base64, filename: asset.name }
-          : {
-              name: asset.name,
-              data_url: `data:${asset.mimeType || 'application/octet-stream'};base64,${asset.base64}`
-            }
-    })
-    setAttachments(list => [
-      ...list,
-      { id, name: asset.name, kind: image ? 'image' : 'file', uri: image ? asset.uri : null }
-    ])
+    // Picking can take a while; the files belong to the chat it started in.
+    // On Android the picker sends the app to the background, so the chat
+    // reconnects meanwhile: that is still the same chat.
+    const origin = chatNow()
+    const { files, refused } = await pickAttachments(source)
+    if (files.length && !sameChat(origin, chatNow()))
+      throw new Error('The chat changed while you picked. Attach the files again.')
+    stage(files, refused)
   }
-  // An uploaded file left out of the message is dropped by the daemon when it is sent.
+  /** Puts files in the composer, each uploading as soon as it is added. */
+  const stage = (files: PickedFile[], refused: string | null = null) => {
+    const added: ComposerAttachment[] = []
+    let tooBig: string | null = null
+    for (const asset of files) {
+      const image = imageMime(asset.name, asset.mimeType)
+      const pdf = asset.mimeType === 'application/pdf' || asset.name.toLowerCase().endsWith('.pdf')
+      if (image && asset.bytes > 25 * 1024 * 1024) {
+        tooBig ??= `${asset.name}: Choose an image smaller than 25 MiB.`
+        continue
+      }
+      const id = Crypto.randomUUID()
+      attachmentData.current.set(id, {
+        method: image ? 'image.attach_bytes' : pdf ? 'pdf.attach' : 'file.attach',
+        params:
+          image || pdf
+            ? { content_base64: asset.base64, filename: asset.name }
+            : {
+                name: asset.name,
+                data_url: `data:${asset.mimeType || 'application/octet-stream'};base64,${asset.base64}`
+              }
+      })
+      // A picture, video or audio file shows from the phone's own copy.
+      const kind = image ? 'image' : mediaKind(asset.mimeType ?? mimeOf(asset.name), asset.name)
+      added.push({
+        id,
+        name: asset.name,
+        kind,
+        uri: kind === 'file' || kind === 'pdf' ? null : asset.uri,
+        status: 'uploading'
+      })
+    }
+    if (added.length) setAttachments(list => [...list, ...added])
+    for (const item of added) uploadAttachment(item.id)
+    const problem = refused ?? tooBig
+    if (problem) throw new Error(problem)
+  }
+  const setAttachment = (id: string, patch: Partial<ComposerAttachment>) =>
+    setAttachments(list => list.map(item => (item.id === id ? { ...item, ...patch } : item)))
+  /** Where a file is staged: the daemon, its process, and the chat's live session. */
+  const stagingNow = (): Staging => ({
+    daemon: mobileRef.current.active?.id ?? null,
+    epoch: mobileRef.current.epoch(),
+    session: mobileRef.current.liveSessionId()
+  })
+  const sameStaging = (a: Staging, b: Staging) =>
+    a.daemon === b.daemon && a.epoch === b.epoch && a.session === b.session
+  /** The daemon and chat the composer belongs to, which a reconnect does not change. */
+  const chatNow = () => ({
+    daemon: mobileRef.current.active?.id ?? null,
+    section:
+      mobileRef.current.route?.kind === 'section' ? mobileRef.current.route.section.id : null
+  })
+  const sameChat = (a: ReturnType<typeof chatNow>, b: ReturnType<typeof chatNow>) =>
+    a.daemon === b.daemon && a.section === b.section
+  /** Takes back an upload nobody will send, on the daemon process that holds it. Best effort. */
+  const releaseUpload = (upload?: Staging & { id?: string }) => {
+    if (!upload?.session || !upload.id) return
+    const now = stagingNow()
+    if (upload.daemon !== now.daemon || upload.epoch !== now.epoch) return
+    const { session, id } = upload
+    // Tracked until the daemon has it back, so leaving the chat tries again
+    // after a dropped connection.
+    void mobileRef.current.rpc('attachments.remove', { session_id: session, id }).then(
+      () => mobileRef.current.unstage(session, id),
+      (e: { code?: number } | null) => {
+        if (e?.code === 4204) mobileRef.current.unstage(session, id)
+      }
+    )
+  }
+  /**
+   * Stages a picked file in this chat's live session, so Send only names what
+   * the daemon holds. It waits its turn. While the chat has no live session,
+   * as during a reconnect, it waits at 0% and goes once the chat is back; if
+   * the daemon or the chat changed, nothing is sent and the file asks to be
+   * retried.
+   */
+  const uploadAttachment = (id: string): Promise<void> => {
+    const asset = attachmentData.current.get(id)
+    if (!asset) return Promise.resolve()
+    const going = {}
+    const origin = chatNow()
+    asset.going = going
+    asset.waiting = false
+    setAttachment(id, { status: 'uploading', error: undefined, progress: 0 })
+    uploads.current = uploads.current.then(async () => {
+      if (asset.going !== going || attachmentData.current.get(id) !== asset) return
+      try {
+        if (!sameChat(origin, chatNow())) throw new Error('Open this chat again, then retry.')
+        const staging = stagingNow()
+        const current = mobileRef.current
+        if (!staging.session || current.connection !== 'connected' || current.loading) {
+          asset.waiting = true
+          return
+        }
+        const reply = await attachInParts<{ id?: string; path?: string }>(
+          mobileRef.current.rpc,
+          staging.session,
+          asset.method,
+          asset.params,
+          Crypto.randomUUID(),
+          {
+            ahead: true,
+            onProgress: progress => {
+              if (asset.going === going) setAttachment(id, { progress })
+            },
+            // Taken out, or the chat left: no more parts go.
+            wanted: () => asset.going === going && attachmentData.current.get(id) === asset
+          }
+        )
+        const upload = { ...staging, id: reply.id, path: reply.path }
+        // Removed, or the chat left, while it went.
+        if (asset.going !== going || attachmentData.current.get(id) !== asset) {
+          releaseUpload(upload)
+          return
+        }
+        asset.upload = upload
+        if (reply.id) mobileRef.current.stage(staging.session, reply.id)
+        setAttachment(id, { status: 'ready', path: reply.path, progress: undefined })
+      } catch (e) {
+        if (asset.going === going && e instanceof WholeFilesOnly) {
+          asset.kept = true
+          // Not on the daemon yet: only what this phone can show previews.
+          setAttachments(list =>
+            list.map(item =>
+              item.id === id
+                ? { ...item, status: 'ready', progress: undefined, previewable: item.kind !== 'file' }
+                : item
+            )
+          )
+        } else if (asset.going === going)
+          setAttachment(id, { status: 'failed', error: e instanceof Error ? e.message : String(e) })
+      } finally {
+        if (asset.going === going) asset.going = undefined
+      }
+    })
+    return uploads.current
+  }
+  // A new daemon process, as after an update, may take parts.
+  const daemonProcess = mobile.epoch()
+  useEffect(() => forgetWholeOnly(), [daemonProcess])
+  // Files whose turn came during a reconnect go once the chat is live again.
+  const liveChat =
+    mobile.connection === 'connected' && !mobile.loading ? mobile.liveSessionId() : null
+  useEffect(() => {
+    if (!liveChat) return
+    for (const [id, asset] of attachmentData.current)
+      if (asset.waiting) void uploadAttachment(id)
+  }, [liveChat])
   const removeAttachment = (id: string) => {
     if (uploading) return
+    const asset = attachmentData.current.get(id)
     attachmentData.current.delete(id)
     setAttachments(a => a.filter(item => item.id !== id))
+    if (!asset) return
+    asset.going = undefined
+    releaseUpload(asset.upload)
+  }
+  // A finished upload opens as it will in the message: from the daemon's
+  // copy, or from this phone's for a PDF (the daemon keeps only its page
+  // pictures) and for a file kept here until Send.
+  const openAttachment = (id: string) => {
+    const item = attachments.find(file => file.id === id)
+    const asset = attachmentData.current.get(id)
+    if (item?.status !== 'ready' || !asset) return
+    if (item.path && item.kind !== 'pdf' && !asset.kept) return setFile(item)
+    const base64 =
+      typeof asset.params.content_base64 === 'string'
+        ? asset.params.content_base64
+        : (String(asset.params.data_url ?? '').split(',')[1] ?? '')
+    const mime =
+      item.kind === 'pdf' ? 'application/pdf' : (imageMime(item.name) ?? mimeOf(item.name))
+    setFile({ ...item, local: { name: item.name, mime, data_url: `data:${mime};base64,${base64}` } })
   }
   const saved: DaemonEntry[] = mobile.saved.map(d => ({
     id: d.id,
@@ -493,6 +770,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
     via: d.kind === 'connect' ? 'connect' : 'lan',
     current: d.id === mobile.active?.id
   }))
+  const unreadOf = (b: Bot) => unreadOfBot(b, mobile.sections)
   const bots: BotSummary[] = mobile.bots.map(b => {
     return {
       ...faceOf(b),
@@ -502,15 +780,13 @@ function MobileApp({ children }: { children?: ReactNode }) {
       description: b.description,
       preview: previewLine(chatPreview(b.name, mobile.sections, b.sections_recent) ?? '') || null,
       activity: b.status_detail?.text,
-      status:
-        b.status === 'idle' &&
-        b.sections_recent?.some(s => s.done_at && !s.archived_at && !purposeOf(s, mobile.sections))
-          ? ('done' as const)
-          : b.status,
+      status: botStatusOf(b, mobile.sections),
       updatedAt: ms(b.last_activity_at)
     }
   })
   const botByName = (name: string) => mobile.bots.find(b => b.name === name)
+  // The bots' computer, once the Computer card or Settings, Computers read it.
+  const vmComputer = mobile.computers?.find(c => c.id === 'vm')
   // A tapped bot message opens its chat once the daemon's lists have it.
   const tapped = useTappedSection()
   const openedTap = useRef<string | null>(null)
@@ -596,7 +872,13 @@ function MobileApp({ children }: { children?: ReactNode }) {
             activity: away ? null : b.activity,
             status: away ? undefined : b.status,
             updatedAt: b.updatedAt,
-            primary: b.primary
+            primary: b.primary,
+            // Older daemons send no pins; their primary bot stays on top.
+            pinned:
+              botByName(b.id)!.pinned_at != null ||
+              (botByName(b.id)!.pinned_at === undefined && b.primary),
+            pinnedAt: ms(botByName(b.id)!.pinned_at),
+            unread: unreadOf(botByName(b.id)!).length > 0
           }
         }),
         ...mobile.rooms
@@ -608,9 +890,12 @@ function MobileApp({ children }: { children?: ReactNode }) {
               id: r.id,
               name: r.name,
               members: membersOf(r),
+              discord: !!r.discord,
               status: urgent([...here.map(b => b.status), r.turns?.length ? 'working' : undefined]),
               activity: here.find(b => b.status === 'working')?.status_detail?.text,
-              updatedAt: ms(r.last_activity_at)
+              updatedAt: ms(r.last_activity_at),
+              pinned: r.pinned_at != null,
+              pinnedAt: ms(r.pinned_at)
             }
           }),
         ...(primaryBot && checkins
@@ -665,48 +950,79 @@ function MobileApp({ children }: { children?: ReactNode }) {
   const licenses = { areas: [area('licenses', 'Licenses', 'document-text-outline')] }
   const settingsGroups: { title?: string; areas: DaemonArea[] }[] = demo
     ? [licenses]
-    : [
-        { areas: [area('about', 'About you', 'person-outline')] },
+    : // The groups of the desktop app's Settings, with the areas this phone has.
+      [
+        {
+          title: 'Models',
+          areas: [
+            area('providers', 'Providers', 'key-outline'),
+            area('usage', 'Usage', 'speedometer-outline')
+          ]
+        },
         {
           title: 'Bots',
           areas: [
-            area('settings', 'Daemon settings', 'options-outline', 'Approvals, budgets'),
-            area('providers', 'Models', 'hardware-chip-outline'),
             area(
               'plugins',
               'Plugins',
               'extension-puzzle-outline',
               'Connectors, MCP servers, skills'
             ),
-            area('passwords', 'Passwords', 'key-outline', 'Sign-ins your bots use')
-          ]
-        },
-        {
-          title: 'Activity',
-          areas: [
-            area('usage', 'Usage', 'stats-chart-outline'),
+            area('passwords', 'Passwords', 'lock-closed-outline', 'Sign-ins your bots use'),
+            area('computer', 'Computers', 'desktop-outline', 'Where your bots work'),
             area('activity', 'Bot activity', 'pulse-outline')
           ]
         },
         {
-          title: 'This daemon',
+          title: 'Devices',
           areas: [
+            area('network', 'Network', 'wifi-outline'),
             area('devices', 'Paired devices', 'phone-portrait-outline'),
-            area('network', 'Network and pairing', 'wifi-outline'),
-            area('connect', 'Hex Connect', 'cloud-outline'),
-            area('updates', 'Updates', 'download-outline', mobile.info?.version ?? null)
+            area('connect', 'Hex Connect', 'globe-outline')
           ]
         },
-        licenses
+        {
+          title: 'You',
+          areas: [
+            area('about', 'About you', 'person-outline'),
+            area('notifications', 'Notifications', 'notifications-outline'),
+            area('settings', 'Daemon settings', 'options-outline', 'Approvals, budgets')
+          ]
+        },
+        {
+          title: 'App',
+          areas: [
+            area('updates', 'Updates', 'download-outline', mobile.info?.version ?? null),
+            area('licenses', 'Licenses', 'document-text-outline')
+          ]
+        },
+        {
+          title: 'Advanced',
+          areas: [area('experimental', 'Experimental', 'flask-outline', 'Features still being tried')]
+        }
       ]
-  const { items: historyItems, visuals } = useMemo(() => {
-    const botByName = (name: string) => mobile.bots.find(b => b.name === name)
-    const visuals = new Map<string, { title: string; html: string }>()
-    const items: ChatItem[] = mobile.chat.messages.flatMap((m): ChatItem[] =>
-      m.role === 'system'
+  // The bot whose chat this is; a room's messages name their own.
+  const chatBot = route?.kind === 'section' ? route.bot.name : undefined
+  const { botTurnTotal, items: historyItems, trailingAsk, trailingUntaggedSpeaker, visuals } =
+    useMemo(() => {
+      const botByName = (name: string) => mobile.bots.find(b => b.name === name)
+      const visuals = new Map<string, { title: string; html: string }>()
+      const messages = mobile.chat.messages
+      const isRoom = route?.kind === 'room'
+      const { botTurnTotal, groups: askGroups, trailingUntaggedSpeaker } = turnAskGroups(messages, {
+        chatBot,
+        isRoom
+      })
+      const trailingAskIds = new Set<string>()
+      const trailingIndex = messages.length - 1
+      const trailingGroup = !isRoom ? askGroups.get(trailingIndex) : undefined
+    const items: ChatItem[] = messages.flatMap((m, index): ChatItem[] => {
+      const askGroup = askGroups.get(index)
+      return m.role === 'system'
         ? [{ kind: 'notice', id: m.id, text: m.text, tone: m.tone }]
         : [
-            // A conversation shows what bots say and the visuals they draw, not their steps.
+            // A conversation shows what bots say, the visuals they draw and the files they
+            // share, not their steps.
             ...(m.tools ?? [])
               .filter(t => t.name === 'hexbot_show_html' && t.status === 'ok')
               .flatMap((t, i) => {
@@ -733,23 +1049,271 @@ function MobileApp({ children }: { children?: ReactNode }) {
                     : 'human'
                   : 'bot',
               text: m.text,
+              // The files you sent; the files the bot chose to share, not every file it
+              // touched; and what its media tools made. Pictures, video and audio play.
+              attachments: [
+                ...(m.attachments ?? []).map((file, i) => ({
+                  id: `${m.id}-file-${i}`,
+                  kind: file.kind ?? 'file',
+                  name: file.name,
+                  path: file.path,
+                  uri: file.uri
+                })),
+                ...(m.role === 'assistant' ? sharedFiles(m.tools) : []).map(file => ({
+                  id: `${m.id}-${file.path}`,
+                  kind: mediaKind(mimeOf(file.name), file.name),
+                  name: file.name,
+                  path: file.path
+                })),
+                // A file it made and then shared shows once.
+                ...mediaOf(
+                  (m.tools ?? []).map(t => ({ name: t.name, result: t.detail, status: t.status }))
+                )
+                  .filter(file => !sharedFiles(m.tools).some(shared => shared.path === file.path))
+                  .map(file => ({
+                    id: file.path,
+                    kind: file.kind,
+                    name: file.name,
+                    path: file.path
+                  }))
+              ],
               createdAt: m.createdAt,
               author:
                 m.role === 'user'
                   ? { name: m.senderName || 'Former member' }
                   : m.sender && botByName(m.sender)
                     ? faceOf(botByName(m.sender)!)
-                    : undefined
-            }
+                    : undefined,
+              // The bot that spoke: a bot it names opens the conversation between the two.
+              speaker: m.role === 'assistant' ? (m.sender ?? chatBot) : undefined,
+              rowId: m.rowId,
+              // Yours on what the bot said; the bot's on what you said.
+              reactions: reactionsOn(mobile.reactions, m).map(reaction => ({
+                emoji: reaction.emoji,
+                mine: reaction.by === 'user'
+              }))
+            },
+            // The draft, sign-in and plugin cards its tools showed, under its words, as
+            // the user answered them. A live card leaves when its turn ends; this one stays.
+            ...(m.tools ?? []).flatMap((t): ChatItem[] => {
+              if (t.status === 'running' || t.status === 'unresolved') return []
+              const card = settledCard({ ...t, result: t.detail })
+              if (!card) return []
+              return [
+                {
+                  kind: 'approval',
+                  id: `card-${m.id}-${t.id}`,
+                  request: {
+                    requestId: t.id,
+                    choices: [],
+                    decision: card.decision,
+                    ...(card.failed && { failed: true }),
+                    form: card.form,
+                    ...(card.outcome && { outcome: card.outcome })
+                  }
+                }
+              ]
+            }),
+            // The bots it messaged in this turn, grouped once per target (chats and rooms).
+            ...(askGroup
+              ? (() => {
+                  const toolIdByTarget = new Map<string, string>()
+                  const toolTurnByTarget = new Map<string, string>()
+                  for (const t of askGroup.tools) {
+                    if (t.name !== 'message_bot') continue
+                    const targetKey =
+                      askTarget({
+                        args: t.args,
+                        name: t.name,
+                        result: t.detail,
+                        status: t.status,
+                        summary: t.action
+                      }) ?? ''
+                    if (!toolIdByTarget.has(targetKey)) toolIdByTarget.set(targetKey, t.id)
+                    if (t.turnId && !toolTurnByTarget.has(targetKey))
+                      toolTurnByTarget.set(targetKey, t.turnId)
+                  }
+                  return asksOf(
+                    askGroup.tools.map(t => ({
+                      args: t.args,
+                      name: t.name,
+                      result: t.detail,
+                      status: t.status,
+                      summary: t.action
+                    }))
+                  ).map((ask): ChatItem => {
+                    const target = ask.target ? botByName(ask.target) : undefined
+                    const words = askWords(ask, null)
+                    const targetKey = ask.target ?? ''
+                    const id = askItemId({
+                      isRoom,
+                      speaker: askGroup.speaker,
+                      target: ask.target,
+                      toolId: toolIdByTarget.get(targetKey),
+                      turnId: askGroup.turnId ?? toolTurnByTarget.get(targetKey),
+                      turnIndex: askGroup.turnIndex
+                    })
+                    if (!isRoom && index === trailingIndex) trailingAskIds.add(id)
+                    return {
+                      kind: 'ask',
+                      id,
+                      ...words,
+                      name:
+                        target?.display_name ??
+                        ask.target ??
+                        (words.before ? 'a teammate' : 'A teammate'),
+                      face: target ? faceOf(target) : undefined,
+                      bot: ask.target ?? undefined,
+                      peer: askGroup.speaker,
+                      ...(ask.sectionId ? { sectionId: ask.sectionId } : {}),
+                      ...(ask.status === 'running' ? { running: true } : {})
+                    }
+                  })
+                })()
+              : [])
           ]
-    )
-    return { items, visuals }
-  }, [mobile.chat.messages, mobile.bots, mobile.user?.id, route?.kind])
+    })
+    return {
+      botTurnTotal,
+      items,
+      trailingAsk: trailingGroup ? { group: trailingGroup, itemIds: trailingAskIds } : undefined,
+      trailingUntaggedSpeaker,
+      visuals
+    }
+  }, [mobile.chat.messages, mobile.bots, mobile.user?.id, mobile.reactions, route?.kind, chatBot])
   const items = [...historyItems]
   const liveTurns =
     route?.kind === 'room'
       ? Object.values(mobile.chat.turns)
       : [{ ...mobile.chat, sessionId: 'section', bot: route?.bot.name ?? '' }]
+  const activeTurnBots = new Set(liveTurns.map(turn => turn.bot).filter(Boolean))
+  const pushAsks = (
+    speaker: string,
+    tools: ChatTool[],
+    turnId?: string,
+    overrideTurnIndex?: number,
+    startedFresh?: boolean
+  ) => {
+    const isRoom = route?.kind === 'room'
+    const toolIdByTarget = new Map<string, string>()
+    const toolTurnByTarget = new Map<string, string>()
+    for (const t of tools) {
+      if (t.name !== 'message_bot') continue
+      const targetKey =
+        askTarget({
+          args: t.args,
+          name: t.name,
+          result: t.detail,
+          status: t.status,
+          summary: t.action
+        }) ?? ''
+      if (!toolIdByTarget.has(targetKey)) toolIdByTarget.set(targetKey, t.id)
+      if (t.turnId && !toolTurnByTarget.has(targetKey)) toolTurnByTarget.set(targetKey, t.turnId)
+    }
+    asksOf(
+      tools.map(t => ({
+        args: t.args,
+        name: t.name,
+        result: t.detail,
+        status: t.status,
+        summary: t.action
+      }))
+    ).forEach(ask => {
+      const target = ask.target ? botByName(ask.target) : undefined
+      const words = askWords(ask, null)
+      const targetKey = ask.target ?? ''
+      const effectiveTurnId = turnId ?? toolTurnByTarget.get(targetKey)
+      const turnIndex =
+        overrideTurnIndex ??
+        (!isRoom && !effectiveTurnId && !startedFresh && trailingUntaggedSpeaker === speaker
+          ? Math.max(0, (botTurnTotal[speaker] ?? 1) - 1)
+          : (botTurnTotal[speaker] ?? 0))
+      items.push({
+        kind: 'ask',
+        id: askItemId({
+          isRoom,
+          speaker,
+          target: ask.target,
+          toolId: toolIdByTarget.get(targetKey),
+          turnId: effectiveTurnId,
+          turnIndex
+        }),
+        ...words,
+        name: target?.display_name ?? ask.target ?? (words.before ? 'a teammate' : 'A teammate'),
+        face: target ? faceOf(target) : undefined,
+        bot: ask.target ?? undefined,
+        peer: speaker,
+        ...(ask.sectionId ? { sectionId: ask.sectionId } : {}),
+        ...(ask.status === 'running' ? { running: true } : {})
+      })
+    })
+  }
+  const sameSectionTurn = (
+    speaker: string,
+    turnId: string | undefined,
+    startedFresh?: boolean
+  ) =>
+    Boolean(
+      trailingAsk &&
+        trailingAsk.group.speaker === speaker &&
+        (turnId ? trailingAsk.group.turnId === turnId : !trailingAsk.group.turnId && !startedFresh)
+    )
+  let mergedTrailing = false
+  const consumeTrailingAsks = () => {
+    if (!trailingAsk || mergedTrailing) return
+    mergedTrailing = true
+    for (let i = items.length - 1; i >= 0; i--) {
+      const entry = items[i]
+      if (entry?.kind === 'ask' && trailingAsk.itemIds.has(entry.id)) items.splice(i, 1)
+    }
+  }
+  const sectionCompletingTools =
+    route?.kind === 'section'
+      ? (
+          mobile.chat.completingAsks?.[route.bot.name] ??
+          mobile.chat.completingAsks?.[''] ??
+          []
+        ).filter(t => t.name === 'message_bot')
+      : []
+  let completingOffset = 0
+  if (route?.kind === 'section' && sectionCompletingTools.length) {
+    const speaker = route.bot.name
+    const byTurn = new Map<string, ChatTool[]>()
+    for (const tool of sectionCompletingTools) {
+      const key = tool.turnId
+        ? `t:${tool.turnId}`
+        : tool.freshExchange !== undefined
+          ? `f:${tool.freshExchange}`
+          : tool.afterHistoryCount !== undefined
+            ? `a:${tool.afterHistoryCount}`
+            : 'u'
+      const group = byTurn.get(key)
+      if (group) group.push(tool)
+      else byTurn.set(key, [tool])
+    }
+    for (const [turnKey, groupTools] of byTurn) {
+      const completingTurnId = turnKey.startsWith('t:') ? turnKey.slice(2) : undefined
+      const isFreshUntagged = turnKey.startsWith('f:') || turnKey.startsWith('a:')
+      if (!mergedTrailing && sameSectionTurn(speaker, completingTurnId, isFreshUntagged)) {
+        consumeTrailingAsks()
+        pushAsks(
+          speaker,
+          mergeTurnTools(trailingAsk!.group.tools, groupTools),
+          completingTurnId ?? trailingAsk!.group.turnId,
+          trailingAsk!.group.turnIndex
+        )
+      } else {
+        pushAsks(
+          speaker,
+          groupTools,
+          completingTurnId,
+          (botTurnTotal[speaker] ?? 0) + completingOffset,
+          true
+        )
+        completingOffset += 1
+      }
+    }
+  }
   for (const turn of liveTurns) {
     const bot = botByName(turn.bot)
     const author = bot ? faceOf(bot) : { name: turn.bot }
@@ -759,7 +1323,8 @@ function MobileApp({ children }: { children?: ReactNode }) {
         id: `${turn.sessionId}-interim-${i}`,
         role: 'bot',
         text,
-        author
+        author,
+        speaker: turn.bot || undefined
       })
     )
     if (turn.streaming)
@@ -769,8 +1334,41 @@ function MobileApp({ children }: { children?: ReactNode }) {
         role: 'bot',
         text: turn.streaming,
         streaming: true,
-        author
+        author,
+        speaker: turn.bot || undefined
       })
+    if (turn.bot) {
+      const turnTools =
+        route?.kind === 'room' && 'asked' in turn && turn.asked?.length
+          ? turn.asked
+          : (turn.tools ?? [])
+      const liveAsks = turnTools.filter(t => t.name === 'message_bot')
+      const liveTurnId = turn.turnId ?? liveAsks.find(t => t.turnId)?.turnId
+      if (
+        route?.kind !== 'room' &&
+        liveAsks.length &&
+        !mergedTrailing &&
+        sameSectionTurn(turn.bot, liveTurnId, turn.startedFresh)
+      ) {
+        consumeTrailingAsks()
+        pushAsks(
+          turn.bot,
+          mergeTurnTools(trailingAsk!.group.tools, turnTools),
+          liveTurnId ?? trailingAsk!.group.turnId,
+          trailingAsk!.group.turnIndex
+        )
+      } else {
+        pushAsks(
+          turn.bot,
+          turnTools,
+          turn.turnId,
+          route?.kind !== 'room' && completingOffset
+            ? (botTurnTotal[turn.bot] ?? 0) + completingOffset
+            : undefined,
+          turn.startedFresh
+        )
+      }
+    }
     if (turn.error)
       items.push({
         kind: 'notice',
@@ -779,13 +1377,20 @@ function MobileApp({ children }: { children?: ReactNode }) {
         tone: 'danger'
       })
   }
+  if (route?.kind === 'room') {
+    for (const [bot, tools] of Object.entries(mobile.chat.completingAsks ?? {})) {
+      if (!activeTurnBots.has(bot)) pushAsks(bot, tools)
+    }
+  }
   mobile.chat.approvals.forEach(a =>
     items.push({
       kind: 'approval',
       id: `approval-${a.requestId}`,
       request: {
         ...a,
-        choices: a.choices.filter(c => ['once', 'session', 'deny'].includes(c)) as ApprovalChoice[]
+        choices: a.choices.filter(c =>
+          ['once', 'always', 'session', 'deny'].includes(c)
+        ) as ApprovalChoice[]
       }
     })
   )
@@ -820,9 +1425,13 @@ function MobileApp({ children }: { children?: ReactNode }) {
       })
       return
     }
-    // A thread takes one message at a time; rooms queue messages themselves.
-    if (mobile.route?.kind === 'section' && mobile.chat.busy) return
+    // In a chat, a message sent while the bot works cuts its reply off and goes
+    // next; rooms queue messages themselves.
     const previous = draft
+    // The comments go with this message; a send that fails puts them back.
+    const sentKey = commentKey
+    const sentComments = chatComments
+    if (sentKey && sentComments.length) setChatComments(sentKey, list => list.filter(c => !sentComments.includes(c)))
     setDraft('')
     act(async () => {
       const daemonId = mobile.active?.id
@@ -830,14 +1439,29 @@ function MobileApp({ children }: { children?: ReactNode }) {
       setUploading(true)
       try {
         const ids: string[] = []
-        for (const asset of attachmentData.current.values()) {
-          if (!asset.upload || asset.upload.session !== sessionId) {
-            const reply = await mobile.rpc<{ id?: string }>(asset.method, {
-              ...asset.params,
-              session_id: sessionId
-            })
-            asset.upload = { session: sessionId, id: reply.id }
-            if (sessionId) mobile.stage(sessionId)
+        // Each file was staged as it was picked. One staged in a chat that
+        // reopened since, or on a daemon that restarted, goes again first,
+        // showing its progress; the message waits for it.
+        for (const [id, asset] of attachmentData.current) {
+          if (asset.kept) {
+            // Kept here for a daemon from before part uploads: it goes now, whole.
+            const now = stagingNow()
+            if (!now.session) throw new Error('Open this chat again before sending.')
+            const reply = await attachInParts<{ id?: string; path?: string }>(
+              mobile.rpc,
+              now.session,
+              asset.method,
+              asset.params,
+              Crypto.randomUUID()
+            )
+            asset.upload = { ...now, id: reply.id, path: reply.path }
+            mobile.stage(now.session, null)
+          } else if (!asset.upload || !sameStaging(asset.upload, stagingNow())) {
+            // The copy staged in the chat before it reopened is taken back first.
+            releaseUpload(asset.upload)
+            await uploadAttachment(id)
+            if (!asset.upload || !sameStaging(asset.upload, stagingNow()))
+              throw new Error('A file did not upload. Retry or remove it, then send.')
           }
           if (asset.upload.id) ids.push(asset.upload.id)
         }
@@ -849,24 +1473,175 @@ function MobileApp({ children }: { children?: ReactNode }) {
         const files = attachmentData.current.size
         // Daemons older than upload ids send every staged file.
         const named = ids.length === files
-        await mobile.send(text, files > 0, named ? ids : undefined).catch((e: unknown) => {
-          // The next Send uploads the files again; the daemon drops the copies it holds.
-          if (named) for (const asset of attachmentData.current.values()) asset.upload = undefined
-          throw e
-        })
+        await mobile
+          .send(
+            withComments(attachmentPrompt(text, files > 0), sentComments),
+            files > 0,
+            named ? ids : undefined,
+            // The daemon's copy, so a file you just sent previews before the chat reloads.
+            attachments.map(({ id, name, kind, uri, path }) => ({
+              id,
+              name,
+              kind,
+              uri,
+              path: attachmentData.current.get(id)?.upload?.path ?? path
+            }))
+          )
+          .catch((e: unknown) => {
+            // The copies the daemon may still hold are taken back and each
+            // file goes again, so a chip never previews a removed copy.
+            if (named)
+              for (const [id, asset] of attachmentData.current) {
+                if (asset.kept) continue
+                releaseUpload(asset.upload)
+                asset.upload = undefined
+                void uploadAttachment(id)
+              }
+            throw e
+          })
         setAttachments([])
         attachmentData.current.clear()
       } catch (e) {
         setDraft(previous || text)
+        if (sentKey && sentComments.length)
+          setChatComments(sentKey, list => [...sentComments, ...list.filter(c => !sentComments.includes(c))])
         throw e
       } finally {
         setUploading(false)
       }
     })
   }
-  const renderMessageText = useCallback<NonNullable<ChatScreenProps['renderMessageText']>>(
-    item => (item.text ? <MarkdownText text={item.text} user={item.role === 'user'} /> : null),
+  // Off, `stream` reads a picture whole, as its card marks it up and saves it.
+  const readFile = useCallback(async (path: string, stream = true) => {
+    if (!liveChat || !mobile.active) throw new Error('Open this chat again.')
+    const file = await mobileRef.current.rpc<OpenedFile & { media_path?: string }>(
+      'hexbot.files.read', { session_id: liveChat, path, ...(stream ? { stream_media: true } : {}) }
+    )
+    return { ...file, mediaUrl: mediaSource(mobile.active.origin, file.media_path) }
+  }, [liveChat, mobile.active, mobile.connects])
+  const loadMedia = useCallback((path: string, id: string) => {
+    const key = JSON.stringify([mobile.active?.id, liveChat, id, path])
+    return mediaUri(key, () => readFile(path), mobile.connects)
+  }, [liveChat, mobile.active?.id, mobile.connects, readFile])
+  // An edit made on the file's card writes it back through the same chat.
+  const writeFile = useCallback(
+    (path: string, contents: { text: string } | { data_url: string }, version?: string) => {
+      const current = mobileRef.current
+      const sessionId = current.liveSessionId()
+      if (!sessionId) return Promise.reject(new Error('Open this chat again.'))
+      return current.rpc<{ version: string }>('hexbot.files.write', {
+        session_id: sessionId,
+        path,
+        ...contents,
+        ...(version ? { version } : {})
+      })
+    },
     []
+  )
+  /** A picture marked up on its card, added to the composer like a picked one. */
+  const addPicture = (dataUrl: string, name: string) => {
+    const comma = dataUrl.indexOf(',')
+    const base64 = dataUrl.slice(comma + 1)
+    const mimeType = /^data:([^;,]+)/.exec(dataUrl)?.[1] ?? 'image/png'
+    act(async () =>
+      stage([{ base64, bytes: Math.floor((base64.length * 3) / 4), mimeType, name, uri: dataUrl }])
+    )
+  }
+  // The private conversation between two bots, guarded by `useMobile`'s navigation generation.
+  const openThread = useCallback(
+    (bot: string, peer: string, sectionId?: string, allowReverse = false) => {
+      act(() => mobileRef.current.openThread(bot, peer, { allowReverse, sectionId }))
+    },
+    [act]
+  )
+  // What a tag in a message opens on this phone, for the bot that wrote it.
+  const tagsFor = useCallback(
+    (speaker: string | undefined): ResolveTag =>
+      tag => {
+        const open = (kind: Panel['kind']) => ({ onPress: () => setPanels([{ kind }]) })
+        switch (tag.kind) {
+          case 'bot': {
+            const named = mobile.bots.find(b => b.name === tag.handle)
+            if (!named) return null
+            const paint = faceColor(faceOf(named))
+            return {
+              label: named.display_name || named.name,
+              // The face colour, pulled toward the text so it reads on any bubble.
+              color: paint ? (mixHex(paint.color, theme.text, 0.38) ?? paint.color) : undefined,
+              onPress: () =>
+                speaker && speaker !== tag.handle
+                  ? openThread(tag.handle, speaker, undefined, true)
+                  : act(() => mobileRef.current.openSection(named))
+            }
+          }
+          case 'file':
+            // Only a bot's own chat reads its files.
+            return liveChat && route?.kind === 'section' && !route.section.peer_bot
+              ? {
+                  onPress: () =>
+                    setFile({
+                      id: tag.path,
+                      kind: mediaKind(mimeOf(tag.name), tag.name),
+                      name: tag.name,
+                      path: tag.path
+                    })
+                }
+              : null
+          case 'room': {
+            const wanted = tag.room.trim().toLowerCase()
+            const room =
+              mobile.rooms.find(r => r.id === tag.room) ??
+              mobile.rooms.find(r => r.name.trim().toLowerCase() === wanted)
+            return room ? { onPress: () => act(() => mobileRef.current.openRoom(room)) } : null
+          }
+          case 'jobs': {
+            // The named bot's jobs, or those of the bot that is speaking.
+            const bot = mobile.bots.find(b => b.name === (tag.bot ?? speaker))
+            return { onPress: () => setPanels([{ kind: 'jobs', bot }]) }
+          }
+          case 'settings': {
+            const kind = SETTINGS_PANELS[tag.page]
+            return kind ? open(kind) : null
+          }
+          case 'plugin':
+          case 'skill':
+            return {
+              onPress: () =>
+                act(async () => {
+                  // Its own card over the list; the list alone when it is not there.
+                  const found = namedPlugin(
+                    pluginRows(await mobileRef.current.rpc<PluginsList>('hexbot.plugins.list')),
+                    tag.kind,
+                    tag.name
+                  )
+                  setPanels([
+                    { kind: 'plugins' },
+                    ...(found
+                      ? [
+                          {
+                            kind: 'plugin' as const,
+                            data: found as unknown as Record<string, unknown>
+                          }
+                        ]
+                      : [])
+                  ])
+                })
+            }
+        }
+      },
+    [act, liveChat, mobile.bots, mobile.rooms, openThread, route, theme.text]
+  )
+  const renderMessageText = useCallback<NonNullable<ChatScreenProps['renderMessageText']>>(
+    item =>
+      item.text ? (
+        <MarkdownText
+          resolveTag={demo ? undefined : tagsFor(item.speaker)}
+          selectable={Platform.OS === 'web'}
+          text={item.text}
+          user={item.role === 'user'}
+        />
+      ) : null,
+    [demo, tagsFor]
   )
   // Your latest message in a bot's chat, while the bot is on it or after its turn
   // stopped, with or without its closed error.
@@ -969,28 +1744,54 @@ function MobileApp({ children }: { children?: ReactNode }) {
     onOpenSearch: () => setSearchOpen(true),
     focus,
     renderMessageText,
+    loadMedia: route?.kind === 'section' && liveChat ? loadMedia : undefined,
     busy: mobile.chat.busy,
-    waiting: mobile.chat.busy && !mobile.chat.streaming ? { label: 'Working' } : undefined,
+    // What the bot does right now, from the step it runs: "Opening Taobao".
+    waiting:
+      mobile.chat.busy && !mobile.chat.streaming
+        ? waitingStatus(mobile.chat, handle => botByName(handle)?.display_name ?? handle)
+        : undefined,
     onSend: send,
-    sendWhileBusy: route?.kind === 'room' || mobile.chat.questions.length > 0,
+    comments: route?.kind === 'section' ? chatComments : undefined,
+    onRemoveComment: (id: string) =>
+      commentKey && setChatComments(commentKey, list => list.filter(c => c.id !== id)),
+    onOpenComment: (comment: FileComment) =>
+      comment.path &&
+      setFile({
+        id: `comment-${comment.path}`,
+        kind: mediaKind(mimeOf(comment.name), comment.name),
+        name: comment.name,
+        path: comment.path
+      }),
     draft,
     onDraftChange: setDraft,
-    onStop: () => act(mobile.stop),
+    // A bot's chat has no Stop: Recall takes a message back. A room keeps it.
+    onStop: route?.kind === 'room' ? () => act(mobile.stop) : undefined,
     attachments,
     onRemoveAttachment: removeAttachment,
+    onOpenAttachment: route?.kind === 'section' ? openAttachment : undefined,
+    onRetryAttachment: uploadAttachment,
     onApprove: approve,
+    rpc: mobile.rpc,
     onOpenVisual: openVisual,
+    onOpenFile: route?.kind === 'section' && liveChat ? setFile : undefined,
+    onReact: mobile.react,
+    onOpenThread: openThread,
     sendDisabledReason: uploading
       ? 'Sending attachments'
-      : mobile.loading
-        ? 'Opening conversation'
-        : mobile.connection !== 'connected'
-          ? 'Reconnect to send'
-          : route?.kind === 'section' && route.section.peer_bot
-            ? 'Conversation between bots'
-            : route?.kind === 'section' && !mobile.liveSessionId()
-              ? 'Open this chat to send'
-              : undefined,
+      : attachments.some(file => file.status === 'uploading')
+        ? 'Uploading files'
+        : attachments.some(file => file.status === 'failed')
+          ? 'A file did not upload. Retry or remove it'
+          : mobile.loading
+            ? 'Opening conversation'
+            : mobile.connection !== 'connected'
+              ? 'Reconnect to send'
+              : route?.kind === 'section' && route.section.peer_bot
+                ? 'Conversation between bots'
+                : route?.kind === 'section' && !mobile.liveSessionId()
+                  ? 'Open this chat to send'
+                  : undefined,
     error: mobile.chat.error || mobile.error || stoppedElsewhere?.text || null,
     onDismissError: () => {
       setClosedOn(mobile.chat.messages.findLast(m => m.role === 'user')?.id ?? null)
@@ -1038,6 +1839,44 @@ function MobileApp({ children }: { children?: ReactNode }) {
     const b = c.kind === 'checkins' ? primaryBot : botByName(c.id)
     if (b) setPanels([{ kind: 'bot', bot: b }])
   }
+  // Pins, names and read marks show at once; the daemon's change event
+  // refreshes the lists, and a refusal puts the old values back.
+  const pinConversation = (c: ConversationSummary, pinned: boolean) =>
+    act(async () => {
+      const before =
+        c.kind === 'room'
+          ? mobile.rooms.find(r => r.id === c.id)?.pinned_at
+          : botByName(c.id)?.pinned_at
+      // Pinning again keeps its place among the pinned, as the daemon does.
+      const pinned_at = pinned ? (before ?? Date.now() / 1000) : null
+      await (c.kind === 'room'
+        ? mobile.change({ kind: 'room', id: c.id }, { pinned_at }, () =>
+            mobile.rpc('hexbot.rooms.pin', { id: c.id, pinned })
+          )
+        : mobile.change({ kind: 'bot', name: c.id }, { pinned_at }, () =>
+            mobile.rpc('hexbot.bots.pin', { name: c.id, pinned })
+          ))
+    })
+  const markConversationRead = (c: ConversationSummary) =>
+    act(async () => {
+      const b = botByName(c.id)
+      if (c.kind !== 'bot' || !b) return
+      const unread = new Set(unreadOf(b).map(s => s.id))
+      const sections_recent = b.sections_recent.map(s =>
+        unread.has(s.id) ? { ...s, done_at: null } : s
+      )
+      await mobile.change({ kind: 'bot', name: b.name }, { sections_recent }, () =>
+        Promise.all([...unread].map(id => mobile.rpc('hexbot.sections.mark_read', { id })))
+      )
+    })
+  const renameConversation = (c: ConversationSummary, name: string) =>
+    c.kind === 'room'
+      ? mobile.change({ kind: 'room', id: c.id }, { name }, () =>
+          mobile.rpc('hexbot.rooms.update', { id: c.id, name })
+        )
+      : mobile.change({ kind: 'bot', name: c.id }, { display_name: name }, () =>
+          mobile.rpc('hexbot.bots.update', { name: c.id, display_name: name })
+        )
   const openConversation = (c: ConversationSummary) => {
     if (demo) {
       setBotPage(c.id)
@@ -1098,10 +1937,6 @@ function MobileApp({ children }: { children?: ReactNode }) {
           })
         }
         onConnectSignIn={() => act(signIn)}
-        onDemo={() => {
-          setDemo(true)
-          setAddDaemon(false)
-        }}
         pending={
           mobile.loading
             ? 'pair'
@@ -1157,11 +1992,15 @@ function MobileApp({ children }: { children?: ReactNode }) {
           />
         </View>
       }
-      onAttach={() => act(attach)}
+      notice={
+        // The bot's provider is gone: ask for a new model before the next message.
+        !route.section.peer_bot && providerGone(route.bot) ? (
+          <ProviderGoneCard bot={route.bot} models={mobile.models} rpc={mobile.rpc} />
+        ) : undefined
+      }
+      onAttach={source => act(() => attach(source))}
       onOpenComputer={
-        (route.bot.available_tools ?? route.bot.tools ?? []).includes('computer_use')
-          ? () => setComputerOpen(true)
-          : undefined
+        offersComputer(mobile.computersListed, route.bot) ? () => setComputerOpen(true) : undefined
       }
       computerLive={!!mobile.computer?.actor || mobile.computer?.control === 'user'}
       onOpenSettings={() => {
@@ -1175,10 +2014,21 @@ function MobileApp({ children }: { children?: ReactNode }) {
       title={route.room.name}
       subtitle={(() => {
         const names = membersOf(route.room).map(m => m.name)
+        if (route.room.discord) return names.length ? `${names.join(', ')} in Discord` : null
         return names.length ? `${names.join(', ')} and you` : null
       })()}
       members={membersOf(route.room)}
+      discord={!!route.room.discord}
       archived={!!route.room.archived_at}
+      elsewhere={
+        route.room.discord
+          ? {
+              text: 'This room is in Discord. Reply there.',
+              actionLabel: 'Open in Discord',
+              onAction: () => void Linking.openURL(route.room.discord!.url)
+            }
+          : null
+      }
       hasEarlier={mobile.hasEarlier}
       loadingEarlier={mobile.loadingEarlier}
       onLoadEarlier={() => act(mobile.loadEarlier)}
@@ -1247,6 +2097,35 @@ function MobileApp({ children }: { children?: ReactNode }) {
             ? null
             : `bot-${route.bot.name}`
         : null
+  // A chat tapped beside the list, while the daemon names it: its face
+  // loading, as an open chat shows while its history arrives, in place of
+  // the chat open before it.
+  const askedRow = asked && `${asked.kind}-${asked.id}`
+  const opening =
+    asked && askedRow !== openChatRow && !demo ? (
+      <ChatScreen
+        key={`${asked.kind}-${asked.id}`}
+        title={asked.name}
+        face={asked.face}
+        items={[]}
+        opening
+        onSend={() => {}}
+        onApprove={() => {}}
+        sendDisabledReason="Opening conversation"
+        // What you type here becomes the chat's draft once it opens.
+        draft={early?.row === askedRow ? early.text : ''}
+        onDraftChange={text => askedRow && setEarly({ row: askedRow, text })}
+        error={mobile.error}
+        onDismissError={() => mobile.setError(null)}
+        onRetry={() => openConversation(asked)}
+      />
+    ) : null
+  const column = demoBot ? chat : opening || (route && !demo ? chat : null)
+  // A profile or settings page over the chat, or another chat opening in its
+  // place: what lands in it is not seen yet.
+  const { setChatCovered } = mobile
+  const covered = panels.length > 0 || !!opening
+  useEffect(() => setChatCovered(covered), [covered, setChatCovered])
   // Also cancels a chat still opening, so it does not open after you left.
   const closeChat = () => {
     if (demo) setBotPage(null)
@@ -1259,15 +2138,37 @@ function MobileApp({ children }: { children?: ReactNode }) {
   const select = (key: string | null) => {
     const row = conversations.find(c => `${c.kind}-${c.id}` === key)
     if (key && key !== 'settings' && key !== 'library' && !row) return
+    if (selected === 'chat' && key === null && mobileRef.current.hasThreadReturn) {
+      if (uploading) return
+      closeChat()
+      return
+    }
     if (selected === 'chat' && (key === null || key !== openChatRow)) {
       // Leaving a chat closes it, as back does; while a file uploads, it
-      // stays. Another chat replaces it, so the column never empties.
+      // stays. Another chat replaces it, so the column never empties. Explicit
+      // sidebar destinations (Settings, Bots & jobs) leave outright instead of
+      // popping the peer-thread return stack back to the originating chat.
       if (uploading) return
       if (row) setPanels([])
-      else closeChat()
+      else if (key === null) closeChat()
+      else if (demo) setBotPage(null)
+      else {
+        mobileRef.current.leave()
+        setPanels([])
+      }
     }
+    // Pages pushed beside the sidebar belong to what was shown there.
+    const shown = selected === 'chat' ? openChatRow || 'chat' : selected
+    if (key === null || key !== shown) setPanels([])
     setSelected(row ? 'chat' : (key as 'settings' | 'library' | null))
+    // Until the daemon names the chat, its face loads in the column.
+    setAsked(row && key !== openChatRow ? row : null)
     if (row && key !== openChatRow) openConversation(row)
+  }
+  const openRoomFromPanel = (room: Room) => {
+    setPanels([])
+    setBotPage(null)
+    act(() => mobile.openRoom(room))
   }
   const homeProps: HomeScreenProps = {
     error: mobile.error,
@@ -1275,11 +2176,16 @@ function MobileApp({ children }: { children?: ReactNode }) {
     conversations,
     // Beside the sidebar on iOS; Android pushes the chat route when one opens.
     onOpen: Platform.OS === 'ios' ? c => select(`${c.kind}-${c.id}`) : openConversation,
-    onLongPress: demo ? undefined : openPanelFor,
+    onSettings: demo ? undefined : openPanelFor,
+    // A daemon from before pins sends no pinned_at and can't pin.
+    onPin: demo || mobile.bots.every(b => b.pinned_at === undefined) ? undefined : pinConversation,
+    onMarkRead: demo ? undefined : markConversationRead,
+    onRename: demo ? undefined : renameConversation,
     waiting: demo ? [] : waitingElsewhere,
     onOpenPulse: openPulse,
     onNewBot: demo ? undefined : () => setPanels([{ kind: 'bot-create' }]),
     onNewRoom: demo ? undefined : () => setPanels([{ kind: 'room-create' }]),
+    notificationsPrompt: demo ? null : notificationsPrompt,
     primaryChoice:
       // A daemon from before the primary bot leaves `primary` out; an
       // empty one is offered HexBot too, falling back on older daemons.
@@ -1321,7 +2227,7 @@ function MobileApp({ children }: { children?: ReactNode }) {
       Platform.OS === 'ios' ? select('settings') : router.navigate('/settings'),
     onOpenLibrary: () => (Platform.OS === 'ios' ? select('library') : router.navigate('/bots')),
     onSwitchDaemon: saved.length > 1 ? () => setSwitcherOpen(true) : undefined,
-    selected: selected === 'chat' ? openChatRow || null : selected,
+    selected: selected === 'chat' ? (opening && askedRow) || openChatRow || null : selected,
     onReconnect: reconnect,
     refreshing,
     onRefresh: demo ? undefined : refresh,
@@ -1329,14 +2235,30 @@ function MobileApp({ children }: { children?: ReactNode }) {
   }
   const screens: AppScreens = {
     homeProps,
-    chatProps: chat?.props ?? null,
+    chatProps: column?.props ?? null,
     selected: selected === 'chat' ? openChatRow || 'chat' : selected,
     select,
-    chat: demoBot ? chat : route && !demo ? chat : null,
+    chat: column,
     settings: settingsScreen,
     library: libraryScreen,
     onChatClosed: closeChat,
-    uploading: !!uploading
+    hasThreadReturn: mobile.hasThreadReturn,
+    uploading: !!uploading,
+    panels,
+    renderPanel: (index, frame) =>
+      panels[index] ? (
+        <Management
+          panel={panels[index]}
+          frame={frame}
+          active={index === panels.length - 1}
+          onClose={() => setPanels([])}
+          onBack={() => setPanels(stack => stack.slice(0, index))}
+          onNavigate={navigate}
+          mobile={mobile}
+          onOpenRoom={openRoomFromPanel}
+        />
+      ) : null,
+    keepPanels: count => setPanels(stack => (stack.length > count ? stack.slice(0, count) : stack))
   }
   return (
     <Screens.Provider value={screens}>
@@ -1378,7 +2300,8 @@ function MobileApp({ children }: { children?: ReactNode }) {
             {children}
           </View>
           {connection ? <View style={StyleSheet.absoluteFill}>{connection}</View> : null}
-          {mobile.loading && mobile.active ? (
+          {/* A bot's chat shows its own loading: the bot's face and "Opening conversation". */}
+          {mobile.loading && mobile.active && route?.kind !== 'section' && !opening ? (
             <View
               pointerEvents="none"
               style={{ position: 'absolute', top: 70, alignSelf: 'center' }}
@@ -1395,34 +2318,57 @@ function MobileApp({ children }: { children?: ReactNode }) {
           scroll={false}
         >
           {visual ? (
-            <VisualFrame
-              title={visual.title}
-              document={visualDocument(visual.html, {
-                '--background': theme.background,
-                '--foreground': theme.text,
-                '--muted': theme.muted,
-                '--surface': theme.surface,
-                '--surface-2': theme.fill,
-                '--border': theme.hairline,
-                '--accent': theme.accent,
-                '--accent-foreground': theme.onAccent,
-                '--success': theme.success,
-                '--danger': theme.danger,
-                '--warning': theme.warning,
-                '--info': theme.info,
-                '--chart-1': theme.accent,
-                '--chart-2': theme.info,
-                '--chart-3': theme.success,
-                '--chart-4': theme.warning,
-                '--chart-5': theme.danger,
-                '--chart-6': theme.muted,
-                '--radius': '16px',
-                '--font-sans': 'system-ui',
-                '--font-mono': 'monospace'
-              })}
-            />
+            // The page sits on a card of its own, as the desktop shows it beside the chat.
+            <View style={[visualCard, { backgroundColor: theme.surface }]}>
+              <VisualFrame
+                background={theme.surface}
+                title={visual.title}
+                document={visualDocument(visual.html, {
+                  '--background': theme.surface,
+                  '--foreground': theme.text,
+                  '--muted': theme.muted,
+                  // Steps of text over the card, as the desktop steps them over a bubble.
+                  '--surface': mixHex(theme.surface, theme.text, 0.04) ?? theme.fill,
+                  '--surface-2': mixHex(theme.surface, theme.text, 0.1) ?? theme.fill,
+                  '--border': mixHex(theme.surface, theme.text, 0.12) ?? theme.hairline,
+                  '--accent': theme.accent,
+                  '--accent-foreground': theme.onAccent,
+                  '--success': theme.success,
+                  '--danger': theme.danger,
+                  '--warning': theme.warning,
+                  '--info': theme.info,
+                  '--chart-1': theme.accent,
+                  '--chart-2': theme.info,
+                  '--chart-3': theme.success,
+                  '--chart-4': theme.warning,
+                  '--chart-5': theme.danger,
+                  '--chart-6': theme.muted,
+                  '--radius': '12px',
+                  '--font-sans': 'system-ui, -apple-system, sans-serif',
+                  '--font-mono': 'ui-monospace, Menlo, monospace'
+                })}
+              />
+            </View>
           ) : null}
         </Layer>
+        <FileSheet
+          botName={route?.kind === 'section' ? route.bot.display_name : 'The bot'}
+          comments={chatComments}
+          file={file}
+          onAddImage={route?.kind === 'section' ? addPicture : undefined}
+          onClose={() => setFile(null)}
+          onComment={
+            commentKey
+              ? comment =>
+                  setChatComments(commentKey, list => [
+                    ...list,
+                    { ...comment, id: Crypto.randomUUID() }
+                  ])
+              : undefined
+          }
+          read={readFile}
+          write={route?.kind === 'section' ? writeFile : undefined}
+        />
         <SearchSheet
           documents={searchDocuments}
           entries={entries}
@@ -1457,37 +2403,60 @@ function MobileApp({ children }: { children?: ReactNode }) {
               call={mobile.computerCall}
               connects={mobile.connects}
               faceOf={faceOf}
+              listed={mobile.computersListed}
+              loadComputers={mobile.loadComputers}
               onEnable={
                 route?.kind === 'section'
-                  ? () =>
+                  ? (older: boolean) =>
                       act(async () => {
                         const bot = botByName(route.bot.name) ?? route.bot
-                        await mobile.rpc('hexbot.bots.update', {
-                          name: bot.name,
-                          tools: [...(bot.tools ?? []), 'computer_use']
-                        })
+                        // The bots' computer as one of its environments, then
+                        // Computer Use for its screen; an older daemon has no
+                        // computers and takes Computer use as a tool.
+                        if (!older) {
+                          await mobile.rpc('hexbot.computers.grant', {
+                            bot: bot.name,
+                            capability: 'terminal',
+                            computer: 'vm',
+                            on: true
+                          })
+                          await mobile.computersCall('hexbot.connectors.set_for_bot', {
+                            bot: bot.name,
+                            enabled: true,
+                            id: 'computer_use'
+                          })
+                        } else {
+                          await mobile.rpc('hexbot.bots.update', {
+                            name: bot.name,
+                            tools: [...(bot.tools ?? []), 'computer_use']
+                          })
+                        }
                         await mobile.refresh()
                       })
                   : undefined
               }
+              onSettings={() => {
+                setComputerOpen(false)
+                setPanels([{ kind: 'computer' }])
+              }}
+              vm={vmComputer}
               origin={mobile.active?.origin ?? null}
               status={mobile.computer}
               view={mobile.computerView}
             />
           ) : null}
         </Layer>
-        <Management
-          panel={panel}
-          onClose={() => setPanels([])}
-          onBack={panels.length > 1 ? () => setPanels(stack => stack.slice(0, -1)) : undefined}
-          onNavigate={navigate}
-          mobile={mobile}
-          onOpenRoom={room => {
-            setPanels([])
-            setBotPage(null)
-            act(() => mobile.openRoom(room))
-          }}
-        />
+        {/* iOS pushes these pages on its own navigation stack, in `src/shell/SplitView.tsx`. */}
+        {Platform.OS === 'ios' ? null : (
+          <Management
+            panel={panel}
+            onClose={() => setPanels([])}
+            onBack={panels.length > 1 ? () => setPanels(stack => stack.slice(0, -1)) : undefined}
+            onNavigate={navigate}
+            mobile={mobile}
+            onOpenRoom={openRoomFromPanel}
+          />
+        )}
         <ChatChooser
           choices={mobile.choosing?.choices ?? []}
           name={
@@ -1658,3 +2627,12 @@ function MobileApp({ children }: { children?: ReactNode }) {
     </Screens.Provider>
   )
 }
+
+// The visual's card inside its sheet, inset like the desktop's tab.
+const visualCard = {
+  borderRadius: 16,
+  flex: 1,
+  marginBottom: 12,
+  marginHorizontal: 12,
+  overflow: 'hidden'
+} as const

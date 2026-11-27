@@ -8,13 +8,15 @@ Transparency use solid controls. Lists and messages use solid backgrounds.
 ## Layout
 
 A messaging app. One list holds every bot's chat and every room, newest first,
-with the primary bot pinned on top. A Check-ins conversation from before the
-heartbeat stays in it until you delete it. Each row shows the face, the name,
-the time and the last thing said, or what the bot is doing while it works.
-Your initials at the top left open Settings, + makes a bot or a room, and the
-grid button beside Search at the bottom opens every bot's profile, scheduled
-jobs and all rooms. A row opens its conversation; a long press opens the
-bot's profile or the room's settings. Archiving the open room returns to the
+with pinned chats above it as large faces; the primary bot starts pinned. A
+Check-ins conversation from before the heartbeat stays in it until you delete
+it. Each row shows the face, the name, the time and the last thing said, or
+what the bot is doing while it works. Your initials at the top left open
+Settings, + makes a bot or a room, and the grid button beside Search at the
+bottom opens every bot's profile, scheduled jobs and all rooms. A row opens
+its conversation. A long press lifts the row or pinned face over a blurred
+list and opens a small menu beside it: Pin or Unpin, Mark as read, Rename and
+Settings (`src/ui/ContextMenu.tsx`). Archiving the open room returns to the
 list. A bot waiting on you in a conversation with another bot gets a line at
 the top of the list that opens it.
 
@@ -32,13 +34,20 @@ chat's back closes it, except while files upload. The app turns with the
 phone and builds with the iOS 27 SDK, whose scene life cycle Expo SDK 58 sets
 up.
 
-Settings is the daemon, what bots are doing right now, About you, models,
-connectors, skills, usage, devices, pairing, Hex Connect and updates; it also
-switches daemons. + in the Chats bar makes a new bot or room. Bots & jobs is
-every bot's profile, scheduled jobs, and all rooms, archived ones included.
+Settings is the daemon and what bots are doing right now, then the desktop
+app's groups: Models (providers, usage), Bots (plugins, passwords,
+computers, bot activity), Devices (network, paired devices, Hex Connect), You (About you, daemon settings) and App (updates, licenses); it
+also switches daemons. + in the Chats bar makes a new bot or room. Bots & jobs
+is every bot's profile, scheduled jobs, and all rooms, archived ones included.
 
-Profiles, settings areas, tool steps, visuals and the bots' computer open as
-front cards (`src/ui/Layer.tsx`) that leave the screen below in view. The
+Settings areas, profiles and room settings are pages styled like the desktop
+app's settings: a line saying what the page is for, small group labels,
+cards of rows with fields inside them, and filled circles for choices
+(`PageLook` in `src/ui/Row.tsx`). On iOS they push on the system's
+navigation stack beside the list, with native back and swipe back, their
+title and Save in the bar (`src/shell/SplitView.tsx`). On Android and in the
+browser they open as front cards (`src/ui/Layer.tsx`), as tool steps,
+visuals and the bots' computer do everywhere. The
 model pill lists the providers with a key or sign-in, plus the bot's own, each from
 `hexbot.models.list {provider}` so the provider's current list is used, as in
 the web app. Thinking levels come from `reasoning_levels`; a model the daemon
@@ -78,7 +87,7 @@ when Connect supplies one, and exchanges the grant directly with that daemon.
 | --- | --- |
 | Bots | Chat list and Bots & jobs; create, edit, delete, soul, picture, model and thinking level, tools, approvals, workspace, notifications and dreaming |
 | Conversations | heartbeat messages in each bot's chat; streamed chat, stop, file/image/PDF attachments, Markdown, tool steps with their results, visuals, questions and approvals |
-| Computer | The bots' shared computer on its own card from a chat's computer button: the live screen with each bot's face cursor, what is happening on it, Take control and Give back, Turn on, Restart, Turn off and Reset; its size in a bot's Tools |
+| Computer | The bots' shared computer on its own card from a chat's computer button: the live screen with each bot's face cursor, what is happening on it, Pause bots and Resume bots, Turn on, Restart, Turn off and Reset; its size in a bot's Tools |
 | Rooms | Rooms in the chat list: chat, stop, bot membership, main bot, budgets, approvals, archive, restore from All rooms, and delete |
 | Memory | Edit each bot's memory and your About you text; inspect dreaming and restore memory |
 | Models | Provider API keys and device sign-in, model selection, daemon defaults and fallback model |
@@ -104,14 +113,22 @@ opens at its latest 200 events and pages back with `before_seq` on
 `hexbot.rooms.log`; older daemons ignore it and the app reads the whole log.
 A bot's chat takes one message at a time, so Stop replaces Send while it works.
 
-Attachments stay on the phone until Send. Sending files without text uses
+The composer's + offers Photos and videos (up to 10 at once, HEIC arrives as
+JPEG), Camera (a photo or a video; Android, whose camera does one at a time,
+shows Take photo and Record video) and Files. Each file uploads in parts as
+soon as it is picked, showing the percentage the daemon has, and Send waits
+until every file is up; a tap on one that is up previews it. A daemon from
+before part uploads cannot take a file back, so there files stay on the phone
+until Send, as before. Sending files without text uses
 "Please review the attached files." Chips clear only after the daemon accepts
 the message. Answer bot questions before sending attached files; the files stay
 ready for the next message. Failed uploads can be retried without
 resending attachments that already reached the daemon. Each upload returns an
 id, and `prompt.submit` names the ids for that message: the daemon sends only
 those and keeps other files staged. Leaving the chat, switching daemons or
-disconnecting asks the daemon to clear unsent uploads; that clear is best effort.
+disconnecting takes back the files uploaded here and not sent, one by one with
+`attachments.remove`, so another app's draft keeps its files (an older daemon
+clears them all); it is best effort.
 This uses the new `attachments.clear` RPC and the `attachments` list on
 `prompt.submit`; requests without this list send every staged file for compatibility. Scheduled job controls use the new
 owner-scoped `hexbot.jobs.*` RPCs; use a daemon built from this checkout for both. The app shows an update notice
@@ -152,32 +169,51 @@ submissions to App Store Connect app `6824190699`. EAS stores the signing
 certificate, provisioning profile and assigned App Store Connect API key.
 Production build numbers are stored remotely and increment automatically.
 
-The GitHub Release action starts `.eas/workflows/testflight.yml` in Expo
-when its resolved channel is nightly and release checks pass. This includes
-manual nightlies and scheduled nightlies with new commits. Stable releases
-skip iOS. Ordinary pushes to `main` do not start a mobile release.
-The workflow builds the exact release commit. It checks the mobile
-app, builds iOS, then uploads that exact build through the standard EAS
-Submit job. This works on the free Expo plan; the advanced `testflight` job
-for uploading EAS builds requires a paid plan. A failed upload fails the
-workflow; a successful build alone does not count as a successful upload.
-Each stage and its logs appear in the project's Workflows page. Workflow
-success means Apple accepted the upload. Apple processes the binary afterward.
+The GitHub Release action builds iOS when its resolved channel is nightly
+and release checks pass. This includes manual nightlies and scheduled
+nightlies with new commits. Stable releases skip iOS. Ordinary pushes to
+`main` do not start a mobile release. On a macOS runner it builds the release
+checkout with `eas build --local --profile production`, using the signing
+credentials and build number stored in EAS, then uploads that `.ipa` to App
+Store Connect with `eas submit`. Expo's free plan allows 15 iOS cloud builds
+a month, fewer than one a night, so the nightly does not build in Expo's
+cloud. When Apple has processed it, Apple's upload event starts
+`.eas/workflows/testflight-testers.yml`, which adds the build to the external
+group `Website0`, the group behind the public link
+(https://testflight.apple.com/join/byKAKWMW) on hexbot.app, and submits it
+for Beta App Review. The internal group `Team (Expo)` gets every build through
+automatic distribution. A failed build or upload fails the Release action,
+with the reason in its log; a failed group or review step fails the tester
+workflow, which Expo reports by email and in the project's Workflows page.
 
-One-time setup in the [Expo GitHub settings](https://expo.dev/accounts/the1uneed/projects/hexbot-mobile/github):
+The project is on Expo's free plan, which does not run a `testflight` job
+given an EAS build (`build_id`). Uploads therefore use `submit`, and only the
+tester workflow uses a `testflight` job, with the App Store Connect build ID
+(`asc_build_id`) from Apple's event. Public testers get a build once Apple
+approves it, usually within a day; later builds of an approved version often
+skip review.
 
-1. Install or authorize the Expo GitHub app for `The1UNeed/hexbot` and link
-   that repository to this EAS project.
+One-time setup:
+
+1. For `pnpm mobile:testflight`, install or authorize the Expo GitHub app for
+   `The1UNeed/hexbot` in the [Expo GitHub settings](https://expo.dev/accounts/the1uneed/projects/hexbot-mobile/github)
+   and link that repository to this EAS project.
 2. Set the app's base directory to `apps/mobile`. Commit and merge the
    workflow files and app configuration into `main` so Expo can read them.
    Add an Expo access token as the GitHub repository secret `EXPO_TOKEN` so
-   the Release action can start and monitor the workflow. Nightly preflight
+   the Release action can read the credentials and upload. Nightly preflight
    fails clearly when this secret is missing; stable does not require it.
 3. In App Store Connect, enable automatic distribution on the internal
-   TestFlight group that should receive new builds and add the testers once.
-   The workflow does not automatically submit external Beta App Reviews.
+   TestFlight group `Team (Expo)` and add the testers once. Keep the external
+   group `Website0` with its public link, and fill in TestFlight's Test
+   Information (beta description, feedback email, review contact), which
+   Beta App Review needs. Renaming `Website0` means changing
+   `external_groups` in `testflight-testers.yml`.
+4. In the Expo project's settings, General, Connections, connect App Store
+   Connect app `6824190699` with the submission API key. Without it, Apple's
+   upload event never starts `testflight-testers.yml`.
 
-Subscribe to EAS Build and EAS Submit result emails in the Expo project's
+Subscribe to EAS Build, EAS Submit and workflow result emails in the Expo project's
 Notifications settings to receive success and failure notices.
 
 The stored Apple credentials must be valid and the assigned API key must
@@ -186,7 +222,8 @@ only the Expo access token. Apple processing and any required
 review still happen on Apple's schedule. A workflow does not fix an Apple or
 Expo service failure; inspect the failed job before retrying.
 
-To start the same workflow directly from the repository root, use:
+To build in Expo's cloud instead, which uses one of the month's 15 iOS cloud
+builds, run `.eas/workflows/testflight.yml` from the repository root:
 
 ```sh
 pnpm mobile:testflight
@@ -202,15 +239,17 @@ the workspace's 14-day release-age rule applies then, not during a release.
 using the assigned API key, so you can verify which build reached Apple.
 An accepted upload can take several minutes to appear in Apple's build list.
 
-If the build succeeded but uploading failed, copy its EAS build ID from the
-workflow and upload it without rebuilding:
+When the Release action's iOS job fails, re-run it; a local build costs
+nothing. If a cloud build succeeded but uploading failed, copy its EAS build
+ID from the workflow and upload it without rebuilding:
 
 ```sh
 pnpm mobile:testflight:upload --input build_id=YOUR_EAS_BUILD_ID
 ```
 
 This starts `.eas/workflows/testflight-upload.yml`, which can also be run
-from the Expo dashboard. Use the EAS build ID, not the App Store Connect
+from the Expo dashboard; `testflight-testers.yml` then takes the build to
+`Website0` as usual. Use the EAS build ID, not the App Store Connect
 build ID. Do not upload a build Apple has already accepted; for a new binary,
 start the full workflow to get a new build number.
 

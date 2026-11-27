@@ -19,13 +19,13 @@ export interface LastSection {
   section: string
 }
 
-/** The private conversation the side panel shows: `peer` asking `bot` for help. */
+/** The private bot-to-bot conversation opened in the main view: `peer` asking `bot` for help. */
 export interface ThreadRef {
   /** The bot that was asked; the thread is a section of its. */
   bot: string
   /** The bot that asked. */
   peer: string
-  /** Known once the ask completed; otherwise the panel looks the thread up. */
+  /** Known once the ask completed; otherwise the view looks the thread up. */
   sectionId?: string
 }
 
@@ -33,20 +33,32 @@ export interface ThreadRef {
 export type PanelTab = 'computer' | 'details' | 'fingerprint' | 'library'
 
 export interface UiState {
+  /** Experimental: Settings, Plugins opens as a table of every bot against every plugin. */
+  accessTable: boolean
   closeThread: () => void
   /** How the bots' computer's screen streams to this device: each network differs. */
   computerQuality: ComputerQuality
   lastSection: LastSection | null
+  /** The bot clicked in the roster whose chat the daemon has not named yet. */
+  openingBot: null | string
+  /** That bot, while the chat column shows it opening; the profile panel follows. */
+  openingShown: null | string
   openThread: (thread: ThreadRef) => void
   /** A finished ask learned the thread's id: fill it in if that thread is open. */
   resolveThread: (bot: string, peer: string, sectionId: string) => void
   /** Opens the side panel on a tab, as the chat's step line does for Computer. */
   openPanel: (tab: PanelTab) => void
   panelTab: PanelTab
+  /** Section id while the main route itself is showing a direct peer-thread URL (`/b/$bot/s/$section`). */
+  peerRoute: null | string
   rightPanelOpen: boolean
   setPanelTab: (tab: PanelTab) => void
+  setAccessTable: (on: boolean) => void
   setComputerQuality: (quality: ComputerQuality) => void
   setLastSection: (value: LastSection | null) => void
+  setOpeningBot: (bot: null | string) => void
+  setOpeningShown: (bot: null | string) => void
+  setPeerRoute: (sectionId: null | string) => void
   setSidebarWidth: (width: number) => void
   setSounds: (on: boolean) => void
   setTheme: (theme: ThemePreference) => void
@@ -57,6 +69,9 @@ export interface UiState {
   thread: null | ThreadRef
   /** Bumped when the daemon reports a section changed while a thread is open: read it again. */
   threadChanged: number
+  /** Monotonic generation bumped on every thread open, close, route change, or lookup start. */
+  threadNav: number
+  beginThreadLookup: () => number
   toggleRightPanel: (open?: boolean) => void
   touchThread: (sectionId?: string) => void
 }
@@ -66,16 +81,21 @@ export const SIDEBAR_MAX_WIDTH = 480
 
 export const useUi = create<UiState>()(
   persist(
-    set => ({
+    (set, get) => ({
+      accessTable: false,
       computerQuality: 'auto',
       lastSection: null,
+      openingBot: null,
+      openingShown: null,
       panelTab: 'details',
+      peerRoute: null,
       rightPanelOpen: true,
       sidebarWidth: 280,
       sounds: false,
       theme: 'system',
       thread: null,
       threadChanged: 0,
+      threadNav: 0,
 
       setTheme(theme) {
         set({ theme })
@@ -84,6 +104,10 @@ export const useUi = create<UiState>()(
 
       setSounds(sounds) {
         set({ sounds })
+      },
+
+      setAccessTable(accessTable) {
+        set({ accessTable })
       },
 
       setComputerQuality(computerQuality) {
@@ -112,22 +136,45 @@ export const useUi = create<UiState>()(
         set({ lastSection: value })
       },
 
+      setOpeningBot(openingBot) {
+        set({ openingBot })
+      },
+
+      setOpeningShown(openingShown) {
+        set({ openingShown })
+      },
+
+      setPeerRoute(peerRoute) {
+        set(state => ({ peerRoute, threadNav: state.threadNav + 1 }))
+      },
+
+      beginThreadLookup() {
+        const next = get().threadNav + 1
+        set({ threadNav: next })
+
+        return next
+      },
+
       openThread(thread) {
-        set({ thread })
+        set(state => ({ thread, threadNav: state.threadNav + 1 }))
       },
 
       closeThread() {
-        set({ thread: null })
+        set(state => ({ thread: null, threadNav: state.threadNav + 1 }))
       },
 
-      // Only the open thread's changes matter, or any change while its id is still unknown.
+      // Only the open thread's changes matter (overlay or direct peer URL), or any change while an overlay id is still unknown.
       touchThread(sectionId) {
-        set(state =>
-          state.thread &&
-          (!state.thread.sectionId || !sectionId || sectionId === state.thread.sectionId)
-            ? { threadChanged: state.threadChanged + 1 }
-            : state
-        )
+        set(state => {
+          const overlayMatch =
+            Boolean(state.thread) &&
+            (!state.thread!.sectionId || !sectionId || sectionId === state.thread!.sectionId)
+
+          const routeMatch =
+            Boolean(state.peerRoute) && (!sectionId || sectionId === state.peerRoute)
+
+          return overlayMatch || routeMatch ? { threadChanged: state.threadChanged + 1 } : state
+        })
       },
 
       resolveThread(bot, peer, sectionId) {
@@ -141,6 +188,7 @@ export const useUi = create<UiState>()(
     {
       name: 'hexbot.ui',
       partialize: ({
+        accessTable,
         computerQuality,
         lastSection,
         panelTab,
@@ -149,6 +197,7 @@ export const useUi = create<UiState>()(
         sounds,
         theme
       }) => ({
+        accessTable,
         computerQuality,
         lastSection,
         panelTab,

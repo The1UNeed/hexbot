@@ -53,6 +53,7 @@ function secretPaths(home: string): string[] {
   };
   walkSsh(join(homedir(), '.ssh'));
   for (const local of credentialPolicy.user) add(join(homedir(), local));
+  if (process.env.HEXBOT_CUA_HOME) add(process.env.HEXBOT_CUA_HOME);
   const sorted = [...paths].sort();
   cache.set(home, {at:Date.now(), paths:sorted});
   return sorted;
@@ -421,6 +422,31 @@ export function lockedGit(scan: Pick<WorkspaceScan, 'git' | 'worktrees' | 'files
   const folded = new Set([...locked].map(fold));
   return [...locked].filter(path => { for (let dir = dirname(path); dirname(dir) !== dir; dir = dirname(dir)) if (folded.has(fold(dir))) return false; return true; });
 }
+// The Cua folder in use (CUA_HOME, else ~/.cua) as written and as resolved:
+// renaming any folder above either, such as a writable one a symlinked ~/.cua
+// points into, would carry the token out from under its rule, so both levels
+// pin their parents.
+function cuaRoots(): string[] {
+  const folders = process.env.HEXBOT_CUA_HOME ? [process.env.HEXBOT_CUA_HOME] : [join(homedir(), '.cua')];
+  const roots: string[] = [];
+  for (const cua of folders) {
+    let real = cua;
+    try { real = realRoot(cua); } catch { /* Unreadable: the path as written. */ }
+    for (const path of [cua, real]) if (!roots.includes(path)) roots.push(path);
+  }
+  return roots;
+}
+// The folders to pin above Cua's: inside the home only those between the home
+// and it, as for other stores; outside it, every one up to the root.
+function cuaParents(): string[] {
+  const homes = [...new Set([homedir(), realRoot(homedir())])];
+  const parents: string[] = [];
+  for (const path of cuaRoots()) {
+    const home = homes.find(h => path.startsWith(h + '/'));
+    for (let dir = dirname(path); dirname(dir) !== dir && (!home || dir.startsWith(home + '/')); dir = dirname(dir)) if (!parents.includes(dir)) parents.push(dir);
+  }
+  return parents;
+}
 function pathAncestors(paths: string[]): string[] {
   const ancestors = new Set<string>();
   for (const path of paths) for (let dir = dirname(path); dirname(dir) !== dir; dir = dirname(dir)) ancestors.add(dir);
@@ -486,7 +512,9 @@ export function sandboxProfile(home: string, outputs: string[] = [], workspace?:
   const insideHome = `(require-any ${roots.map(p => `(subpath ${JSON.stringify(p)})`).join(' ')})`;
   const exceptWritable = writable.length ? `(require-not (require-any ${writable.map(p => `(subpath ${JSON.stringify(p)})`).join(' ')}))` : '';
   const stores = denied.map(p => `(literal ${JSON.stringify(p)}) (subpath ${JSON.stringify(p)}) (regex ${JSON.stringify(sandboxRegex("^" + regexEscape(p) + "(/|$)"))})`).join(' ');
-  const ancestors = storeAncestors(denied).map(p => `(literal ${JSON.stringify(p)})`).join(' ');
+  const pinned = storeAncestors(denied);
+  for (const dir of cuaParents()) if (!pinned.includes(dir)) pinned.push(dir);
+  const ancestors = pinned.map(p => `(literal ${JSON.stringify(p)})`).join(' ');
   let confine = '';
   if (workspace) {
     const {writable: open, config} = confined(workspace);
@@ -496,7 +524,9 @@ export function sandboxProfile(home: string, outputs: string[] = [], workspace?:
     const git = lockedGit(protectedPaths, open);
     const secretPaths = protectedPaths.secrets.map(p => `(subpath ${JSON.stringify(p)})`).join(' ');
     const locked = git.map(p => `(subpath ${JSON.stringify(p)})`).join(' ');
-    const parents = pathAncestors([...browserRoots, ...git, ...protectedPaths.secrets]).map(p => `(literal ${JSON.stringify(p)})`).join(' ');
+    const pinnedParents = pathAncestors([...browserRoots, ...git, ...protectedPaths.secrets]);
+    for (const dir of cuaParents()) if (!pinnedParents.includes(dir)) pinnedParents.push(dir);
+    const parents = pinnedParents.map(p => `(literal ${JSON.stringify(p)})`).join(' ');
     const browsers = browserRoots.map(p => `(literal ${JSON.stringify(p)}) (subpath ${JSON.stringify(p)}) (regex ${JSON.stringify(sandboxRegex("^" + regexEscape(p) + "(/|$)"))})`).join(' ');
     const secret = `(require-all (vnode-type REGULAR-FILE) (regex ${JSON.stringify(sandboxRegex('/' + credentialPolicy.secretFile.slice(1)))}) (require-not (regex ${JSON.stringify(sandboxRegex(credentialPolicy.secretFileExample))})))`;
     confine = `(deny network-inbound)(deny network-outbound (remote ip))(deny network-outbound (remote unix-socket))(deny signal)(allow signal (target same-sandbox))(deny file-read* ${stores} ${browsers} ${secret} ${secretPaths})(deny file-write* (require-not (require-any ${inside})))(deny file-write* ${config.map(p => `(literal ${JSON.stringify(p)}) (subpath ${JSON.stringify(p)})`).join(' ')})(deny file-write* ${browsers} ${secret} ${secretPaths} ${locked})(deny file-write-unlink ${parents})(deny file-write* (regex ${JSON.stringify(sandboxRegex(GIT_DIR))}))`;

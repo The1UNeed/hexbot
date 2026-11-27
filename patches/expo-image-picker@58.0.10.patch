@@ -1,0 +1,33 @@
+diff --git a/ios/ImagePickerExceptions.swift b/ios/ImagePickerExceptions.swift
+index df0ec8eac8647a581ae2348da46d8838085f11e4..69dfbf4bfc78a291c130f0cc005b0cd473ab8523 100644
+--- a/ios/ImagePickerExceptions.swift
++++ b/ios/ImagePickerExceptions.swift
+@@ -20,6 +20,12 @@ internal final class MissingCameraPermissionException: Exception {
+   }
+ }
+ 
++internal final class CameraUnavailableException: Exception {
++  override var reason: String {
++    "This device has no camera"
++  }
++}
++
+ internal final class MissingMicrophonePermissionException: Exception {
+   override var reason: String {
+     "Missing microphone permission. Please enable it with the `expo-image-picker` config plugin"
+diff --git a/ios/ImagePickerModule.swift b/ios/ImagePickerModule.swift
+index bc19e0525a1ab36e394f3609235daacb794888e3..350a71dd47c9d3f20d7983cf70983a65a0686d22 100644
+--- a/ios/ImagePickerModule.swift
++++ b/ios/ImagePickerModule.swift
+@@ -85,6 +85,11 @@ public class ImagePickerModule: Module, OnMediaPickingResultHandler {
+   }
+ 
+   private func launchImagePicker(sourceType: UIImagePickerController.SourceType, options: ImagePickerOptions, promise: Promise) {
++    // UIKit throws, ending the app, when this device has no camera (a simulator or a Mac).
++    if sourceType == .camera && !UIImagePickerController.isSourceTypeAvailable(.camera) {
++      promise.reject(CameraUnavailableException())
++      return
++    }
+     let imagePickerDelegate = ImagePickerHandler(onMediaPickingResultHandler: self, hideStatusBarWhenPresented: options.allowsEditing && !options.allowsMultipleSelection)
+ 
+     let pickingContext = PickingContext(promise: promise,

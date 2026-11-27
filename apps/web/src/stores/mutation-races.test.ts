@@ -13,7 +13,7 @@ import type { Bot, DaemonInfo, Room, Section } from '../lib/types'
 import { useBots } from './bots'
 import { useConnection } from './connection'
 import { useRooms } from './rooms'
-import { useSections } from './sections'
+import { markSectionsRead, useSections } from './sections'
 
 const room = { id: 'r', members: [], name: 'Deleted room' } as unknown as Room
 const section = { id: 's', bot: 'writer', live_session_id: null } as Section
@@ -21,12 +21,14 @@ const scope = 'local:http://review.test'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
+  let reject!: (error: unknown) => void
 
-  const promise = new Promise<T>(yes => {
+  const promise = new Promise<T>((yes, no) => {
     resolve = yes
+    reject = no
   })
 
-  return { promise, resolve }
+  return { promise, reject, resolve }
 }
 
 beforeEach(async () => {
@@ -321,3 +323,111 @@ it.each(['optional log', 'read mark'] as const)(
     expect(useRooms.getState().byId.r).toEqual(room)
   }
 )
+
+it('shows a bot pin and rename before the daemon answers, and an older list cannot undo them', async () => {
+  const listed = deferred<{ bots: Bot[] }>()
+  const pinned = deferred<{ bot: Bot }>()
+  const renamed = deferred<{ bot: Bot }>()
+  const bot = { name: 'writer', display_name: 'Writer', pinned_at: null } as Bot
+  useBots.setState({ byName: { writer: bot }, order: ['writer'] })
+  setActiveRpc({
+    call: (method: string) =>
+      method === 'hexbot.bots.list'
+        ? listed.promise
+        : method === 'hexbot.bots.pin'
+          ? pinned.promise
+          : renamed.promise
+  } as never)
+  const listing = useBots.getState().refresh()
+  const pinning = useBots.getState().pin('writer', true)
+  const renaming = useBots.getState().update('writer', { display_name: 'Scribe' })
+  expect(useBots.getState().byName.writer).toMatchObject({ display_name: 'Scribe' })
+  expect(useBots.getState().byName.writer!.pinned_at).toEqual(expect.any(Number))
+  listed.resolve({ bots: [bot] })
+  await listing
+  expect(useBots.getState().byName.writer).toMatchObject({ display_name: 'Scribe' })
+  expect(useBots.getState().byName.writer!.pinned_at).toEqual(expect.any(Number))
+  pinned.resolve({ bot: { ...bot, pinned_at: 7 } })
+  renamed.resolve({ bot: { ...bot, display_name: 'Scribe', pinned_at: 7 } })
+  await Promise.all([pinning, renaming])
+  expect(useBots.getState().byName.writer).toMatchObject({ display_name: 'Scribe', pinned_at: 7 })
+})
+
+it('puts a bot back as it was when the daemon refuses a pin or a rename', async () => {
+  const bot = { name: 'writer', display_name: 'Writer', pinned_at: null } as Bot
+  useBots.setState({ byName: { writer: bot }, order: ['writer'] })
+  setActiveRpc({ call: () => Promise.reject(new Error('Refused')) } as never)
+  await expect(useBots.getState().pin('writer', true)).rejects.toThrow('Refused')
+  await expect(useBots.getState().update('writer', { display_name: 'Scribe' })).rejects.toThrow(
+    'Refused'
+  )
+  expect(useBots.getState().byName.writer).toEqual(bot)
+})
+
+it('shows a room pin and rename before the daemon answers, and puts it back when refused', async () => {
+  const held = deferred<{ room: Room }>()
+  useRooms.getState().restore([{ ...room, pinned_at: null }], {})
+  setActiveRpc({ call: () => held.promise } as never)
+  const pinning = useRooms.getState().pin('r', true)
+  const renaming = useRooms.getState().update('r', { name: 'Greenhouse' })
+  expect(useRooms.getState().byId.r).toMatchObject({ name: 'Greenhouse' })
+  expect(useRooms.getState().byId.r!.pinned_at).toEqual(expect.any(Number))
+
+  held.resolve({ room: { ...room, name: 'Greenhouse', pinned_at: 3 } })
+  await Promise.all([pinning, renaming])
+  expect(useRooms.getState().byId.r).toMatchObject({ name: 'Greenhouse', pinned_at: 3 })
+
+  setActiveRpc({ call: () => Promise.reject(new Error('Refused')) } as never)
+  await expect(useRooms.getState().pin('r', false)).rejects.toThrow('Refused')
+  await expect(useRooms.getState().update('r', { name: 'Shed' })).rejects.toThrow('Refused')
+  expect(useRooms.getState().byId.r).toMatchObject({ name: 'Greenhouse', pinned_at: 3 })
+})
+
+it('shows a chat and a room unread again when the daemon refuses to mark them read', async () => {
+  const done = { ...section, done_at: 10 } as Section
+  const human = { member_kind: 'human', member_id: 'me', last_read_seq: 1 }
+  useSections.setState({ byId: { s: done } })
+  useBots.setState({
+    byName: { writer: { name: 'writer', sections_recent: [done] } as unknown as Bot },
+    order: ['writer']
+  })
+  useRooms.getState().restore([{ ...room, members: [human] } as unknown as Room], {})
+  const held = deferred<never>()
+  setActiveRpc({ call: () => held.promise } as never)
+  const marking = markSectionsRead(['s'])
+  const reading = useRooms.getState().markRead('r', 5)
+  expect(useSections.getState().byId.s!.done_at).toBeNull()
+  expect(useBots.getState().byName.writer!.sections_recent[0]!.done_at).toBeNull()
+  expect(useRooms.getState().byId.r!.members[0]!.last_read_seq).toBe(5)
+
+  held.reject(new Error('Refused'))
+  await expect(marking).rejects.toThrow('Refused')
+  await reading
+  expect(useSections.getState().byId.s!.done_at).toBe(10)
+  expect(useBots.getState().byName.writer!.sections_recent[0]!.done_at).toBe(10)
+  expect(useRooms.getState().byId.r!.members[0]!.last_read_seq).toBe(1)
+})
+
+it('serves overlapping bot list requests with one list asked after each of them', async () => {
+  const lists: ReturnType<typeof deferred<{ bots: Bot[] }>>[] = []
+  setActiveRpc({
+    call: () => {
+      const list = deferred<{ bots: Bot[] }>()
+      lists.push(list)
+
+      return list.promise
+    }
+  } as never)
+  useBots.getState().reset()
+  const first = useBots.getState().refresh()
+  const second = useBots.getState().refresh()
+  const third = useBots.getState().refresh()
+  expect(lists).toHaveLength(1)
+  lists[0]!.resolve({ bots: [{ name: 'old' } as Bot] })
+  await first
+  await vi.waitFor(() => expect(lists).toHaveLength(2))
+  lists[1]!.resolve({ bots: [{ name: 'new' } as Bot] })
+  await Promise.all([second, third])
+  expect(lists).toHaveLength(2)
+  expect(useBots.getState().order).toEqual(['new'])
+})

@@ -76,6 +76,10 @@ async fn fail_turn(app: &Arc<App>, room: &str, bot: &str) -> Value {
                         && payload["live_session_id"] == incident["session_id"]
                         && payload["status"] != "running" =>
                 {
+                    assert!(
+                        payload["id"].as_str().is_some_and(|id| !id.is_empty()),
+                        "hexbot.rooms.turn must carry room_turns.id"
+                    );
                     terminal = true
                 }
                 Some("hexbot.rooms.event")

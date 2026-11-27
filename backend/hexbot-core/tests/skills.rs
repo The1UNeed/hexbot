@@ -294,21 +294,19 @@ async fn share_clashes_delete_reverts_and_supporting_files_survive() {
             .message,
         "Bundled skills can be turned off, not deleted."
     );
-    rpc(
-        h,
-        "local",
-        "save",
-        json!({"name":bundled.name,"content":CONTENT}),
-    )
-    .await
-    .unwrap();
+    // Nor added again under its name: it stays as Hexbot ships it.
     assert_eq!(
-        skills::find(h, None, &bundled.name).unwrap().source,
-        "library"
-    );
-    rpc(h, "local", "delete", json!({"name":bundled.name}))
+        rpc(
+            h,
+            "local",
+            "save",
+            json!({"name":bundled.name,"content":CONTENT}),
+        )
         .await
-        .unwrap();
+        .unwrap_err()
+        .code,
+        4208
+    );
     assert_eq!(
         skills::find(h, None, &bundled.name).unwrap().source,
         "bundled"
@@ -639,6 +637,8 @@ async fn concurrent_connector_and_skill_updates_preserve_both_config_changes() {
     use std::sync::{Arc, Barrier};
     let home = setup();
     let h = home.path();
+    // Web search is turned on below, so it needs a key first.
+    std::fs::write(h.join(".env"), "EXA_API_KEY=test\n").unwrap();
     skills::call(
         h,
         "local",

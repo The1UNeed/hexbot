@@ -41,7 +41,7 @@ Chat links in the app open in your default browser.
 
 ## On iPhone
 
-Hexbot for iPhone is in beta. Install it from [TestFlight](https://testflight.apple.com/join/byKAKWMW), open it, and enter the daemon's address and the code from the daemon computer. The iPhone app is a client: your bots keep running on the daemon computer. See [Mobile app](/docs/mobile/#connect-locally).
+Hexbot for iPhone is open to everyone on TestFlight. Install it from [the public link](https://testflight.apple.com/join/byKAKWMW), open it, and enter the daemon's address and the code from the daemon computer. The iPhone app is a client: your bots keep running on the daemon computer. See [Mobile app](/docs/mobile/#connect-locally).
 
 ## Revoke a device
 

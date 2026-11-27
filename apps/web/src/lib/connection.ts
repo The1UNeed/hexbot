@@ -22,6 +22,7 @@ import {
 } from '@hermes/shared'
 
 import { botsActions } from '../stores/bots'
+import { prefetchChats } from '../stores/chat-prefetch'
 import { connectionActions, invalidateConnectionReads } from '../stores/connection'
 import { useHeartbeat } from '../stores/heartbeat'
 import { useMe } from '../stores/me'
@@ -31,14 +32,17 @@ import { settingsActions } from '../stores/settings'
 import { uiActions } from '../stores/ui'
 
 import { getBridge, type HexbotBridge } from './bridge'
+import { connectionClosed, offerThisComputer, watchThisComputer } from './computer-endpoint'
 import { DaemonIdentityError, DaemonUnreachableError } from './daemon-identity'
+import { targetOrigin } from './daemon-origin'
 import { authorizeCache, cacheScope, revokeCache, suspendCache } from './device-cache'
 import { proofHeaders } from './dpop'
 import { attachEventRouting } from './events'
-import { DEFAULT_DAEMON_PORT } from './pair-link'
 import { clearPersonalState, keepRoster, restoreRoster, stopRosterWrites } from './roster-cache'
 import { HexbotRpcClient, setActiveRpc } from './rpc'
 import type { ConnectionTarget, DaemonInfo } from './types'
+
+export { setLocalDaemonPort, targetOrigin } from './daemon-origin'
 
 export const BACKOFF_MIN_MS = 1_000
 export const BACKOFF_MAX_MS = 16_000
@@ -112,39 +116,6 @@ function defaultFetch(deps: ConnectionDeps): typeof fetch {
   }
 }
 
-let localDaemonPort = DEFAULT_DAEMON_PORT
-
-/** Remember the port of the daemon the Electron main process started. */
-export function setLocalDaemonPort(port?: null | number): void {
-  if (port) {
-    localDaemonPort = port
-  }
-}
-
-/** HTTP origin for a target, e.g. `http://192.168.1.10:9119`. */
-export function targetOrigin(target: ConnectionTarget): string {
-  if (target.kind === 'remote') {
-    return `${target.tls ? 'https' : 'http'}://${target.host}${target.port === (target.tls ? 443 : 80) ? '' : `:${target.port}`}`
-  }
-
-  if (target.origin) {
-    return target.origin.replace(/\/+$/, '')
-  }
-
-  // A browser page came from the daemon itself, or from the Vite dev server
-  // proxying it (VITE_HEXBOT_ORIGIN). Inside Electron the page origin is
-  // hexbot-app:// or, in dev, the Vite server: never the daemon.
-  if (
-    typeof window !== 'undefined' &&
-    !getBridge() &&
-    window.location.protocol.startsWith('http')
-  ) {
-    return window.location.origin
-  }
-
-  return `http://127.0.0.1:${localDaemonPort}`
-}
-
 /**
  * Reach the daemon's `/` page. It never carries a credential (any local
  * process could fetch it); the credential is the device token, or the
@@ -158,6 +129,16 @@ export async function probeDaemon(origin: string, deps: ConnectionDeps = {}): Pr
   } catch (error) {
     throw new UnreachableError(error instanceof Error ? error.message : String(error))
   }
+}
+
+function withDeadline<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new UnreachableError(message)), ms)
+  })
+
+  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer))
 }
 
 /** Bearer token used for HTTP calls against a gated daemon. */
@@ -356,6 +337,8 @@ export class ConnectionSupervisor {
   private stopped = true
   private target: ConnectionTarget | null = null
   private starting: Promise<void> | null = null
+  /** The handshake in flight, so a second one cannot open another socket. */
+  private connecting: Promise<void> | null = null
 
   constructor(private readonly deps: ConnectionDeps = {}) {}
 
@@ -391,7 +374,7 @@ export class ConnectionSupervisor {
 
   /** Drop the backoff and try again now (the "Retry" button). */
   retryNow(): Promise<void> {
-    if (!this.target) {
+    if (!this.target || this.client) {
       return Promise.resolve()
     }
 
@@ -413,6 +396,7 @@ export class ConnectionSupervisor {
     this.generation += 1
     this.stopped = true
     this.starting = null
+    this.connecting = null
 
     if (this.retryTimer) {
       clearTimeout(this.retryTimer)
@@ -421,13 +405,40 @@ export class ConnectionSupervisor {
 
     this.detach?.()
     this.detach = null
+
+    if (this.client) {
+      // Leaving this daemon ends what its bots started on this computer.
+      connectionClosed()
+    }
+
     this.client?.close()
     this.client = null
     setActiveRpc(null)
     connectionActions().setDaemon(null)
   }
 
-  private async attemptConnect(): Promise<void> {
+  /**
+   * One handshake at a time. Two would each open a socket and route its
+   * events, so the chat would get every event twice: Reconnect now during a
+   * slow Connect handshake showed a bot's visual twice until a restart.
+   */
+  private attemptConnect(): Promise<void> {
+    if (this.connecting) {
+      return this.connecting
+    }
+
+    const attempt = this.tryConnect().finally(() => {
+      if (this.connecting === attempt) {
+        this.connecting = null
+      }
+    })
+
+    this.connecting = attempt
+
+    return attempt
+  }
+
+  private async tryConnect(): Promise<void> {
     if (this.stopped || !this.target) {
       return
     }
@@ -468,8 +479,13 @@ export class ConnectionSupervisor {
   }
 
   private async open(target: ConnectionTarget, generation: number): Promise<void> {
-    await probeDaemon(targetOrigin(target), this.deps)
-    const wsUrl = await resolveWsUrl(target, this.deps)
+    // A request can stall without failing. Give up on it, or the one attempt
+    // allowed at a time would hold Reconnect now forever.
+    const wsUrl = await withDeadline(
+      probeDaemon(targetOrigin(target), this.deps).then(() => resolveWsUrl(target, this.deps)),
+      READY_TIMEOUT_MS,
+      'The daemon did not answer.'
+    )
 
     if (generation !== this.generation) {
       return
@@ -514,9 +530,18 @@ export class ConnectionSupervisor {
     this.client = client
     this.detach = attachEventRouting(client)
     setActiveRpc(client)
+    // The handshake is done. A drop while hydrating must start a new one,
+    // not join this attempt.
+    this.connecting = null
 
     client.onState(state => {
       if (state === 'closed' || state === 'error') {
+        // Only this connection's end stops what bots started here: a late
+        // close from an older one must not end work for the current daemon.
+        if (generation === this.generation && client === this.client) {
+          connectionClosed()
+        }
+
         this.handleDrop(generation)
       }
     })
@@ -528,6 +553,9 @@ export class ConnectionSupervisor {
     connectionActions().setStatus('connected', { attempt: 0, error: null })
 
     await this.hydrate()
+    // A desktop app on another computer offers it, if the user allowed it there.
+    watchThisComputer()
+    void offerThisComputer()
   }
 
   /**
@@ -599,7 +627,10 @@ export class ConnectionSupervisor {
       }
     )
 
-    const roster = info.then(async () => {
+    // The roster loads even when info fails, so the app never waits on it for good.
+    const answered = info.catch(() => undefined)
+
+    const roster = answered.then(async () => {
       if (!current()) {
         return
       }
@@ -610,6 +641,11 @@ export class ConnectionSupervisor {
         useMe.getState().refresh(),
         sectionsActions().refresh()
       ])
+
+      // Every bot's chat comes over in the background, so switching shows it at once.
+      if (current()) {
+        prefetchChats()
+      }
     })
 
     try {

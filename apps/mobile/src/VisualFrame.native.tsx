@@ -1,6 +1,15 @@
 import { Alert, Linking } from 'react-native'
 import { WebView } from 'react-native-webview'
-export function VisualFrame({ document, title }: { document: string; title: string }) {
+export function VisualFrame({
+  background,
+  document,
+  title
+}: {
+  /** The page's background, painted before it loads so nothing flashes. */
+  background?: string
+  document: string
+  title: string
+}) {
   const open = (href: string) => {
     if (!/^https?:\/\//i.test(href)) return
     Alert.alert('Open link', href, [
@@ -33,7 +42,7 @@ export function VisualFrame({ document, title }: { document: string; title: stri
         open(r.url)
         return false
       }}
-      style={{ flex: 1 }}
+      style={{ flex: 1, backgroundColor: background }}
       testID="visual-frame"
     />
   )

@@ -45,6 +45,25 @@ AccessibilityInfo.addEventListener?.('reduceMotionChanged', value => {
 const duration = (ms: number) => (reduceMotion ? 0 : ms)
 
 const DepthContext = createContext<((delta: number) => void) | null>(null)
+const CoverContext = createContext<((delta: number) => void) | null>(null)
+const CoveredContext = createContext(false)
+
+/**
+ * Counts a card or sheet while it is open. The screens under it then hold
+ * still when it brings up the keyboard, instead of rising beside it.
+ */
+export function useCover(visible: boolean) {
+  const change = useContext(CoverContext)
+
+  useEffect(() => {
+    if (!visible || !change) return
+    change(1)
+    return () => change(-1)
+  }, [change, visible])
+}
+
+/** A card or sheet is open over the screens. */
+export const useCovered = () => useContext(CoveredContext)
 
 /**
  * Wraps the whole app. While a card is open, the app behind it scales back
@@ -53,8 +72,10 @@ const DepthContext = createContext<((delta: number) => void) | null>(null)
  */
 export function LayerRoot({ children }: { children: ReactNode }) {
   const [depth, setDepth] = useState(0)
+  const [covers, setCovers] = useState(0)
   const progress = useRef(new Animated.Value(0)).current
   const change = useCallback((delta: number) => setDepth(value => Math.max(0, value + delta)), [])
+  const cover = useCallback((delta: number) => setCovers(value => Math.max(0, value + delta)), [])
 
   useEffect(() => {
     Animated.timing(progress, {
@@ -79,7 +100,9 @@ export function LayerRoot({ children }: { children: ReactNode }) {
             }
           ]}
         >
-          {children}
+          <CoverContext.Provider value={cover}>
+            <CoveredContext.Provider value={covers > 0}>{children}</CoveredContext.Provider>
+          </CoverContext.Provider>
         </Animated.View>
       </View>
     </DepthContext.Provider>
@@ -115,6 +138,7 @@ export function Layer({ visible, ...props }: LayerProps) {
   const offset = useRef(new Animated.Value(height)).current
   const change = useContext(DepthContext)
   const counted = useRef(false)
+  useCover(visible)
 
   useEffect(() => {
     if (visible) {
@@ -194,11 +218,10 @@ function LayerCard({
       onMoveShouldSetPanResponder: (_, g) => g.dy > 6 && Math.abs(g.dy) > Math.abs(g.dx),
       onPanResponderMove: (_, g) => offset.setValue(Math.max(0, g.dy)),
       onPanResponderRelease: (_, g) => {
-        if (g.dy > 110 || g.vy > 1.2) {
-          close.current()
-        } else {
-          Animated.spring(offset, { toValue: 0, useNativeDriver: native }).start()
-        }
+        // A card that stays, such as one whose edit did not save, springs back;
+        // one that closes slides away from here instead.
+        if (g.dy > 110 || g.vy > 1.2) close.current()
+        Animated.spring(offset, { toValue: 0, useNativeDriver: native }).start()
       }
     })
   ).current
@@ -281,7 +304,14 @@ function LayerCard({
           </View>
           {header ? <View style={styles.pinned}>{header}</View> : null}
         </View>
-        <KeyboardAvoidingView behavior="padding" style={styles.fill}>
+        {/* The view measures itself inside the card, so on iOS the card's own top is
+            added back; otherwise the keyboard covers the bottom of a card that
+            doesn't scroll, such as a file being edited. Android resizes the window. */}
+        <KeyboardAvoidingView
+          behavior="padding"
+          keyboardVerticalOffset={Platform.OS === 'ios' ? top : 0}
+          style={styles.fill}
+        >
           {scroll ? (
             <ScrollView
               contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 32 }]}

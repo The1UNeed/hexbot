@@ -65,6 +65,11 @@ export class NotConnectedError extends Error {
   }
 }
 
+/** The connection calls go to now, or null between connections. */
+export function activeRpc(): HexbotRpcClient | null {
+  return active
+}
+
 const waiters: Array<(client: HexbotRpcClient) => void> = []
 
 export function setActiveRpc(client: HexbotRpcClient | null): void {

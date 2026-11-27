@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { Button } from '../../components/ui/button'
 import { Select } from '../../components/ui/select'
 import { botsCreatePrimary, botsSetPrimary, sectionsCreate } from '../../lib/api'
-import { avatarPng, styleForName } from '../../lib/avatar-builder'
+import { avatarPng, randomStyle } from '../../lib/avatar-builder'
 import type { Bot, Section } from '../../lib/types'
 import { botsActions } from '../../stores/bots'
 
@@ -42,7 +42,8 @@ export function PrimaryChoice({
 
     try {
       if (kind === 'add') {
-        const face = styleForName(PRIMARY_HANDLE)
+        // A random face, as every bot gets; its name never picks it.
+        const face = randomStyle(bots.flatMap(bot => [bot.face, bot.kept_face]))
         const avatar = await avatarPng(face)
         const { bot, section } = await botsCreatePrimary(avatar ? { avatar, face } : {})
         await botsActions().refresh()

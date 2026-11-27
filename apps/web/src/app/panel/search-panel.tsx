@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 import { Fragment, useDeferredValue, useEffect, useMemo, useRef } from 'react'
 
+import { ScrollArea } from '../../components/ui/scroll-area'
 import type { RoomEvent } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useMe } from '../../stores/me'
@@ -88,7 +89,7 @@ export function SearchField({ label, onLeave }: { label: string; onLeave: () => 
   useEffect(() => input.current?.focus(), [])
 
   return (
-    <label className="hex-no-drag hex-fade flex h-8 min-w-0 flex-1 items-center gap-2 rounded-full bg-foreground/[0.05] pr-1 pl-3 focus-within:bg-background focus-within:shadow-card">
+    <label className="hex-glass hex-glass-field hex-fade flex h-9 min-w-0 flex-1 items-center gap-2 rounded-full pr-1.5 pl-3 outline-2 outline-offset-2 outline-transparent has-[input:focus-visible]:outline-accent/55">
       <Search aria-hidden className="shrink-0 text-muted" size={14} />
       <input
         aria-label={label}
@@ -284,25 +285,31 @@ export function RoomSearchPanel() {
   const leave = () => searchActions().close()
 
   return (
-    <div className="flex h-full min-h-0 flex-col" data-testid="room-search-panel">
-      <header className="hex-drag flex h-14 shrink-0 items-center gap-2 px-3">
-        <SearchField label={`Search ${room?.name ?? 'this room'}`} onLeave={leave} />
-        <button
-          aria-label="Close search"
-          className="hex-no-drag hex-focus grid size-8 shrink-0 place-items-center rounded-full text-muted transition-colors duration-[var(--hex-motion-fast)] hover:bg-foreground/[0.06] hover:text-foreground"
-          onClick={leave}
-          type="button"
-        >
-          <ChevronsRight size={16} />
-        </button>
-      </header>
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-5">
+    <div className="h-full" data-testid="room-search-panel">
+      <ScrollArea
+        className="h-full"
+        gap={0}
+        top={
+          <header className="flex h-14 items-center gap-2 px-3">
+            <SearchField label={`Search ${room?.name ?? 'this room'}`} onLeave={leave} />
+            <button
+              aria-label="Close search"
+              className="hex-glass hex-glass-press hex-focus grid size-9 shrink-0 place-items-center rounded-full text-foreground/70 hover:text-foreground"
+              onClick={leave}
+              type="button"
+            >
+              <ChevronsRight size={16} />
+            </button>
+          </header>
+        }
+        viewportClassName="px-4 pb-5"
+      >
         <SearchResults
           entries={entries}
           hint="Search messages and files in this room."
           onLeave={leave}
         />
-      </div>
+      </ScrollArea>
     </div>
   )
 }

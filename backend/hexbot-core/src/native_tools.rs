@@ -25,7 +25,7 @@ fn text<'a>(v: &'a Value, key: &str, default: &'a str) -> &'a str {
 fn descriptor(name: &str, description: &str, properties: Value, required: &[&str]) -> Value {
     json!({"name":name,"description":description,"parameters":{"type":"object","properties":properties,"required":required}})
 }
-fn credential(env: &std::collections::BTreeMap<String, String>, name: &str) -> String {
+pub(crate) fn credential(env: &std::collections::BTreeMap<String, String>, name: &str) -> String {
     env.get(name)
         .cloned()
         .or_else(|| std::env::var(name).ok())
@@ -185,7 +185,7 @@ fn artifacts_dir(home: &Path, bot: &str) -> Result<PathBuf> {
     }
     Ok(dir)
 }
-fn artifact(home: &Path, bot: &str, kind: &str, extension: &str) -> Result<PathBuf> {
+pub(crate) fn artifact(home: &Path, bot: &str, kind: &str, extension: &str) -> Result<PathBuf> {
     let root = artifacts_dir(home, bot)?;
     let dir = root.join(kind);
     fs::create_dir_all(&dir)?;
@@ -208,7 +208,6 @@ fn family(name: &str) -> Option<&'static str> {
         "vision_analyze" => Some("vision"),
         "computer_use" => Some("computer_use"),
         "text_to_speech" => Some("tts"),
-        "image_generate" => Some("image_gen"),
         "browser_exec" | "browser_cdp" | "browser_navigate" | "browser_snapshot"
         | "browser_click" | "browser_type" | "browser_scroll" | "browser_back"
         | "browser_press" | "browser_get_images" | "browser_vision" | "browser_console" => {
@@ -268,10 +267,21 @@ pub(crate) fn not_set_up_with_config(
     cfg: &Value,
 ) -> Result<Vec<&'static str>> {
     let env = connectors::profile_credentials(home, &crate::catalog::profile(home, bot)?)?;
+    // Computer use also works through a user's computer's own Cua.
+    let desktop_elsewhere = || {
+        crate::machines::granted(home, bot).is_ok_and(|granted| {
+            granted
+                .iter()
+                .any(|(id, _, desktop)| *desktop && crate::machines::device_id(id).is_some())
+        })
+    };
     Ok(
         ["code_execution", "browser", "computer_use", "vision", "tts"]
             .into_iter()
-            .filter(|toolset| !set_up(home, cfg, &env, toolset))
+            .filter(|toolset| {
+                !(set_up(home, cfg, &env, toolset)
+                    || *toolset == "computer_use" && desktop_elsewhere())
+            })
             .collect(),
     )
 }
@@ -304,7 +314,7 @@ fn set_up(
                 _ => false,
             }
         }
-        "tts" => speech_set_up(home, cfg, env, text(&cfg["tts"], "provider", "edge")),
+        "tts" => speech_set_up(home, cfg, speech_provider(cfg, &Value::Null)),
         "vision" => {
             let aux = &cfg["auxiliary"]["vision"];
             // An explicit endpoint may need no key, like a local server.
@@ -322,22 +332,22 @@ fn set_up(
         _ => true,
     }
 }
-fn speech_set_up(
-    home: &Path,
-    cfg: &Value,
-    env: &std::collections::BTreeMap<String, String>,
-    provider: &str,
-) -> bool {
-    let has = |name: &str| !credential(env, name).is_empty();
+/// The voice to speak with: the one asked for, else the configured one. The
+/// cloud voices went with Premium voice, so a choice of one saved before
+/// becomes the built-in voice, unless it names a custom command voice.
+fn speech_provider<'a>(cfg: &'a Value, args: &'a Value) -> &'a str {
+    let provider = text(args, "provider", text(&cfg["tts"], "provider", "edge"));
+    if ["elevenlabs", "openai", "mistral"].contains(&provider)
+        && !cfg["tts"]["providers"][provider].is_object()
+    {
+        "edge"
+    } else {
+        provider
+    }
+}
+fn speech_set_up(home: &Path, cfg: &Value, provider: &str) -> bool {
     let options = &cfg["tts"][provider];
     match provider {
-        "openai" => {
-            has("VOICE_TOOLS_OPENAI_KEY")
-                || has("OPENAI_API_KEY")
-                || !text(options, "base_url", "").is_empty()
-        }
-        "mistral" => has("MISTRAL_API_KEY"),
-        "elevenlabs" => has("ELEVENLABS_API_KEY"),
         "edge" => on_path(&edge_command(home, options)).is_some(),
         name => {
             let custom = &cfg["tts"]["providers"][name];
@@ -351,6 +361,19 @@ pub fn descriptors(home: &Path, bot: &str) -> Result<Vec<Value>> {
     let env = connectors::credentials(home, bot)?;
     let mut out = vec![];
     let mut ready = std::collections::HashMap::new();
+    // Web search and page reading work once the connector does.
+    ready.insert(
+        "web".to_owned(),
+        connectors::tool_available(home, bot, "web_search")?,
+    );
+    // computer_use acts on the bots' computer through this computer's Cua, or
+    // on a user's computer through Cua there: either is enough.
+    // Asked only without Cua here: tool lists are built often.
+    let computer_use = set_up(home, &cfg, &env, "computer_use")
+        || crate::machines::granted(home, bot)?
+            .iter()
+            .any(|(id, _, desktop)| *desktop && crate::machines::device_id(id).is_some());
+    ready.insert("computer_use".to_owned(), computer_use);
     let mut add = |family: &str, d: Value| {
         if enabled.iter().any(|v| v == family)
             && *ready
@@ -405,15 +428,6 @@ pub fn descriptors(home: &Path, bot: &str) -> Result<Vec<Value>> {
             &["text"],
         ),
     );
-    add(
-        "image_gen",
-        descriptor(
-            "image_generate",
-            "Generate an image from a prompt using the configured image provider.",
-            json!({"prompt":{"type":"string"},"aspect_ratio":{"type":"string"},"image_url":{"type":"string"},"reference_image_urls":{"type":"array","items":{"type":"string"}}}),
-            &["prompt"],
-        ),
-    );
     if text(&cfg["browser"], "backend", "") == "browser-use"
         && browser_use_command(home, &cfg).is_some()
     {
@@ -427,9 +441,7 @@ pub fn descriptors(home: &Path, bot: &str) -> Result<Vec<Value>> {
             ),
         );
     }
-    if crate::computers::command(&cfg, &env).is_some() {
-        add("computer_use", crate::computers::descriptor());
-    }
+    add("computer_use", crate::computers::descriptor());
     if !matches!(text(&cfg["browser"], "backend", ""), "browser-use" | "off") {
         for (name, description, properties, required) in [
             (
@@ -561,13 +573,10 @@ pub async fn call(
                 }
                 let cfg = common::merged_config(home, bot)?;
                 let env = connectors::credentials(home, bot)?;
-                let available = if name == "text_to_speech" {
-                    speech_set_up(
-                        home,
-                        &cfg,
-                        &env,
-                        text(args, "provider", text(&cfg["tts"], "provider", "edge")),
-                    )
+                let available = if family == "web" {
+                    connectors::tool_available(home, bot, "web_search")?
+                } else if name == "text_to_speech" {
+                    speech_set_up(home, &cfg, speech_provider(&cfg, args))
                 } else {
                     set_up(home, &cfg, &env, family)
                 };
@@ -578,13 +587,12 @@ pub async fn call(
                     ));
                 }
                 match name {
-                    "web_search" => search(&cfg, &env, args).await,
+                    "web_search" => search(home, &cfg, &env, args).await,
                     "web_extract" => extract(home, bot, &cfg, &env, args).await,
                     "execute_code" => execute_code(home, bot, stored, &cfg, &env, args).await,
                     "vision_analyze" => vision(home, bot, &cfg, &env, args).await,
                     "computer_use" => crate::computers::act(home, bot, &cfg, &env, args).await,
                     "text_to_speech" => speech(home, bot, &cfg, &env, args).await,
-                    "image_generate" => image_generate(home, bot, &cfg, &env, args).await,
                     "browser_exec" => browser_exec().await,
                     "browser_cdp" => browser_cdp(&cfg, &env, args).await,
                     "browser_navigate" | "browser_snapshot" | "browser_click" | "browser_type"
@@ -609,7 +617,27 @@ pub async fn call(
 #[cfg(test)]
 #[path = "native_tool_deletion_tests.rs"]
 mod deletion_tests;
-fn web_backend(
+#[cfg(test)]
+#[path = "web_search_tests.rs"]
+mod web_search_tests;
+/// Search services that cannot read pages; `web_extract` uses another.
+const SEARCH_ONLY: [&str; 5] = ["brave", "brave-free", "searxng", "wikipedia", "marginalia"];
+/// With no provider chosen, the first of these whose key or URL is saved.
+/// Settings reads the same order (`connectors::selected`).
+pub(crate) const WEB_BY_KEY: [(&str, &str); 8] = [
+    ("tavily", "TAVILY_API_KEY"),
+    ("exa", "EXA_API_KEY"),
+    ("parallel", "PARALLEL_API_KEY"),
+    ("keenable", "KEENABLE_API_KEY"),
+    ("firecrawl", "FIRECRAWL_API_KEY"),
+    ("searxng", "SEARXNG_URL"),
+    ("brave-free", "BRAVE_SEARCH_API_KEY"),
+    ("marginalia", "MARGINALIA_API_KEY"),
+];
+/// The service web search (or, with `extract`, page reading) uses: the one
+/// chosen, else the first whose key is saved, else the SearXNG Hexbot runs
+/// for search and the built-in reader for pages.
+pub(crate) fn web_backend(
     cfg: &Value,
     env: &std::collections::BTreeMap<String, String>,
     extract: bool,
@@ -623,28 +651,15 @@ fn web_backend(
         },
         text(&cfg["web"], "backend", "auto"),
     );
-    if selected != "auto"
-        && !selected.is_empty()
-        && !(extract && matches!(selected, "brave" | "brave-free" | "searxng"))
-    {
+    if selected != "auto" && !selected.is_empty() && !(extract && SEARCH_ONLY.contains(&selected)) {
         return selected.to_owned();
     }
-    for (backend, key) in [
-        ("tavily", "TAVILY_API_KEY"),
-        ("exa", "EXA_API_KEY"),
-        ("parallel", "PARALLEL_API_KEY"),
-        ("keenable", "KEENABLE_API_KEY"),
-        ("firecrawl", "FIRECRAWL_API_KEY"),
-        ("searxng", "SEARXNG_URL"),
-        ("brave-free", "BRAVE_SEARCH_API_KEY"),
-    ] {
-        if !credential(env, key).is_empty()
-            && !(extract && matches!(backend, "brave-free" | "searxng"))
-        {
+    for (backend, key) in WEB_BY_KEY {
+        if !credential(env, key).is_empty() && !(extract && SEARCH_ONLY.contains(&backend)) {
             return backend.to_owned();
         }
     }
-    "tavily".into()
+    if extract { "builtin" } else { "searxng" }.into()
 }
 fn authorize(
     request: reqwest::RequestBuilder,
@@ -662,6 +677,7 @@ fn authorize(
     }
 }
 async fn search(
+    home: &Path,
     cfg: &Value,
     env: &std::collections::BTreeMap<String, String>,
     args: &Value,
@@ -678,7 +694,63 @@ async fn search(
         .unwrap_or(5);
     let backend = web_backend(cfg, env, false);
     let client = http()?;
-    let response = match backend.as_str() {
+    let response = if backend == "searxng" && credential(env, "SEARXNG_URL").trim().is_empty() {
+        match crate::searxng::url(home).await {
+            Some(url) => searxng(&crate::searxng::client(60)?, &url, query).await?,
+            // Until SearXNG runs here, the free services that need no key.
+            None => match service(&client, env, "tavily", query, limit).await {
+                Ok(response) => response,
+                Err(_) => service(&client, env, "wikipedia", query, limit).await?,
+            },
+        }
+    } else {
+        service(&client, env, &backend, query, limit).await?
+    };
+    let values = response["results"]
+        .as_array()
+        .or_else(|| response["web"]["results"].as_array())
+        .or_else(|| response["data"]["web"].as_array())
+        .or_else(|| response["data"].as_array())
+        .ok_or_else(|| failure("search service returned no results array"))?;
+    let results = values
+        .iter()
+        .take(limit as usize)
+        .enumerate()
+        .map(|(i, row)| {
+            let description = row["description"]
+                .as_str()
+                .or_else(|| row["snippet"].as_str())
+                .or_else(|| row["content"].as_str())
+                .map(str::to_owned)
+                .unwrap_or_else(|| {
+                    row["highlights"]
+                        .as_array()
+                        .or_else(|| row["excerpts"].as_array())
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                });
+            json!({
+                "title": text(row, "title", ""),
+                "url": text(row, "url", ""),
+                "description": description,
+                "position": i + 1
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({"success":true,"data":{"web":results}}))
+}
+/// One search through one service, as that service answers it.
+async fn service(
+    client: &reqwest::Client,
+    env: &std::collections::BTreeMap<String, String>,
+    backend: &str,
+    query: &str,
+    limit: u64,
+) -> Result<Value> {
+    Ok(match backend {
         "keenable" => {
             request(authorize(
                 client
@@ -769,16 +841,13 @@ async fn search(
         }
         "searxng" => {
             let base = credential(env, "SEARXNG_URL");
-            if base.is_empty() {
+            if base.trim().is_empty() {
                 return Err(failure("SEARXNG_URL is not configured"));
             }
-            request(
-                client
-                    .get(format!("{}/search", base.trim_end_matches('/')))
-                    .query(&[("q", query), ("format", "json")]),
-            )
-            .await?
+            searxng(client, base.trim(), query).await?
         }
+        "wikipedia" => wikipedia(client, env, query, limit).await?,
+        "marginalia" => marginalia(client, env, query, limit).await?,
         "brave" | "brave-free" => {
             request(authorize(
                 client
@@ -799,42 +868,252 @@ async fn search(
                 "web search backend has not been ported: {other}"
             )));
         }
+    })
+}
+/// One search through the provider in use, for Settings' Test button.
+pub(crate) async fn test_search(home: &Path, bot: Option<&str>) -> Result<()> {
+    let (cfg, env) = match bot {
+        Some(bot) => (
+            common::merged_config(home, bot)?,
+            connectors::credentials(home, bot)?,
+        ),
+        None => (common::read_config(home)?, common::env_values(home)?),
     };
-    let values = response["results"]
+    search(home, &cfg, &env, &json!({"query":"hexbot","limit":1}))
+        .await
+        .map(|_| ())
+}
+/// How Hexbot names itself to services that ask, such as Wikipedia.
+fn agent() -> String {
+    format!("Hexbot/{} (https://hexbot.app)", crate::version())
+}
+/// A status and body, whatever the status, for services whose refusals say
+/// something worth telling the bot.
+async fn fetch(request: reqwest::RequestBuilder) -> Result<(u16, Vec<u8>)> {
+    let response = request.send().await.map_err(http_error)?;
+    let status = response.status().as_u16();
+    let body = crate::http::bytes(
+        response,
+        BODY_LIMIT,
+        http_error,
+        failure("tool response exceeds 24 MB"),
+    )
+    .await?;
+    Ok((status, body))
+}
+fn json_body(body: &[u8]) -> Result<Value> {
+    serde_json::from_slice(body).map_err(|_| failure("tool service returned invalid JSON"))
+}
+async fn searxng(client: &reqwest::Client, base: &str, query: &str) -> Result<Value> {
+    let (status, body) = fetch(
+        client
+            .get(format!("{}/search", base.trim_end_matches('/')))
+            .query(&[("q", query), ("format", "json")]),
+    )
+    .await?;
+    match status {
+        200..=299 => json_body(&body),
+        403 => Err(failure(
+            "This SearXNG does not answer in JSON. Add json to search.formats in its settings.yml.",
+        )),
+        _ => Err(failure(format!("SearXNG answered HTTP {status}"))),
+    }
+}
+async fn wikipedia(
+    client: &reqwest::Client,
+    env: &std::collections::BTreeMap<String, String>,
+    query: &str,
+    limit: u64,
+) -> Result<Value> {
+    let base = endpoint(env, "WIKIPEDIA_URL", "https://en.wikipedia.org");
+    let base = base.trim_end_matches('/');
+    let data = request(
+        client
+            .get(format!("{base}/w/api.php"))
+            .header(reqwest::header::USER_AGENT, agent())
+            .query(&[
+                ("action", "query"),
+                ("list", "search"),
+                ("format", "json"),
+                ("utf8", "1"),
+                ("srsearch", query),
+                ("srlimit", &limit.min(50).to_string()),
+            ]),
+    )
+    .await?;
+    let results = data["query"]["search"]
         .as_array()
-        .or_else(|| response["web"]["results"].as_array())
-        .or_else(|| response["data"]["web"].as_array())
-        .or_else(|| response["data"].as_array())
-        .ok_or_else(|| failure("search service returned no results array"))?;
-    let results = values
-        .iter()
-        .take(limit as usize)
-        .enumerate()
-        .map(|(i, row)| {
-            let description = row["description"]
-                .as_str()
-                .or_else(|| row["snippet"].as_str())
-                .or_else(|| row["content"].as_str())
-                .map(str::to_owned)
-                .unwrap_or_else(|| {
-                    row["highlights"]
-                        .as_array()
-                        .or_else(|| row["excerpts"].as_array())
-                        .into_iter()
-                        .flatten()
-                        .filter_map(Value::as_str)
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                });
+        .into_iter()
+        .flatten()
+        .map(|row| {
+            let title = text(row, "title", "");
+            let path = url::form_urlencoded::byte_serialize(title.replace(' ', "_").as_bytes())
+                .collect::<String>();
             json!({
-                "title": text(row, "title", ""),
-                "url": text(row, "url", ""),
-                "description": description,
-                "position": i + 1
+                "title": title,
+                "url": format!("{base}/wiki/{path}"),
+                "description": html_text(text(row, "snippet", "")),
             })
         })
         .collect::<Vec<_>>();
-    Ok(json!({"success":true,"data":{"web":results}}))
+    Ok(json!({ "results": results }))
+}
+/// Marginalia, with the user's own key or the shared `public` one, which
+/// every app without a key shares and which is often at its limit.
+async fn marginalia(
+    client: &reqwest::Client,
+    env: &std::collections::BTreeMap<String, String>,
+    query: &str,
+    limit: u64,
+) -> Result<Value> {
+    let own = credential(env, "MARGINALIA_API_KEY").trim().to_owned();
+    let key = if own.is_empty() { "public" } else { &own };
+    let base = endpoint(env, "MARGINALIA_URL", "https://api2.marginalia-search.com");
+    let (status, body) = fetch(
+        client
+            .get(format!("{}/search", base.trim_end_matches('/')))
+            .header("API-Key", key)
+            .query(&[("query", query), ("count", &limit.min(100).to_string())]),
+    )
+    .await?;
+    let busy = matches!(status, 429 | 503)
+        || String::from_utf8_lossy(&body[..body.len().min(200)]).contains("Limit Exceeded");
+    if busy {
+        return Err(failure(if own.is_empty() {
+            "Marginalia's shared key is busy. Try again in a minute, or add a free key of your own in Settings, Plugins, Web search."
+        } else {
+            "Marginalia's limit for this key is reached. Try again in a minute."
+        }));
+    }
+    match status {
+        200..=299 => json_body(&body),
+        401 | 403 => Err(failure("Marginalia refused the key.")),
+        _ => Err(failure(format!("Marginalia answered HTTP {status}"))),
+    }
+}
+/// Text from a fragment of HTML, such as a search snippet: tags dropped,
+/// entities decoded, spaces collapsed.
+fn html_text(html: &str) -> String {
+    static TAG: OnceLock<regex::Regex> = OnceLock::new();
+    let tag = TAG.get_or_init(|| regex::Regex::new(r"<[^>]*>").unwrap());
+    decode_entities(&tag.replace_all(html, " "))
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+fn decode_entities(text: &str) -> String {
+    static ENTITY: OnceLock<regex::Regex> = OnceLock::new();
+    let entity = ENTITY
+        .get_or_init(|| regex::Regex::new(r"&(#[xX][0-9a-fA-F]+|#[0-9]+|[a-zA-Z]+);").unwrap());
+    entity
+        .replace_all(text, |c: &regex::Captures| {
+            let name = &c[1];
+            let code = if let Some(hex) = name.strip_prefix("#x").or(name.strip_prefix("#X")) {
+                u32::from_str_radix(hex, 16).ok()
+            } else if let Some(decimal) = name.strip_prefix('#') {
+                decimal.parse().ok()
+            } else {
+                match name {
+                    "amp" => Some(38),
+                    "lt" => Some(60),
+                    "gt" => Some(62),
+                    "quot" => Some(34),
+                    "apos" => Some(39),
+                    "nbsp" => Some(32),
+                    _ => None,
+                }
+            };
+            code.and_then(char::from_u32)
+                .map_or_else(|| c[0].to_owned(), String::from)
+        })
+        .into_owned()
+}
+/// How much of one page the built-in reader downloads.
+const PAGE_LIMIT: usize = 10 * 1024 * 1024;
+/// The built-in reader: the page itself, already fetched here under the
+/// private-address rules every fetch follows, as Markdown. It reads what the
+/// server sends; a page that draws itself with JavaScript reads thin.
+async fn read_page(response: reqwest::Response) -> Value {
+    let url = response.url().to_string();
+    let status = response.status();
+    if !status.is_success() {
+        return json!({"url":url,"error":format!("The page answered HTTP {}.", status.as_u16())});
+    }
+    let kind = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    let body = match crate::http::bytes(
+        response,
+        PAGE_LIMIT,
+        http_error,
+        failure("The page is larger than 10 MB."),
+    )
+    .await
+    {
+        Ok(body) => body,
+        Err(e) => return json!({"url":url,"error":e.message}),
+    };
+    let text = String::from_utf8_lossy(&body);
+    if kind.contains("html") || (kind.is_empty() && text.trim_start().starts_with('<')) {
+        let (title, content) = page_markdown(&text);
+        json!({"url":url,"title":title,"content":content})
+    } else if kind.is_empty()
+        || kind.starts_with("text/")
+        || kind.contains("json")
+        || kind.contains("xml")
+    {
+        json!({"url":url,"content":text})
+    } else {
+        json!({"url":url,"error":format!("This is {kind}, not a web page.")})
+    }
+}
+/// A page's title and its text as Markdown: the article when the page marks
+/// one, without menus, footers, scripts or forms.
+fn page_markdown(html: &str) -> (String, String) {
+    static TITLE: OnceLock<regex::Regex> = OnceLock::new();
+    static GAPS: OnceLock<regex::Regex> = OnceLock::new();
+    let title = TITLE
+        .get_or_init(|| regex::Regex::new(r"(?is)<title[^>]*>(.*?)</title>").unwrap())
+        .captures(html)
+        .map(|c| html_text(&c[1]))
+        .unwrap_or_default();
+    let body = element(html, "main")
+        .or_else(|| element(html, "article"))
+        .unwrap_or(html);
+    let markdown = htmd::HtmlToMarkdown::builder()
+        .skip_tags(vec![
+            "head", "script", "style", "noscript", "template", "svg", "canvas", "iframe", "nav",
+            "footer", "aside", "form", "button", "select", "input", "textarea",
+        ])
+        .build()
+        .convert(body)
+        .unwrap_or_default();
+    let markdown = GAPS
+        .get_or_init(|| regex::Regex::new(r"\n[ \t]*\n(?:[ \t]*\n)+").unwrap())
+        .replace_all(&markdown, "\n\n");
+    (title, markdown.trim().to_owned())
+}
+/// From the first `<tag>` to the last `</tag>`, when the page has both.
+fn element<'a>(html: &'a str, tag: &str) -> Option<&'a str> {
+    // ASCII lowercasing keeps every byte where it was.
+    let lower = html.to_ascii_lowercase();
+    let open = format!("<{tag}");
+    let start = lower.match_indices(&open).map(|(i, _)| i).find(|i| {
+        lower
+            .as_bytes()
+            .get(i + open.len())
+            .is_some_and(|b| *b == b'>' || b.is_ascii_whitespace())
+    })?;
+    let close = format!("</{tag}>");
+    let end = lower.rfind(&close)? + close.len();
+    (end > start).then(|| &html[start..end])
 }
 async fn extract(
     home: &Path,
@@ -848,16 +1127,19 @@ async fn extract(
         .filter(|v| !v.is_empty() && v.len() <= 5)
         .ok_or_else(|| Error::new(4202, "urls must contain one to five URLs"))?;
     let allow_private = common::allow_private_urls(home, bot)?;
-    let mut checked_urls = Vec::with_capacity(urls.len());
+    let mut pages = Vec::with_capacity(urls.len());
     for value in urls {
         let url = value
             .as_str()
             .ok_or_else(|| Error::new(4202, "URL must be a string"))?;
-        // Check every redirect before handing the final URL to an extraction service.
-        let response = common::safe_get(url, allow_private).await?;
-        checked_urls.push(response.url().to_string());
+        // Check every redirect before handing the final URL to an extraction
+        // service; the built-in reader reads this response itself.
+        pages.push(common::safe_get(url, allow_private).await?);
     }
-    let urls = checked_urls;
+    let urls = pages
+        .iter()
+        .map(|page| page.url().to_string())
+        .collect::<Vec<_>>();
     let limit = args
         .get("char_limit")
         .map(|v| {
@@ -871,6 +1153,13 @@ async fn extract(
     let backend = web_backend(cfg, env, true);
     let client = http()?;
     let mut results = match backend.as_str() {
+        "builtin" => {
+            let mut values = vec![];
+            for page in pages {
+                values.push(read_page(page).await);
+            }
+            values
+        }
         "keenable" => {
             let mut values = vec![];
             for url in &urls {
@@ -1624,7 +1913,7 @@ async fn speech(
     args: &Value,
 ) -> Result<Value> {
     let input = common::required(args, "text")?;
-    let provider = text(args, "provider", text(&cfg["tts"], "provider", "edge"));
+    let provider = speech_provider(cfg, args);
     let options = &cfg["tts"][provider];
     let speed = args["speed"]
         .as_f64()
@@ -1642,109 +1931,6 @@ async fn speech(
         fs::create_dir_all(parent)?;
     }
     match provider {
-        "openai" => {
-            let base = text(options, "base_url", "https://api.openai.com/v1");
-            let base = if base == "https://api.openai.com/v1" {
-                endpoint(env, "OPENAI_BASE_URL", base)
-            } else {
-                base.to_owned()
-            };
-            let model = text(options, "model", "gpt-4o-mini-tts");
-            let mut audio = vec![];
-            // MP3 frames concatenate without dropping long-input chunks.
-            for chunk in input.chars().collect::<Vec<_>>().chunks(4096) {
-                let chunk = chunk.iter().collect::<String>();
-                let mut body = json!({"model":model,"input":chunk,"voice":text(options,"voice","alloy"),"response_format":"mp3","speed":speed});
-                if let Some(instructions) = args["instructions"].as_str() {
-                    body["instructions"] = json!(instructions)
-                }
-                let data = bytes(
-                    authorize(
-                        http()?
-                            .post(format!("{}/audio/speech", base.trim_end_matches('/')))
-                            .json(&body),
-                        env,
-                        if credential(env, "VOICE_TOOLS_OPENAI_KEY").is_empty() {
-                            "OPENAI_API_KEY"
-                        } else {
-                            "VOICE_TOOLS_OPENAI_KEY"
-                        },
-                        None,
-                    )
-                    .send()
-                    .await
-                    .map_err(http_error)?,
-                )
-                .await?;
-                if audio.len() + data.len() > BODY_LIMIT {
-                    return Err(failure("generated audio exceeds 24 MB"));
-                }
-                audio.extend(data);
-            }
-            common::atomic_write(&output, &audio)?;
-        }
-        "mistral" => {
-            let base = text(options, "base_url", "https://api.mistral.ai");
-            let mut audio = Vec::new();
-            for chunk in input.chars().collect::<Vec<_>>().chunks(4000) {
-                let data = request(authorize(
-                    http()?
-                        .post(format!("{}/v1/audio/speech", base.trim_end_matches('/')))
-                        .json(&json!({
-                            "model": text(options, "model", "voxtral-mini-tts-2603"),
-                            "input": chunk.iter().collect::<String>(),
-                            "voice_id": text(options, "voice_id", "c69964a6-ab8b-4f8a-9465-ec0925096ec8"),
-                            "response_format": "mp3"
-                        })),
-                    env,
-                    "MISTRAL_API_KEY",
-                    None,
-                ))
-                .await?;
-                let encoded = data["audio_data"]
-                    .as_str()
-                    .ok_or_else(|| failure("Mistral returned no audio"))?;
-                audio.extend(
-                    STANDARD
-                        .decode(encoded)
-                        .map_err(|_| failure("Mistral returned invalid audio"))?,
-                );
-                if audio.len() > BODY_LIMIT {
-                    return Err(failure("generated audio exceeds 24 MB"));
-                }
-            }
-            common::atomic_write(&output, &audio)?;
-        }
-        "elevenlabs" => {
-            let base = text(options, "base_url", "https://api.elevenlabs.io/v1");
-            let voice = text(options, "voice_id", "pNInz6obpgDQGcFmaJgB");
-            let mut audio = vec![];
-            for chunk in input.chars().collect::<Vec<_>>().chunks(4500) {
-                let body = json!({"text":chunk.iter().collect::<String>(),"model_id":text(options,"model_id","eleven_multilingual_v2"),"voice_settings":{"speed":speed.clamp(0.7,1.2)}});
-                let data = bytes(
-                    authorize(
-                        http()?
-                            .post(format!(
-                                "{}/text-to-speech/{voice}",
-                                base.trim_end_matches('/')
-                            ))
-                            .json(&body),
-                        env,
-                        "ELEVENLABS_API_KEY",
-                        Some("xi-api-key"),
-                    )
-                    .send()
-                    .await
-                    .map_err(http_error)?,
-                )
-                .await?;
-                if audio.len() + data.len() > BODY_LIMIT {
-                    return Err(failure("generated audio exceeds 24 MB"));
-                }
-                audio.extend(data);
-            }
-            common::atomic_write(&output, &audio)?;
-        }
         "edge" => {
             let mut command = Command::new(edge_command(home, options));
             command
@@ -1800,256 +1986,6 @@ async fn speech(
         return Err(failure("speech provider did not create audio"));
     }
     Ok(json!({"success":true,"file_path":output,"media":format!("MEDIA:{}",output.display())}))
-}
-async fn image_generate(
-    home: &Path,
-    bot: &str,
-    cfg: &Value,
-    env: &std::collections::BTreeMap<String, String>,
-    args: &Value,
-) -> Result<Value> {
-    let prompt = common::required(args, "prompt")?;
-    let options = &cfg["image_gen"];
-    let provider = text(options, "provider", "fal");
-    let ratio = text(args, "aspect_ratio", "square");
-    let response = match provider {
-        "openai" | "openai-api" => {
-            let size = match ratio {
-                "portrait" | "9:16" | "2:3" => "1024x1536",
-                "landscape" | "16:9" | "3:2" => "1536x1024",
-                _ => "1024x1024",
-            };
-            let base = endpoint(env, "OPENAI_BASE_URL", "https://api.openai.com/v1");
-            let mut images = vec![];
-            if let Some(url) = args["image_url"].as_str() {
-                images.push(url)
-            }
-            for value in args["reference_image_urls"]
-                .as_array()
-                .into_iter()
-                .flatten()
-            {
-                images.push(
-                    value
-                        .as_str()
-                        .ok_or_else(|| Error::new(4202, "reference images must be strings"))?,
-                )
-            }
-            if images.len() > 16 {
-                return Err(Error::new(
-                    4202,
-                    "at most 16 reference images are supported",
-                ));
-            }
-            if images.is_empty() {
-                request(authorize(
-                    http()?
-                        .post(format!(
-                            "{}/images/generations",
-                            text(options, "base_url", &base).trim_end_matches('/')
-                        ))
-                        .json(&json!({
-                            "model": text(options, "model", "gpt-image-1"),
-                            "prompt": prompt,
-                            "size": size,
-                            "n": 1
-                        })),
-                    env,
-                    "OPENAI_API_KEY",
-                    None,
-                ))
-                .await?
-            } else {
-                let boundary = format!("hexbot-{}", common::id());
-                let mut body = Vec::new();
-                for (name, value) in [
-                    ("model", text(options, "model", "gpt-image-1")),
-                    ("prompt", prompt),
-                    ("size", size),
-                    ("n", "1"),
-                ] {
-                    body.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n").as_bytes());
-                }
-                for (index, input) in images.iter().enumerate() {
-                    let (mime, bytes) = image_bytes(home, bot, input).await?;
-                    let ext = match mime.as_str() {
-                        "image/jpeg" => "jpg",
-                        "image/webp" => "webp",
-                        _ => "png",
-                    };
-                    body.extend_from_slice(
-                        format!(
-                            "--{boundary}\r\nContent-Disposition: form-data; name=\"image[]\"; filename=\"image-{index}.{ext}\"\r\nContent-Type: {mime}\r\n\r\n"
-                        )
-                        .as_bytes(),
-                    );
-                    body.extend(bytes);
-                    body.extend_from_slice(b"\r\n");
-                    if body.len() > BODY_LIMIT {
-                        return Err(Error::new(4202, "combined reference images exceed 24 MB"));
-                    }
-                }
-                body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
-                request(authorize(
-                    http()?
-                        .post(format!(
-                            "{}/images/edits",
-                            text(options, "base_url", &base).trim_end_matches('/')
-                        ))
-                        .header(
-                            "Content-Type",
-                            format!("multipart/form-data; boundary={boundary}"),
-                        )
-                        .body(body),
-                    env,
-                    "OPENAI_API_KEY",
-                    None,
-                ))
-                .await?
-            }
-        }
-        "krea" => {
-            let base = endpoint(env, "KREA_BASE_URL", "https://api.krea.ai");
-            let model_env = credential(env, "KREA_IMAGE_MODEL");
-            let model = if model_env.is_empty() {
-                text(
-                    &options["krea"],
-                    "model",
-                    text(options, "model", "krea-2-medium"),
-                )
-            } else {
-                &model_env
-            };
-            let path = match model {
-                "krea-2-medium" => "medium",
-                "krea-2-large" => "large",
-                "krea-2-medium-turbo" => "medium-turbo",
-                _ => return Err(Error::new(4202, "unknown Krea image model")),
-            };
-            let mut body = json!({
-                "prompt": prompt,
-                "aspect_ratio": match ratio {
-                    "square" => "1:1",
-                    "portrait" => "9:16",
-                    "landscape" => "16:9",
-                    v => v,
-                },
-                "resolution": "1K",
-                "creativity": text(&options["krea"], "creativity", "medium")
-            });
-            let mut references = Vec::new();
-            if let Some(image) = args["image_url"].as_str() {
-                references.push(image_data(home, bot, image).await?)
-            }
-            for reference in args["reference_image_urls"]
-                .as_array()
-                .into_iter()
-                .flatten()
-            {
-                references.push(
-                    image_data(
-                        home,
-                        bot,
-                        reference.as_str().ok_or_else(|| {
-                            Error::new(4202, "reference images must be URLs or paths")
-                        })?,
-                    )
-                    .await?,
-                )
-            }
-            if references.len() > 10 {
-                return Err(Error::new(
-                    4202,
-                    "Krea supports at most ten reference images",
-                ));
-            }
-            if !references.is_empty() {
-                body["image_style_references"] = json!(
-                    references
-                        .into_iter()
-                        .map(|url| json!({"url":url,"strength":0.6}))
-                        .collect::<Vec<_>>()
-                );
-            }
-            let submit = request(authorize(
-                http()?
-                    .post(format!(
-                        "{}/generate/image/krea/krea-2/{path}",
-                        base.trim_end_matches('/')
-                    ))
-                    .json(&body),
-                env,
-                "KREA_API_KEY",
-                None,
-            ))
-            .await?;
-            let job = submit["job_id"]
-                .as_str()
-                .ok_or_else(|| failure("Krea returned no job id"))?;
-            tokio::time::timeout(Duration::from_secs(180), async {
-                loop {
-                    let result = request(authorize(
-                        http()?.get(format!("{}/jobs/{job}", base.trim_end_matches('/'))),
-                        env,
-                        "KREA_API_KEY",
-                        None,
-                    ))
-                    .await?;
-                    if matches!(text(&result, "status", ""), "failed" | "cancelled") {
-                        return Err(failure("Krea image job failed"));
-                    }
-                    if result["result"]["urls"].is_array() {
-                        return Ok(json!({"images":result["result"]["urls"].as_array().unwrap().iter().map(|url|json!({"url":url})).collect::<Vec<_>>()}));
-                    }
-                    if let Some(url) = result["result"]["url"].as_str() {
-                        return Ok(json!({ "images": [{ "url": url }] }));
-                    }
-                    tokio::time::sleep(Duration::from_secs(2)).await;
-                }
-            })
-            .await
-            .map_err(|_| failure("Krea image job timed out"))??
-        }
-        "fal" => fal_image(home, bot, options, env, args).await?,
-        other => {
-            return Err(failure(format!(
-                "image provider has not been ported: {other}"
-            )));
-        }
-    };
-    let images = response["data"]
-        .as_array()
-        .or_else(|| response["images"].as_array())
-        .ok_or_else(|| failure("image provider returned no images"))?;
-    let mut outputs = vec![];
-    for image in images {
-        let data = if let Some(encoded) = image["b64_json"].as_str() {
-            STANDARD
-                .decode(encoded)
-                .map_err(|_| failure("invalid encoded image"))?
-        } else if let Some(url) = image["url"].as_str() {
-            bytes(common::safe_get(url, common::allow_private_urls(home, bot)?).await?).await?
-        } else {
-            return Err(failure(
-                "image response contains neither URL nor encoded image",
-            ));
-        };
-        let ext = if data.starts_with(b"\x89PNG") {
-            "png"
-        } else if data.starts_with(b"\xff\xd8") {
-            "jpg"
-        } else if data.starts_with(b"RIFF") {
-            "webp"
-        } else {
-            return Err(failure(
-                "image provider returned an unsupported image format",
-            ));
-        };
-        let output = artifact(home, bot, "images", ext)?;
-        common::atomic_write(&output, &data)?;
-        outputs.push(json!({"path":output,"media":format!("MEDIA:{}",output.display())}));
-    }
-    Ok(json!({"success":true,"images":outputs}))
 }
 async fn browser_cdp(
     cfg: &Value,
@@ -2914,113 +2850,6 @@ async fn close_browsers(home: &Path, stored: &str) {
         }
     }
 }
-
-// Behavior metadata preserved from the historical image-generation tool.
-const FAL_MODELS: &str = include_str!("fal_image_models.json");
-async fn fal_image(
-    home: &Path,
-    bot: &str,
-    options: &Value,
-    env: &std::collections::BTreeMap<String, String>,
-    args: &Value,
-) -> Result<Value> {
-    static MODELS: OnceLock<Value> = OnceLock::new();
-    let models =
-        MODELS.get_or_init(|| serde_json::from_str(FAL_MODELS).expect("embedded FAL catalog"));
-    let fallback = credential(env, "FAL_IMAGE_MODEL");
-    let model = text(options, "model", &fallback);
-    let model = if models.get(model).is_some() {
-        model
-    } else {
-        "fal-ai/flux-2/klein/9b"
-    };
-    let meta = &models[model];
-    let mut images = vec![];
-    if let Some(input) = args["image_url"].as_str() {
-        images.push(image_data(home, bot, input).await?);
-    }
-    for input in args["reference_image_urls"]
-        .as_array()
-        .into_iter()
-        .flatten()
-    {
-        images.push(
-            image_data(
-                home,
-                bot,
-                input
-                    .as_str()
-                    .ok_or_else(|| Error::new(4202, "reference image must be a URL or path"))?,
-            )
-            .await?,
-        );
-    }
-    let editing = !images.is_empty();
-    let target = if editing {
-        meta["edit_endpoint"]
-            .as_str()
-            .ok_or_else(|| Error::new(4202, "selected FAL model does not support editing"))?
-    } else {
-        model
-    };
-    if images.len() > meta["max_reference_images"].as_u64().unwrap_or(1) as usize {
-        return Err(Error::new(
-            4202,
-            "too many reference images for selected FAL model",
-        ));
-    }
-    let mut body = meta["defaults"].clone();
-    if !body.is_object() {
-        body = json!({})
-    }
-    body["prompt"] = json!(common::required(args, "prompt")?);
-    let aspect = match text(args, "aspect_ratio", "square") {
-        "16:9" | "landscape" => "landscape",
-        "9:16" | "portrait" => "portrait",
-        _ => "square",
-    };
-    let size_key = if meta["size_style"] == "aspect_ratio" {
-        "aspect_ratio"
-    } else {
-        "image_size"
-    };
-    body[size_key] = meta["sizes"][aspect].clone();
-    let supported = meta[if editing { "edit_supports" } else { "supports" }]
-        .as_array()
-        .expect("FAL supported fields");
-    for name in [
-        "seed",
-        "num_images",
-        "num_inference_steps",
-        "guidance_scale",
-        "output_format",
-    ] {
-        if let Some(value) = args.get(name) {
-            body[name] = value.clone();
-        }
-    }
-    body.as_object_mut()
-        .expect("payload")
-        .retain(|key, _| key == "prompt" || supported.iter().any(|value| value == key));
-    if editing {
-        body["image_urls"] = json!(images)
-    }
-    let response = request(
-        http()?
-            .post(format!(
-                "{}/{target}",
-                endpoint(env, "FAL_BASE_URL", "https://fal.run").trim_end_matches('/')
-            ))
-            .header(
-                "Authorization",
-                format!("Key {}", credential(env, "FAL_KEY")),
-            )
-            .json(&body),
-    )
-    .await?;
-    Ok(response)
-}
-
 #[cfg(test)]
 mod safety_tests {
     use super::*;
@@ -3086,7 +2915,7 @@ mod safety_tests {
             );
         }
     }
-    fn fixture() -> common::TestHome {
+    pub(super) fn fixture() -> common::TestHome {
         let home = common::TestHome::new();
         crate::db::migrate(home.path()).unwrap();
         crate::db::open(home.path()).unwrap().execute("INSERT INTO users(id,display_name,role,created_at) VALUES('alice','Alice','admin',0)", []).unwrap();
@@ -3103,7 +2932,11 @@ mod safety_tests {
                 [json!(cwd).to_string()],
             )
             .unwrap();
-        common::write_config(home.path(), &json!({"tools":{"enabled_toolsets":["code_execution","image_gen","tts","browser","web"]}})).unwrap();
+        common::write_config(
+            home.path(),
+            &json!({"tools":{"enabled_toolsets":["code_execution","tts","browser","web"]}}),
+        )
+        .unwrap();
         home
     }
     #[cfg(target_os = "linux")]

@@ -338,6 +338,11 @@ export class JsonRpcGatewayClient {
     return this.onAny(handler)
   }
 
+  /** The daemon process this connection talks to (`replay_epoch`); a restart gives a new one. */
+  get epoch(): string | null {
+    return this.replayEpoch
+  }
+
   onState(handler: (state: ConnectionState) => void): () => void {
     this.stateHandlers.add(handler)
     handler(this.state)

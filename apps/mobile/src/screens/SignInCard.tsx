@@ -16,10 +16,12 @@ import type { ApprovalChoice, ApprovalRequestView, CardAnswer } from './types'
  */
 export function SignInCard({
   form,
+  joined,
   onAnswer,
   request
 }: {
   form: SignInForm
+  joined?: boolean
   onAnswer: (
     requestId: string,
     choice: ApprovalChoice,
@@ -52,6 +54,7 @@ export function SignInCard({
 
   return (
     <ConnectCard
+      joined={joined}
       accessibilityLabel={decided ? undefined : `Sign in to ${form.title}`}
       action={
         open ? null : (
@@ -70,7 +73,10 @@ export function SignInCard({
       }
       status={
         decided ? (
-          <CardStatus done={decided !== 'deny'} label={decided === 'deny' ? 'Not now' : 'Saved'} />
+          <CardStatus
+            done={decided !== 'deny' && !request.failed}
+            label={decided === 'deny' ? 'Not now' : request.failed ? "Didn't work" : 'Saved'}
+          />
         ) : null
       }
       subtitle={form.update ? `The saved password for ${form.site} didn't work` : form.site}

@@ -4,26 +4,21 @@ import type { Daemon } from "./store";
 import { daemonOrigin } from "./daemons";
 
 /**
- * A daemon counts as online only when its address answers. Heartbeats say the daemon
- * process is up; they say nothing about its tunnel, which runs beside it and can be
- * down while the daemon keeps checking in.
+ * A daemon counts as online only when its address answers. Connect keeps no
+ * background record of daemons: heartbeats no longer reach the database, so it
+ * can scale to zero between the requests people make (docs/connect.md,
+ * "Online state").
  *
- * - `online`: heartbeat within the window and the address answers.
- * - `unreachable`: heartbeat within the window, address does not answer (tunnel down).
- * - `offline`: no heartbeat for the window; the address is not probed.
+ * - `online`: the address answers and, when a key is known, proves the daemon's identity.
+ * - `offline`: anything else. A stopped daemon and a broken tunnel look the same from here.
  */
-export type DaemonStatus = "online" | "unreachable" | "offline";
-/** Heartbeats are five minutes apart. */
-export const ONLINE_WINDOW_MS = 10 * 60_000;
+export type DaemonStatus = "online" | "offline";
 export const PROBE_TIMEOUT_MS = 3_000;
 /** A daemon's providers list is a few hundred bytes; anything larger is not a daemon. */
 export const PROBE_BODY_LIMIT = 64 * 1024;
 /** A reachable answer holds for a while; an unreachable one is re-checked soon, so a daemon that just came up is not shown down for long. */
 export const PROBE_CACHE_MS = 30_000;
 export const PROBE_NEGATIVE_CACHE_MS = 5_000;
-
-export const heartbeatFresh = (daemon: Pick<Daemon, "lastSeenAt">, now = Date.now()) =>
-  !!daemon.lastSeenAt && now - daemon.lastSeenAt.getTime() < ONLINE_WINDOW_MS;
 
 /** Answers whether an origin serves a daemon. Must never send credentials. */
 export type Probe = (origin: string, identity?: Pick<Daemon, "id" | "identityKey">) => Promise<boolean>;
@@ -58,7 +53,8 @@ export const probeOrigin: Probe = async (origin, identity) => {
   try {
     const response = await fetch(`${origin}${path}`, { method: "GET", redirect: "manual", credentials: "omit", cache: "no-store", signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
     answered = true;
-    if (!response.ok) return invalid();
+    // A non-2xx answer, such as Cloudflare's 530 for a tunnel with no connector, is just "not answering".
+    if (!response.ok) return false;
     const text = await boundedText(response, PROBE_BODY_LIMIT);
     if (text === null) return invalid();
     const body = JSON.parse(text) as { providers?: unknown };
@@ -73,7 +69,7 @@ export const probeOrigin: Probe = async (origin, identity) => {
   }
 };
 
-type Probed = Pick<Daemon, "id" | "tunnelHostname" | "ingressPort" | "lastSeenAt" | "identityKey">;
+type Probed = Pick<Daemon, "id" | "tunnelHostname" | "ingressPort" | "identityKey">;
 
 /** Probes daemons in parallel and remembers each answer briefly, so a page and its API calls do not probe twice. */
 export class Reachability {
@@ -92,8 +88,7 @@ export class Reachability {
   async statuses(daemons: Probed[], fakeTunnels: boolean, now = Date.now()): Promise<Map<string, DaemonStatus>> {
     const result = new Map<string, DaemonStatus>();
     await Promise.all(daemons.map(async daemon => {
-      if (!heartbeatFresh(daemon, now)) { result.set(daemon.id, "offline"); return; }
-      result.set(daemon.id, await this.reachable(daemonOrigin(daemon, fakeTunnels), now, daemon) ? "online" : "unreachable");
+      result.set(daemon.id, await this.reachable(daemonOrigin(daemon, fakeTunnels), now, daemon) ? "online" : "offline");
     }));
     return result;
   }

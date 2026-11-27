@@ -142,10 +142,14 @@ fn credentials_lock() -> &'static Mutex<()> {
 /// nor `model.context_length` gives. Small enough that a local server does not
 /// truncate the prompt unnoticed; compaction scales to it below.
 const DEFAULT_CONTEXT_WINDOW: u64 = 32768;
-/// Pi 1.0.1's own compaction defaults, written explicitly so a Pi upgrade cannot
+/// Pi 1.5.2's own compaction defaults, written explicitly so a Pi upgrade cannot
 /// move them. Compaction fires when the context exceeds `window - reserve`.
 const COMPACTION_RESERVE_TOKENS: u64 = 16384;
 const COMPACTION_KEEP_RECENT_TOKENS: u64 = 20000;
+/// Pi 1.5.1 changed its default to "idle", which also re-sends a section's
+/// request between runs to keep its cache warm. Those requests cost money the
+/// user never asked for, so bots keep warming only while a run streams.
+const CACHE_WARMING: &str = "streaming";
 /// The custom endpoint uses the same window for every model request, including
 /// fallbacks, regardless of the bot's selected provider.
 fn custom_context_window(provider: &str, root: &Value, profile: &Value) -> Option<u64> {
@@ -166,11 +170,12 @@ fn compaction_budget(context_window: u64) -> (u64, u64) {
         COMPACTION_KEEP_RECENT_TOKENS.min(quarter),
     )
 }
-/// Hexbot owns the `compaction` key of the bot's Pi `settings.json`; every other
-/// key is kept. Models Pi knows natively keep Pi's metadata, and their budgets
-/// scale by the windows in the pinned catalog, so a small built-in model such as
-/// `openai/gpt-4` (8,192) does not keep a reserve larger than its window. A
-/// running Pi keeps the settings it loaded, so an unchanged file is left alone.
+/// Hexbot owns the `compaction` and `cacheWarming` keys of the bot's Pi
+/// `settings.json`; every other key is kept. Models Pi knows natively keep Pi's
+/// metadata, and their budgets scale by the windows in the pinned catalog, so a
+/// small built-in model such as `openai/gpt-4` (8,192) does not keep a reserve
+/// larger than its window. A running Pi keeps the settings it loaded, so an
+/// unchanged file is left alone.
 fn write_pi_settings(agent_dir: &Path, providers: &Value) -> Result<()> {
     let mut overrides = json!({});
     // A registry model can use the global budgets and need no override.
@@ -212,10 +217,11 @@ fn write_pi_settings(agent_dir: &Path, providers: &Value) -> Result<()> {
         "keepRecentTokens": COMPACTION_KEEP_RECENT_TOKENS,
         "modelOverrides": overrides
     });
-    if settings["compaction"] == compaction {
+    if settings["compaction"] == compaction && settings["cacheWarming"] == CACHE_WARMING {
         return Ok(());
     }
     settings["compaction"] = compaction;
+    settings["cacheWarming"] = json!(CACHE_WARMING);
     write_json(&path, &settings)
 }
 /// The `compaction` key of the bot's Pi `settings.json` as `write_pi_settings`
@@ -657,6 +663,79 @@ pub fn list_providers(home: &Path) -> Result<Value> {
     });
     Ok(json!({"providers":rows}))
 }
+/// Whether a provider has a key or sign-in right now, by any of its names.
+/// With a bot's profile, the bot's own key, sign-in, or endpoint in it
+/// count too, as `prepare_pi_config_locked` gives them to Pi.
+pub fn connected(home: &Path, profile_home: Option<&Path>, name: &str) -> Result<bool> {
+    let slug = canonical_provider(name);
+    let root = common::read_config(home)?;
+    let profile_cfg = profile_home
+        .map(common::read_config)
+        .transpose()?
+        .unwrap_or_else(|| json!({}));
+    let Some(p) = profiles().iter().find(|p| p["name"] == slug) else {
+        // A custom endpoint answers to its name and to custom:<name>. The
+        // bot's own endpoints replace the daemon's.
+        let mut cfg = root;
+        for key in ["providers", "custom_providers"] {
+            if profile_cfg.get(key).is_some() {
+                cfg[key] = profile_cfg[key].clone();
+            }
+        }
+        return Ok(custom_profiles(&cfg).iter().any(|p| {
+            p["name"] == slug
+                || p["aliases"]
+                    .as_array()
+                    .is_some_and(|aliases| aliases.iter().any(|alias| alias == &slug))
+        }));
+    };
+    if read_json(&home.join("providers-disabled.json"))?[slug.as_str()] == true {
+        return Ok(false);
+    }
+    // Signed in outside Hexbot, through the provider's own tool or SDK: the
+    // daemon only knows when the user turned it off.
+    if matches!(
+        string(p, "auth_type"),
+        "external_process" | "aws_sdk" | "vertex"
+    ) {
+        return Ok(true);
+    }
+    if configured(home, p)? {
+        return Ok(true);
+    }
+    // The Qwen CLI's own sign-in, which the daemon imports to run the bot.
+    // That file belongs to the CLI: one it cannot read is no sign-in, and
+    // never fails the bot list.
+    if slug == "qwen-oauth" {
+        let state = import_qwen(home).unwrap_or_default();
+        let tokens = if state["tokens"].is_object() {
+            &state["tokens"]
+        } else {
+            &state
+        };
+        if !string(tokens, "access_token").is_empty() {
+            return Ok(true);
+        }
+    }
+    // A key inline in the model config, the bot's own or the daemon's that
+    // it inherits. A root model in the older one-line form has no key.
+    let mut model = root["model"].clone();
+    if !model.is_object() {
+        model = json!({});
+    }
+    if let Some(overrides) = profile_cfg["model"].as_object() {
+        for (key, value) in overrides {
+            model[key] = value.clone();
+        }
+    }
+    let inline = canonical_provider(string(&model, "provider")) == slug
+        && model["api_key"].as_str().is_some_and(|s| !s.is_empty());
+    Ok(inline
+        || profile_home
+            .map(|dir| configured(dir, p))
+            .transpose()?
+            .unwrap_or(false))
+}
 fn catalog_models(slug: &str) -> Vec<String> {
     let mut models = profiles()
         .iter()
@@ -772,6 +851,8 @@ async fn limited_json(response: reqwest::Response) -> Result<Value> {
 
 /// Reasoning levels providers report in their live lists, by provider and model.
 const LIVE_LEVELS: &str = "live_model_levels.json";
+/// Models a provider's live list offers a Fast tier for, by provider.
+const LIVE_FAST: &str = "live_model_fast.json";
 /// Codex hides models from clients older than this. Hexbot drives every listed
 /// model through Pi, so it asks for the full list.
 const CODEX_CLIENT_VERSION: &str = "99.0.0";
@@ -885,6 +966,7 @@ async fn codex_models(home: &Path, base: &str) -> Result<(Vec<String>, Value)> {
     let data = provider_json(req).await?;
     let mut ids = vec![];
     let mut levels = json!({});
+    let mut fast = vec![];
     for model in data["models"].as_array().into_iter().flatten() {
         let Some(id) = model["slug"].as_str() else {
             continue;
@@ -893,6 +975,13 @@ async fn codex_models(home: &Path, base: &str) -> Result<(Vec<String>, Value)> {
             continue;
         }
         ids.push(id.to_owned());
+        // ChatGPT names its priority tier Fast and lists it per model.
+        if model["service_tiers"]
+            .as_array()
+            .is_some_and(|tiers| tiers.iter().any(|tier| tier["id"] == "priority"))
+        {
+            fast.push(id.to_owned());
+        }
         if let Some(supported) = model["supported_reasoning_levels"].as_array() {
             let efforts = supported
                 .iter()
@@ -911,7 +1000,27 @@ async fn codex_models(home: &Path, base: &str) -> Result<(Vec<String>, Value)> {
     let mut saved = read_json(&path).unwrap_or_else(|_| json!({}));
     saved["openai-codex"] = levels.clone();
     write_json(&path, &saved)?;
+    let path = home.join(LIVE_FAST);
+    let mut saved = read_json(&path).unwrap_or_else(|_| json!({}));
+    saved["openai-codex"] = json!(fast);
+    write_json(&path, &saved)?;
     Ok((ids, levels))
+}
+/// Whether a model runs in fast mode: the same model, faster, at a higher price.
+/// Anthropic offers it on Claude Opus 5.5 (`speed: "fast"`); ChatGPT marks each
+/// model with a Fast tier in its live list (`service_tier: "priority"`).
+fn fast_in(saved: &Value, provider: &str, model: &str) -> bool {
+    match canonical_provider(provider).as_str() {
+        "anthropic" => model == "claude-opus-5-5",
+        "openai-codex" => saved["openai-codex"]
+            .as_array()
+            .is_some_and(|ids| ids.iter().any(|id| id == model)),
+        _ => false,
+    }
+}
+pub fn supports_fast(home: &Path, provider: &str, model: &str) -> bool {
+    let saved = read_json(&home.join(LIVE_FAST)).unwrap_or_else(|_| json!({}));
+    fast_in(&saved, provider, model)
 }
 fn strings(value: &Value) -> Option<Vec<String>> {
     value.as_array().map(|items| {
@@ -1115,7 +1224,7 @@ pub async fn list_models(home: &Path, p: &Value) -> Result<Value> {
         }
     }
     // A recommendation the provider no longer lists cannot be chosen.
-    let curated = catalog()["curated"]
+    let mut curated = catalog()["curated"]
         .as_array()
         .unwrap()
         .iter()
@@ -1137,6 +1246,12 @@ pub async fn list_models(home: &Path, p: &Value) -> Result<Value> {
             Some(row)
         })
         .collect::<Vec<_>>();
+    let fast = read_json(&home.join(LIVE_FAST)).unwrap_or_else(|_| json!({}));
+    for row in all.iter_mut().chain(curated.iter_mut()) {
+        if fast_in(&fast, string(row, "provider"), string(row, "id")) {
+            row["fast"] = json!(true)
+        }
+    }
     all.sort_by_key(|v| string(v, "label").to_lowercase());
     let mut output = json!({"curated":curated,"all_source":if all.is_empty(){"none"}else if live{"mixed"}else{"catalog"},"all":all});
     if !errors.is_empty() {
@@ -1349,7 +1464,9 @@ fn prepare_pi_config_locked(
             None
         };
         let native = NATIVE.contains(&pi.as_str());
-        let override_base = configured_url.is_some() || override_url.is_some() || slug == "zai";
+        // Copilot's generic host serves every plan; Pi's own models name the individual one.
+        let override_base =
+            configured_url.is_some() || override_url.is_some() || matches!(slug, "zai" | "copilot");
         let base = configured_url
             .or(override_url.as_deref())
             .unwrap_or(string(p, "base_url"));
@@ -1386,8 +1503,10 @@ fn prepare_pi_config_locked(
             .into_iter()
             .map(|id| {
                 let meta = metadata(&cache, &cfg, slug, &id);
+                // Pi 1.5 rejects the whole models.json for a zero window or output limit.
                 let window = configured_window
                     .or_else(|| meta["limit"]["context"].as_u64())
+                    .filter(|&window| window > 0)
                     .unwrap_or(DEFAULT_CONTEXT_WINDOW);
                 let mut model = json!({
                     "id": id,
@@ -1404,7 +1523,7 @@ fn prepare_pi_config_locked(
                         "cacheWrite": meta["cost"]["cache_write"].as_f64().unwrap_or(0.0)
                     },
                     "contextWindow": window,
-                    "maxTokens": meta["limit"]["output"].as_u64().unwrap_or(8192)
+                    "maxTokens": meta["limit"]["output"].as_u64().filter(|&n| n > 0).unwrap_or(8192)
                 });
                 // A model newer than the pinned Pi takes the levels its provider reported.
                 if let Some(levels) = strings(&live_levels[slug][&id]) {
@@ -1433,16 +1552,31 @@ fn prepare_pi_config_locked(
                 _ => "openai-completions",
             }
         };
-        let mut entry = json!({"baseUrl":base,"api":api,"models":models});
+        let mut entry = json!({"api":api,"models":models});
+        if native && !override_base {
+            // A provider baseUrl also replaces the endpoints of Pi's own models, which
+            // can differ by model (OpenCode by protocol, OpenRouter's Anthropic aliases).
+            for model in entry["models"].as_array_mut().unwrap() {
+                model["baseUrl"] = json!(base);
+            }
+        } else {
+            entry["baseUrl"] = json!(base);
+        }
         if !native {
             entry["authHeader"] = json!(!matches!(slug, "custom" | "ollama" | "lmstudio"));
         }
         // xAI API and subscription auth share one Pi provider and contribute different ids.
+        // A provider-wide URL covers the other profile's rows too.
+        let wide = entry.get("baseUrl").is_some();
         if let Some(existing) = providers[&pi]["models"].as_array() {
             let models = entry["models"].as_array_mut().unwrap();
             for model in existing {
                 if !models.iter().any(|m| m["id"] == model["id"]) {
-                    models.push(model.clone());
+                    let mut model = model.clone();
+                    if wide && let Some(model) = model.as_object_mut() {
+                        model.remove("baseUrl");
+                    }
+                    models.push(model);
                 }
             }
         }
@@ -1474,8 +1608,8 @@ fn prepare_pi_config_locked(
                 json!({
                     "id": id,
                     "name": id,
-                    "contextWindow": meta["limit"]["context"].as_u64().unwrap_or(DEFAULT_CONTEXT_WINDOW),
-                    "maxTokens": meta["limit"]["output"].as_u64().unwrap_or(8192),
+                    "contextWindow": meta["limit"]["context"].as_u64().filter(|&n| n > 0).unwrap_or(DEFAULT_CONTEXT_WINDOW),
+                    "maxTokens": meta["limit"]["output"].as_u64().filter(|&n| n > 0).unwrap_or(8192),
                     "reasoning": meta["reasoning"].as_bool().unwrap_or(false),
                     "input": meta["modalities"]["input"]
                         .as_array()
@@ -1510,7 +1644,9 @@ fn prepare_pi_config_locked(
         models["providers"][k] = v.clone()
     }
     // Retained custom models use the same current window as outgoing requests.
-    if let Some(window) = custom_context_window("custom", &root, &profile_cfg) {
+    if let Some(window) =
+        custom_context_window("custom", &root, &profile_cfg).filter(|&window| window > 0)
+    {
         for provider in ["custom", "custom:custom"] {
             for model in models["providers"]
                 .get_mut(provider)
@@ -1903,7 +2039,12 @@ pub async fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<
                     common::required(p, "provider")?,
                     common::required(p, "key")?,
                 ),
-                "hexbot.providers.clear_key" => clear_key(home, common::required(p, "provider")?),
+                "hexbot.providers.clear_key" => {
+                    let provider = common::required(p, "provider")?;
+                    let result = clear_key(home, provider)?;
+                    crate::settings::forget_provider(home, caller, provider)?;
+                    Ok(result)
+                }
                 "hexbot.providers.login_start" => {
                     login_start(home, caller, common::required(p, "provider")?).await
                 }
@@ -1933,6 +2074,7 @@ pub async fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<
                 "model.disconnect" => {
                     let slug = canonical_provider(common::required(p, "slug")?);
                     clear_key(home, &slug)?;
+                    crate::settings::forget_provider(home, caller, &slug)?;
                     Ok(json!({"slug":slug,"name":profile(&slug)?["display_name"],"disconnected":true}))
                 }
                 _ => unreachable!(),
@@ -2320,11 +2462,25 @@ pub fn selection_warning(model: &Value) -> Option<String> {
 }
 
 pub async fn xai_credentials(home: &Path, bot: &str) -> Result<Value> {
-    common::identifier(bot)?;
-    let profile_home = home.join("profiles").join(bot);
+    xai_credentials_from(home, bot, None).await
+}
+/// Whether the xAI model provider is turned off. Its key then serves
+/// nothing, X search included, until a key is saved again.
+pub fn xai_disabled(home: &Path) -> Result<bool> {
+    Ok(read_json(&home.join("providers-disabled.json"))?["xai"] == true)
+}
+
+/// Where xAI's API answers for a bot, or for the daemon when `bot` is None.
+pub fn xai_base_url(home: &Path, bot: Option<&str>) -> Result<String> {
     let root_env = common::env_values(home)?;
-    let profile_env = common::env_values(&profile_home)?;
-    let base = profile_env
+    let profile_env = match bot {
+        Some(bot) => {
+            common::identifier(bot)?;
+            common::env_values(&home.join("profiles").join(bot))?
+        }
+        None => Default::default(),
+    };
+    Ok(profile_env
         .get("HEXBOT_XAI_BASE_URL")
         .or_else(|| root_env.get("HEXBOT_XAI_BASE_URL"))
         .cloned()
@@ -2335,12 +2491,25 @@ pub async fn xai_credentials(home: &Path, bot: &str) -> Result<Value> {
         .or_else(|| root_env.get("XAI_BASE_URL").cloned())
         .or_else(|| std::env::var("HERMES_XAI_BASE_URL").ok())
         .or_else(|| std::env::var("XAI_BASE_URL").ok())
-        .unwrap_or_else(|| "https://api.x.ai/v1".to_owned());
-    let disabled = read_json(&home.join("providers-disabled.json"))?;
-    if disabled["xai"] != true
+        .unwrap_or_else(|| "https://api.x.ai/v1".to_owned())
+        .trim_end_matches('/')
+        .to_owned())
+}
+
+/// xAI credentials for `bot`: `source` "xai" takes the API key only,
+/// "xai-oauth" the subscription sign-in only, and `None` the key first.
+pub async fn xai_credentials_from(home: &Path, bot: &str, source: Option<&str>) -> Result<Value> {
+    common::identifier(bot)?;
+    let profile_home = home.join("profiles").join(bot);
+    let base = xai_base_url(home, Some(bot))?;
+    if source != Some("xai-oauth")
+        && !xai_disabled(home)?
         && let Some(api_key) = key(&profile_home, profile("xai")?)?.or(key(home, profile("xai")?)?)
     {
         return Ok(json!({"api_key":api_key,"base_url":base,"provider":"xai"}));
+    }
+    if source == Some("xai") {
+        return Err(Error::new(4211, "Save an xAI API key to use this tool"));
     }
     let headers = request_auth(home, bot, "xai-oauth").await?;
     let token = string(&headers["headers"], "authorization")
@@ -2527,19 +2696,31 @@ pub fn adapt_request(home: &Path, bot: &str, session: &str, p: &Value) -> Result
     Ok(payload)
 }
 
-pub fn xai_configured(home: &Path, bot: &str) -> Result<bool> {
-    common::identifier(bot)?;
-    let profile_home = home.join("profiles").join(bot);
-    let disabled = read_json(&home.join("providers-disabled.json"))?;
-    if disabled["xai"] != true
-        && (key(&profile_home, profile("xai")?)?.is_some() || key(home, profile("xai")?)?.is_some())
-    {
-        return Ok(true);
+/// The xAI API key saved for `bot`, or for the daemon: an `XAI_API_KEY`
+/// value or the provider's credential pool. None while xAI is turned off.
+pub fn xai_api_key(home: &Path, bot: Option<&str>) -> Result<Option<String>> {
+    if let Some(bot) = bot {
+        common::identifier(bot)?;
+        if let Some(found) = key(&home.join("profiles").join(bot), profile("xai")?)? {
+            return Ok(Some(found));
+        }
     }
+    key(home, profile("xai")?)
+}
+/// Whether a SuperGrok sign-in is saved for `bot`, or for the daemon.
+pub fn xai_signed_in(home: &Path, bot: Option<&str>) -> Result<bool> {
+    let profile_home = match bot {
+        Some(bot) => {
+            common::identifier(bot)?;
+            Some(home.join("profiles").join(bot))
+        }
+        None => None,
+    };
+    let disabled = read_json(&home.join("providers-disabled.json"))?;
     if disabled["xai-oauth"] == true {
         return Ok(false);
     }
-    for path in [&profile_home, home] {
+    for path in profile_home.iter().map(PathBuf::as_path).chain([home]) {
         let state = oauth(path, "xai-oauth")?;
         let tokens = if state["tokens"].is_object() {
             &state["tokens"]
@@ -2551,8 +2732,26 @@ pub fn xai_configured(home: &Path, bot: &str) -> Result<bool> {
             return Ok(true);
         }
     }
+    let Some(profile_home) = profile_home else {
+        return Ok(false);
+    };
     let pi = read_json(&profile_home.join("pi/auth.json"))?;
     Ok(pi["xai"]["type"] == "oauth" && pi["xai"]["access"].as_str().is_some_and(|s| !s.is_empty()))
+}
+/// A fresh SuperGrok access token, from `bot`'s own sign-in or the daemon's.
+pub async fn xai_subscription_token(home: &Path, bot: Option<&str>) -> Result<String> {
+    let profile_home = match bot {
+        Some(bot) => {
+            common::identifier(bot)?;
+            home.join("profiles").join(bot)
+        }
+        None => home.to_owned(),
+    };
+    let headers = credential_headers(home, &profile_home, "xai-oauth").await?;
+    string(&headers["headers"], "authorization")
+        .strip_prefix("Bearer ")
+        .map(str::to_owned)
+        .ok_or_else(|| Error::new(4211, "Sign in with SuperGrok or X Premium+ to use X search"))
 }
 
 #[cfg(test)]
@@ -2584,6 +2783,21 @@ mod migration_tests {
             ["low", "high"]
         );
         assert_eq!(levels("opencode-go", "unknown-model", &none), None);
+    }
+    #[test]
+    fn fast_mode_is_offered_on_opus_5_5_and_on_chatgpt_models_with_a_fast_tier() {
+        let saved = json!({"openai-codex":["gpt-6-astra"]});
+        assert!(fast_in(&saved, "anthropic", "claude-opus-5-5"));
+        assert!(fast_in(&saved, "claude", "claude-opus-5-5"));
+        // Opus 5 needs a waitlist and Opus 4.8 loses it; neither is offered.
+        assert!(!fast_in(&saved, "anthropic", "claude-opus-5"));
+        assert!(!fast_in(&saved, "anthropic", "claude-opus-4-8"));
+        assert!(fast_in(&saved, "openai-codex", "gpt-6-astra"));
+        assert!(!fast_in(&saved, "openai-codex", "gpt-6-luna"));
+        // The API key route has no Fast tier, and nor does a model through another provider.
+        assert!(!fast_in(&saved, "openai-api", "gpt-6-astra"));
+        assert!(!fast_in(&saved, "openrouter", "anthropic/claude-opus-5-5"));
+        assert!(!fast_in(&json!({}), "openai-codex", "gpt-6-astra"));
     }
     #[test]
     fn reads_credential_pool_and_hexbot_anthropic_login_without_changing_imports() {
@@ -2859,9 +3073,12 @@ mod migration_tests {
     fn registry_windows_take_precedence_over_catalog_compaction_budgets() {
         let home = tempfile::tempdir().unwrap();
         crate::db::migrate(home.path()).unwrap();
-        let id = "Qwen/Qwen2.5-7B-Instruct-Turbo";
-        let key = format!("together/{id}");
-        assert_eq!(pi_catalog()["providers"]["together"]["windows"][id], 32768);
+        let id = "@cf/qwen/qwen3-30b-a3b-fp8";
+        let key = format!("cloudflare-workers-ai/{id}");
+        assert_eq!(
+            pi_catalog()["providers"]["cloudflare-workers-ai"]["windows"][id],
+            32768
+        );
         let dir = home.path().join("profiles/owl/pi");
         for (window, expected) in [
             (131072, None),
@@ -2877,13 +3094,13 @@ mod migration_tests {
         ] {
             common::write_config(
                 home.path(),
-                &json!({"providers":{"together":{"base_url":"http://example.test/v1","models":[id]}},
-                    "model_overrides":{"together":{id:{"context_window":window}}}}),
+                &json!({"providers":{"cloudflare-workers-ai":{"base_url":"http://example.test/v1","models":[id]}},
+                    "model_overrides":{"cloudflare-workers-ai":{id:{"context_window":window}}}}),
             )
             .unwrap();
             prepare_pi_for_bot(home.path(), "owl", &dir).unwrap();
             let models = read_json(&dir.join("models.json")).unwrap();
-            let model = models["providers"]["together"]["models"]
+            let model = models["providers"]["cloudflare-workers-ai"]["models"]
                 .as_array()
                 .unwrap()
                 .iter()
@@ -2970,7 +3187,7 @@ mod migration_tests {
             "reserveTokens": 16384,
             "modelOverrides": {"custom/small": {"reserveTokens": 2048}}
         });
-        // Pi 1.0.1 shouldCompact uses tokens > window - reserveTokens.
+        // Pi 1.5.2 shouldCompact uses tokens > window - reserveTokens.
         for (model, window, expected) in [
             ("small", 8192, 6144),
             ("wide", 200000, 183616),
@@ -2997,19 +3214,20 @@ mod migration_tests {
             &profile,
             &json!({"model":{"provider":"ollama","default":"small","base_url":"http://127.0.0.1:11434/v1"},
                 "model_overrides":{"custom":{"small":{"context_window":8192}}},
-                "fallback_providers":[{"provider":"custom","model":"unknown"},{"provider":"custom","model":"wide"}]}),
+                "fallback_providers":[{"provider":"custom","model":"unknown"},{"provider":"custom","model":"wide"},{"provider":"custom","model":"zero"}]}),
         )
         .unwrap();
         write_json(
             &home.path().join("models_dev_cache.json"),
-            &json!({"custom":{"models":{"wide":{"limit":{"context":200000}}}}}),
+            &json!({"custom":{"models":{"wide":{"limit":{"context":200000}},
+                "zero":{"limit":{"context":0,"output":0}}}}}),
         )
         .unwrap();
         let dir = profile.join("pi");
         // Pi's own keys and Hexbot's stale compaction values are replaced or kept as a whole.
         write_json(
             &dir.join("settings.json"),
-            &json!({"theme":"dark","compaction":{"reserveTokens":1,"modelOverrides":{"custom/gone":{}}}}),
+            &json!({"theme":"dark","cacheWarming":"idle","compaction":{"reserveTokens":1,"modelOverrides":{"custom/gone":{}}}}),
         )
         .unwrap();
         prepare_pi_for_bot(home.path(), "owl", &dir).unwrap();
@@ -3026,8 +3244,16 @@ mod migration_tests {
         assert_eq!(window("small"), 8192);
         assert_eq!(window("unknown"), DEFAULT_CONTEXT_WINDOW);
         assert_eq!(window("wide"), 200000);
+        // Pi 1.5 rejects the whole file for a zero limit, so zero means unknown.
+        assert_eq!(window("zero"), DEFAULT_CONTEXT_WINDOW);
+        let zero = models["providers"]["custom"]["models"].as_array().unwrap();
+        assert_eq!(
+            zero.iter().find(|m| m["id"] == "zero").unwrap()["maxTokens"],
+            8192
+        );
         let settings = read_json(&dir.join("settings.json")).unwrap();
         assert_eq!(settings["theme"], "dark");
+        assert_eq!(settings["cacheWarming"], "streaming");
         let compaction = &settings["compaction"];
         assert_eq!(compaction["enabled"], true);
         assert_eq!(compaction["reserveTokens"], 16384);
@@ -3068,6 +3294,12 @@ mod migration_tests {
         fs::write(&path, &bytes).unwrap();
         prepare_pi_for_bot(home.path(), "owl", &dir).unwrap();
         assert_eq!(fs::read(&path).unwrap(), bytes);
+        // A file from before Hexbot pinned cache warming gets it, compaction untouched.
+        let mut older = settings.clone();
+        older.as_object_mut().unwrap().remove("cacheWarming");
+        write_json(&path, &older).unwrap();
+        prepare_pi_for_bot(home.path(), "owl", &dir).unwrap();
+        assert_eq!(read_json(&path).unwrap(), settings);
         // The meter's compaction point comes from the same key: a listed model
         // uses its override, a native small model its scaled one, a wide model
         // the global reserve, even if that reserve exceeds the window.

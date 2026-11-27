@@ -1,4 +1,4 @@
-use hexbot_core::{common, db, providers};
+use hexbot_core::{common, db, providers, server::App, settings};
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -7,6 +7,7 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
+    time::Duration,
 };
 
 fn setup() -> tempfile::TempDir {
@@ -91,6 +92,192 @@ async fn credentials_reach_profiles_without_leaking_to_clients() {
             0o600
         );
     }
+}
+#[tokio::test]
+async fn removing_a_provider_disconnects_it_and_drops_the_defaults_on_it() {
+    let home = setup();
+    let h = home.path();
+    // Clearing pins a provider off whatever the shell's environment holds.
+    providers::clear_key(h, "openrouter").unwrap();
+    assert!(!providers::connected(h, None, "openrouter").unwrap());
+    assert!(!providers::connected(h, None, "nowhere").unwrap());
+    providers::set_key(h, "openrouter", "sk-test").unwrap();
+    assert!(providers::connected(h, None, "openrouter").unwrap());
+    assert!(providers::connected(h, None, "OpenRouter").unwrap());
+    providers::set_key(h, "anthropic", "sk-ant").unwrap();
+    settings::update(
+        h,
+        "local",
+        &json!({"default_model":"openrouter/anthropic/claude-sonnet-4","fallback_model":"anthropic/claude-haiku-4"}),
+    )
+    .unwrap();
+    call(
+        h,
+        "local",
+        "hexbot.providers.clear_key",
+        json!({"provider":"openrouter"}),
+    )
+    .await
+    .unwrap();
+    let after = settings::get(h).unwrap();
+    assert!(after["default_model"].is_null());
+    assert_eq!(after["fallback_model"], "anthropic/claude-haiku-4");
+    assert!(!providers::connected(h, None, "openrouter").unwrap());
+    // The other way in, from the model picker, does the same.
+    settings::update(h, "local", &json!({"default_model":"claude/claude-opus-4"})).unwrap();
+    call(h, "local", "model.disconnect", json!({"slug":"anthropic"}))
+        .await
+        .unwrap();
+    let after = settings::get(h).unwrap();
+    assert!(after["default_model"].is_null());
+    assert!(after["fallback_model"].is_null());
+    // A default by any of the provider's names goes with it too.
+    settings::update(h, "local", &json!({"default_model":"claude/claude-opus-4"})).unwrap();
+    call(h, "local", "model.disconnect", json!({"slug":"anthropic"}))
+        .await
+        .unwrap();
+    assert!(settings::get(h).unwrap()["default_model"].is_null());
+}
+#[test]
+fn custom_endpoints_and_external_sign_ins_count_as_connected() {
+    let home = setup();
+    let h = home.path();
+    common::write_config(
+        h,
+        &json!({"providers":{"work":{"api":"https://example.test/v1","api_key":"custom-secret","models":["work-model"]}}}),
+    )
+    .unwrap();
+    assert!(providers::connected(h, None, "work").unwrap());
+    assert!(providers::connected(h, None, "custom:work").unwrap());
+    assert!(!providers::connected(h, None, "custom:play").unwrap());
+    // Copilot ACP signs in through its own CLI, which the daemon cannot see;
+    // it counts until the user turns it off.
+    assert!(providers::connected(h, None, "copilot-acp").unwrap());
+    providers::clear_key(h, "copilot-acp").unwrap();
+    assert!(!providers::connected(h, None, "copilot-acp").unwrap());
+    // A bot's own endpoint or key, in its profile, counts for that bot, and
+    // its own endpoints stand in for the daemon's.
+    let profile = h.join("profiles/local-model");
+    fs::create_dir_all(&profile).unwrap();
+    common::write_config(
+        &profile,
+        &json!({"model":{"provider":"custom","default":"local-model","base_url":"http://127.0.0.1:11434/v1","api_key":"local-secret"},"providers":{"lab":{"api":"https://lab.test/v1","api_key":"lab-secret"}}}),
+    )
+    .unwrap();
+    assert!(providers::connected(h, Some(&profile), "custom").unwrap());
+    assert!(!providers::connected(h, None, "custom:lab").unwrap());
+    assert!(providers::connected(h, Some(&profile), "custom:lab").unwrap());
+    assert!(!providers::connected(h, Some(&profile), "custom:work").unwrap());
+    common::write_config(
+        &profile,
+        &json!({"model":{"provider":"openrouter","default":"openai/gpt-5.6","api_key":"sk-bot"}}),
+    )
+    .unwrap();
+    assert!(providers::connected(h, Some(&profile), "openrouter").unwrap());
+    // Bedrock and Vertex sign in through their SDKs, likewise out of sight.
+    assert!(providers::connected(h, None, "bedrock").unwrap());
+    assert!(providers::connected(h, Some(&profile), "vertex").unwrap());
+    providers::clear_key(h, "bedrock").unwrap();
+    assert!(!providers::connected(h, None, "bedrock").unwrap());
+    // A key inline in the daemon's model config reaches a bot without its own.
+    common::write_config(
+        h,
+        &json!({"model":{"provider":"openrouter","default":"openai/gpt-5.6","api_key":"sk-root"}}),
+    )
+    .unwrap();
+    let plain = h.join("profiles/plain");
+    fs::create_dir_all(&plain).unwrap();
+    common::write_config(
+        &plain,
+        &json!({"model":{"provider":"openrouter","default":"openai/gpt-5.6"}}),
+    )
+    .unwrap();
+    assert!(providers::connected(h, None, "openrouter").unwrap());
+    assert!(providers::connected(h, Some(&plain), "openrouter").unwrap());
+    // A root model in the older one-line form leaves the bot's own key to count.
+    common::write_config(h, &json!({"model":"custom/model"})).unwrap();
+    common::write_config(
+        &plain,
+        &json!({"model":{"provider":"openrouter","default":"openai/gpt-5.6","api_key":"sk-bot"}}),
+    )
+    .unwrap();
+    assert!(providers::connected(h, Some(&plain), "openrouter").unwrap());
+    // The Qwen CLI's sign-in, imported when the bot runs, counts as well.
+    let creds = h.join("qwen-creds.json");
+    fs::write(
+        &creds,
+        r#"{"access_token":"qwen-token","refresh_token":"r"}"#,
+    )
+    .unwrap();
+    common::write_config(
+        h,
+        &json!({"provider_auth":{"qwen-oauth":{"auth_file":creds.to_string_lossy()}}}),
+    )
+    .unwrap();
+    assert!(providers::connected(h, None, "qwen-oauth").unwrap());
+    assert!(providers::connected(h, Some(&plain), "qwen-oauth").unwrap());
+    // A file the Qwen CLI left half written is no sign-in, not an error.
+    fs::write(&creds, "{\"access_tok").unwrap();
+    assert!(!providers::connected(h, None, "qwen-oauth").unwrap());
+}
+#[tokio::test]
+async fn a_finished_sign_in_tells_the_apps_the_bots_changed() {
+    let home = setup();
+    let h = home.path();
+    let (base, _count, server) = auth_server("ok").await;
+    common::write_config(
+        h,
+        &json!({"provider_auth":{"openai-codex":{"issuer":base}}}),
+    )
+    .unwrap();
+    let app = App::new(
+        h.to_owned(),
+        "127.0.0.1:0".parse().unwrap(),
+        h.join("pi.cjs"),
+        None,
+    )
+    .unwrap();
+    let mut events = app.events.subscribe();
+    let login = app
+        .call(
+            "local",
+            "hexbot.providers.login_start",
+            &json!({"provider":"codex"}),
+        )
+        .await
+        .unwrap();
+    let id = login["login_id"].as_str().unwrap().to_owned();
+    let status = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let value = app
+                .call(
+                    "local",
+                    "hexbot.providers.login_poll",
+                    &json!({"login_id":id}),
+                )
+                .await
+                .unwrap();
+            if value["status"] != "pending" {
+                return value;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(status["status"], "done", "{status}");
+    let event = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let event = events.recv().await.unwrap();
+            if event.frame["params"]["type"] == "hexbot.bots.changed" {
+                return event;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(event.frame["params"]["type"], "hexbot.bots.changed");
+    server.abort();
 }
 #[tokio::test]
 async fn guards_provider_mutations_and_rejects_invalid_keys() {
@@ -687,6 +874,58 @@ fn response_providers_and_acp_keep_their_transport() {
             "built-in metadata must remain intact"
         );
     }
+}
+
+#[test]
+fn native_providers_keep_pis_own_model_endpoints() {
+    let home = setup();
+    let dir = home.path().join("pi");
+    let models = |config: Value| {
+        common::write_config(home.path(), &config).unwrap();
+        providers::prepare_pi_for_bot(home.path(), "owl", &dir).unwrap();
+        serde_json::from_slice::<Value>(&fs::read(dir.join("models.json")).unwrap()).unwrap()
+    };
+    // Pi 1.5 sends each OpenCode model to its protocol's endpoint. A provider
+    // baseUrl would move every built-in model to Hexbot's one URL.
+    let written =
+        models(json!({"model":{"provider":"opencode-zen","default":"operator-new-model"}}));
+    let opencode = &written["providers"]["opencode"];
+    assert!(opencode.get("baseUrl").is_none(), "{opencode}");
+    let added = opencode["models"].as_array().unwrap();
+    let added = added
+        .iter()
+        .find(|m| m["id"] == "operator-new-model")
+        .unwrap();
+    assert_eq!(added["baseUrl"], "https://opencode.ai/zen/v1");
+    // A base URL the user chose still covers the whole provider.
+    let written = models(
+        json!({"model":{"provider":"opencode-zen","default":"operator-new-model",
+        "base_url":"https://proxy.example.test/v1"}}),
+    );
+    assert_eq!(
+        written["providers"]["opencode"]["baseUrl"],
+        "https://proxy.example.test/v1"
+    );
+    // Pi's own Copilot models name the individual plan's host; every plan uses the generic one.
+    let written = models(json!({"model":{"provider":"copilot","default":"operator-new-model"}}));
+    assert_eq!(
+        written["providers"]["github-copilot"]["baseUrl"],
+        "https://api.githubcopilot.com"
+    );
+    // The two xAI profiles share one Pi provider; its override covers both profiles' rows.
+    let written = models(
+        json!({"model":{"provider":"xai","default":"operator-new-model",
+        "base_url":"https://proxy.example.test/v1"},
+        "fallback_providers":[{"provider":"xai-oauth","model":"operator-oauth-model"}]}),
+    );
+    let xai = &written["providers"]["xai"];
+    assert_eq!(xai["baseUrl"], "https://proxy.example.test/v1");
+    let rows = xai["models"].as_array().unwrap();
+    assert!(
+        rows.iter().any(|m| m["id"] == "operator-oauth-model"),
+        "{xai}"
+    );
+    assert!(rows.iter().all(|m| m.get("baseUrl").is_none()), "{xai}");
 }
 
 #[tokio::test]

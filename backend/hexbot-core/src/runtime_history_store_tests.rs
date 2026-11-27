@@ -167,3 +167,61 @@ fn chat_fork_refuses_a_target_with_a_history_rewrite_counter() {
         .unwrap();
     assert_eq!(count, 0);
 }
+
+#[test]
+fn a_store_set_up_once_is_set_up_again_when_its_schema_changes_or_the_file_is_replaced() {
+    let home = common::TestHome::new();
+    let h = home.path();
+    let table = |conn: &Connection| -> bool {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='native_fresh')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert!(table(&open(h).unwrap()));
+    // Another connection drops a table: the next open sees the schema move.
+    open(h)
+        .unwrap()
+        .execute_batch("DROP TABLE native_fresh")
+        .unwrap();
+    assert!(table(&open(h).unwrap()));
+    // A file replaced while the daemon runs starts empty and is set up again.
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = fs::remove_file(h.join(format!("hexbot-runtime.db{suffix}")));
+    }
+    assert!(table(&open(h).unwrap()));
+}
+
+#[test]
+fn history_reads_leave_out_image_bytes_and_keep_the_words() {
+    let home = common::TestHome::new();
+    let h = home.path();
+    let shot = json!({"type":"image","mimeType":"image/png","data":"iVBORw0KGgo"});
+    append(
+        h,
+        "chat",
+        json!({"role":"tool","text":"typed","content":[{"type":"text","text":"typed"},shot]}),
+    )
+    .unwrap();
+    let (rows, cursor, _) = history_since(h, "chat", None).unwrap();
+    let words = json!([{"type":"text","text":"typed"},{"type":"image","mimeType":"image/png"}]);
+    assert_eq!(rows[0]["content"], words);
+    assert_eq!(rows[0]["text"], "typed");
+    // A delta read leaves them out the same way.
+    append(
+        h,
+        "chat",
+        json!({"role":"user","text":"look","content":[{"type":"text","text":"look"},shot]}),
+    )
+    .unwrap();
+    let (rows, _, delta) = history_since(h, "chat", Some(&cursor)).unwrap();
+    assert!(delta);
+    assert_eq!(
+        rows[0]["content"][1],
+        json!({"type":"image","mimeType":"image/png"})
+    );
+    // The stored rows, which the bot's context is built from, keep the image.
+    assert_eq!(history(h, "chat").unwrap()[0]["content"][1], shot);
+}

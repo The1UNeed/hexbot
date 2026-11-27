@@ -545,6 +545,78 @@ async fn provider_key_changes_refresh_tool_availability() {
 }
 
 #[tokio::test]
+async fn bot_changes_refresh_open_computer_lists() {
+    let fixture = Fixture::new(false).await;
+    let mut admin = fixture.socket(&fixture.token).await;
+    // Creating a bot gives it computers, a tools change can move them, and
+    // deleting it takes them: each tells open Settings, Computers to read again.
+    for (id, method, params) in [
+        (
+            "create",
+            "hexbot.bots.create",
+            json!({"name":"scout","tools":[]}),
+        ),
+        (
+            "update",
+            "hexbot.bots.update",
+            json!({"name":"scout","tools":["terminal"]}),
+        ),
+        ("delete", "hexbot.bots.delete", json!({"name":"scout"})),
+    ] {
+        admin
+            .send(Message::Text(
+                json!({"jsonrpc":"2.0","id":id,"method":method,"params":params})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        let mut saw_event = false;
+        let mut saw_response = false;
+        while !saw_event || !saw_response {
+            let event = frame(&mut admin).await;
+            if event["id"] == id {
+                assert!(event.get("error").is_none(), "{event}");
+                saw_response = true;
+            }
+            if event["params"]["type"] == "hexbot.computers.changed" {
+                saw_event = true;
+            }
+        }
+    }
+    admin.close(None).await.unwrap();
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_new_default_limit_refreshes_every_open_bot_list() {
+    let fixture = Fixture::new(false).await;
+    let mut admin = fixture.socket(&fixture.token).await;
+    admin
+        .send(Message::Text(
+            json!({"jsonrpc":"2.0","id":"limit","method":"hexbot.settings.set","params":{"patch":{"soul_char_limit":6000}}})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    let mut saw_event = false;
+    let mut saw_response = false;
+    while !saw_event || !saw_response {
+        let event = frame(&mut admin).await;
+        if event["id"] == "limit" {
+            assert_eq!(event["result"]["soul_char_limit"], 6000, "{event}");
+            saw_response = true;
+        }
+        if event["params"]["type"] == "hexbot.bots.changed" {
+            saw_event = true;
+        }
+    }
+    admin.close(None).await.unwrap();
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
 async fn websocket_mutation_events_owner_isolation_and_flat_replay() {
     let fixture = Fixture::new(false).await;
     db::open(&fixture.home)
@@ -1300,19 +1372,79 @@ async fn bundle_is_compressed_and_hashed_assets_stay_cached() {
 #[tokio::test]
 async fn pages_only_frame_the_daemon_itself() {
     let fixture = Fixture::new(false).await;
+    let dist = fixture.app.web_dist.clone().unwrap();
+    fs::write(
+        dist.join("favicon.svg"),
+        "<svg xmlns='http://www.w3.org/2000/svg'/>",
+    )
+    .unwrap();
+    fs::write(
+        dist.join("visual-frame.html"),
+        "<!doctype html><title>v</title>",
+    )
+    .unwrap();
     let client = reqwest::Client::new();
-    for path in ["/", "/app.js", "/b/owl/s/first"] {
+    let policy = |response: &reqwest::Response| {
+        response
+            .headers()
+            .get_all("content-security-policy")
+            .iter()
+            .map(|v| v.to_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    // The app's own pages: the daemon's origin, framed by no other site.
+    for path in ["/", "/login", "/b/owl/s/first"] {
         let response = client
             .get(format!("{}{path}", fixture.base))
             .send()
             .await
             .unwrap();
         assert_eq!(
-            response.headers()["content-security-policy"],
-            "frame-src 'self'",
+            policy(&response),
+            ["frame-src 'self' blob:", "frame-ancestors 'self'"],
             "{path}"
         );
     }
+    // Anything else opened as a page has no origin: its console can't use
+    // the owner's session.
+    for path in ["/favicon.svg", "/app.js", "/api/connect/identity"] {
+        let response = client
+            .get(format!("{}{path}", fixture.base))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            policy(&response),
+            ["frame-src 'self' blob:", "sandbox"],
+            "{path}"
+        );
+    }
+    let visual = client
+        .get(format!("{}/visual-frame.html", fixture.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        policy(&visual),
+        ["frame-src 'self' blob:", "sandbox allow-scripts"]
+    );
+    fixture.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_page_without_a_web_bundle_is_titled_hexbot() {
+    // A page with the daemon's origin must say Hexbot in its title, so a bot
+    // driving a browser can't use it (machines.rs reads window titles).
+    let fixture = Fixture::new(false).await;
+    let dist = fixture.app.web_dist.clone().unwrap();
+    let _ = fs::remove_file(dist.join("index.html"));
+    let body = reqwest::get(&fixture.base)
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(body.contains("<title>Hexbot</title>"), "{body}");
     fixture.shutdown().await;
 }
 
@@ -1394,7 +1526,7 @@ async fn remote_index_and_secure_cookies_do_not_expose_local_token() {
     let mut socket = fixture.socket(&fixture.token).await;
     assert_eq!(
         request(&mut socket, "info-version", "hexbot.info", json!({})).await["result"]["hermes_version"],
-        "1.0.1"
+        "1.5.2"
     );
     fixture.shutdown().await;
 }
@@ -2464,5 +2596,168 @@ async fn renaming_notifies_other_owner_clients_only() {
     assert_eq!(me["result"]["can_rename"], true);
     first.close(None).await.unwrap();
     second.close(None).await.unwrap();
+    fixture.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn media_ranges_leave_the_chat_socket_free_and_expire_with_its_device() {
+    let fixture = Fixture::new(false).await;
+    let device = support::mint_device(&fixture.home, "Player", "test", "local").unwrap();
+    let mut socket = fixture
+        .socket(device["device_token"].as_str().unwrap())
+        .await;
+    let created = request(
+        &mut socket,
+        "create",
+        "hexbot.bots.create",
+        json!({"name":"player","tools":[]}),
+    )
+    .await;
+    let opened = request(
+        &mut socket,
+        "open",
+        "hexbot.sections.open",
+        json!({"id":created["result"]["section"]["id"]}),
+    )
+    .await;
+    let session = &opened["result"]["section"]["live_session_id"];
+    let attached = request(
+        &mut socket,
+        "attach",
+        "file.attach",
+        json!({
+            "session_id":session, "name":"chapter.m4a", "data_url":"data:audio/mp4;base64,YWJjZA=="
+        }),
+    )
+    .await;
+    let path = attached["result"]["path"].as_str().unwrap();
+    let params = json!({"session_id":session,"path":path});
+    let old = request(&mut socket, "old", "hexbot.files.read", params.clone()).await;
+    assert_eq!(old["result"]["data_url"], "data:audio/mp4;base64,YWJjZA==");
+
+    let size = 32 * 1024 * 1024;
+    fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_len(size)
+        .unwrap();
+    let mut params = params;
+    params["stream_media"] = json!(true);
+    let opened = request(&mut socket, "media", "hexbot.files.read", params.clone()).await;
+    assert!(
+        opened.to_string().len() < 1024,
+        "expected only media metadata"
+    );
+    let file = &opened["result"];
+    assert_eq!(file["size"], size);
+    assert!(file.get("data_url").is_none());
+    let link = file["media_path"].as_str().unwrap();
+    let again = request(&mut socket, "again", "hexbot.files.read", params.clone()).await;
+    assert_eq!(again["result"]["media_path"], link);
+    let url = format!("{}{link}", fixture.base);
+    let client = reqwest::Client::new();
+    let head = client.head(&url).send().await.unwrap();
+    assert_eq!(head.status(), 200);
+    assert_eq!(head.headers()["content-length"], size.to_string());
+    assert_eq!(head.headers()["content-type"], "audio/mp4");
+    assert_eq!(head.headers()["accept-ranges"], "bytes");
+    let range = client
+        .get(&url)
+        .header("range", "bytes=1-3")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(range.status(), 206);
+    assert_eq!(
+        range.headers()["content-range"],
+        format!("bytes 1-3/{size}")
+    );
+    assert_eq!(range.bytes().await.unwrap().as_ref(), b"bcd");
+    let invalid = client
+        .get(&url)
+        .header("range", format!("bytes={size}-"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(invalid.status(), 416);
+    assert_eq!(
+        invalid.headers()["content-range"],
+        format!("bytes */{size}")
+    );
+
+    let mut download = client.get(&url).send().await.unwrap();
+    let first = download.chunk().await.unwrap().unwrap();
+    assert!(!first.is_empty() && (first.len() as u64) < size);
+    let status = request(&mut socket, "status", "hexbot.computer.status", json!({})).await;
+    assert!(status.get("result").is_some(), "{status}");
+    let next = download.chunk().await.unwrap().unwrap();
+    assert!(!next.is_empty());
+    drop(download);
+
+    let mut second = fixture.socket(&fixture.token).await;
+    let second_read = request(&mut second, "other", "hexbot.files.read", params.clone()).await;
+    let other = second_read["result"]["media_path"].as_str().unwrap();
+    assert_ne!(other, link);
+    fixture
+        .app
+        .call(
+            "local",
+            "hexbot.devices.revoke",
+            &json!({"id":device["device_id"]}),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        client.get(&url).send().await.unwrap().status().as_u16(),
+        401 | 404
+    ));
+    assert_eq!(
+        client
+            .head(format!("{}{other}", fixture.base))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    fs::write(path, b"new recording").unwrap();
+    assert_eq!(
+        client
+            .head(format!("{}{other}", fixture.base))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        410
+    );
+    let edited = request(&mut second, "edited", "hexbot.files.read", params).await;
+    let fresh = edited["result"]["media_path"].as_str().unwrap();
+    assert_ne!(fresh, other);
+    assert_eq!(
+        client
+            .get(format!("{}{fresh}", fixture.base))
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap()
+            .as_ref(),
+        b"new recording"
+    );
+    second.close(None).await.unwrap();
+    // The peer finishes reading the close before its links are checked again.
+    while second.next().await.is_some() {}
+    assert_eq!(
+        client
+            .head(format!("{}{fresh}", fixture.base))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
     fixture.shutdown().await;
 }

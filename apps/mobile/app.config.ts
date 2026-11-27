@@ -34,6 +34,14 @@ const config: ExpoConfig = {
     'expo-font',
     'expo-web-browser',
     'expo-notifications',
+    [
+      'expo-image-picker',
+      {
+        photosPermission: 'Hexbot sends the photos and videos you choose to your bots.',
+        cameraPermission: 'Hexbot takes photos and videos to send to your bots.',
+        microphonePermission: 'Hexbot records sound with the videos you take for your bots.'
+      }
+    ],
     ['./plugins/local-network.cjs']
   ],
   web: { bundler: 'metro' }

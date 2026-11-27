@@ -23,6 +23,34 @@ pub fn lock_exclusive(file: &File) -> io::Result<()> {
     }
 }
 
+/// Test-only: take `file`'s exclusive lock once every other holder lets go.
+/// A child process holds a copy of every open descriptor from fork until exec,
+/// and other tests spawn processes all the time, so a lock this process just
+/// released can still look held for a moment. Assert a release with this,
+/// never with one nonblocking attempt. The lock lands on `file` itself.
+#[cfg(test)]
+pub(crate) fn lock_once_released(file: &File) {
+    let shared = file.try_clone().unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || sender.send(lock_exclusive(&shared)));
+    receiver
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the lock was never released")
+        .unwrap();
+}
+
+/// Test-only: whether another open file description holds `file`'s lock.
+/// Only `true` is reliable; show a release with `lock_once_released`. When
+/// nobody holds it, `file` takes the lock.
+#[cfg(test)]
+pub(crate) fn lock_held(file: &File) -> bool {
+    match file.try_lock() {
+        Ok(()) => false,
+        Err(std::fs::TryLockError::WouldBlock) => true,
+        Err(std::fs::TryLockError::Error(error)) => panic!("{error}"),
+    }
+}
+
 /// A liveness hint only, never authority to signal a recorded PID. Unknown or
 /// permission-denied probes count as alive so runtime cleanup stays conservative.
 #[cfg(unix)]
@@ -111,8 +139,50 @@ mod tests {
         drop(owner);
         assert_ne!(raw_lock(), 0);
         drop(duplicate);
-        assert_eq!(raw_lock(), 0);
+        lock_once_released(&contender);
         contender.try_lock().unwrap();
+    }
+
+    /// A single nonblocking attempt cannot show that a lock was released while
+    /// other tests spawn processes (see `lock_once_released`). Tests outside
+    /// this module go through the helpers, or run alone in a child process
+    /// like `setup::tests::code_setup_lock_fixture`, the one allowed here.
+    #[test]
+    fn tests_check_locks_only_through_the_helpers() {
+        let nonblocking = concat!("LOCK", "_NB");
+        let isolated = [("src/setup.rs", 1)];
+        let negated = [
+            "!lock_held(",
+            "!osutil::lock_held(",
+            "!crate::osutil::lock_held(",
+        ];
+        let mut offenders = Vec::new();
+        let mut pending = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+        while let Some(dir) = pending.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs")
+                    && !path.ends_with("src/osutil.rs")
+                {
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    let allowed = isolated
+                        .iter()
+                        .find(|(file, _)| path.ends_with(file))
+                        .map_or(0, |(_, count)| *count);
+                    if text.matches(nonblocking).count() > allowed
+                        || negated.iter().any(|n| text.contains(n))
+                    {
+                        offenders.push(path.display().to_string());
+                    }
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "use osutil::lock_held or osutil::lock_once_released in {offenders:?}"
+        );
     }
 
     #[test]

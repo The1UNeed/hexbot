@@ -122,6 +122,20 @@ hexbot heartbeat set owl "- Has Sam replied about the lease?"
 
 The checklist is also a plain file, `profiles/BOT/HEARTBEAT.md` in the daemon's data directory. `status`, `now`, and `set` need the daemon running.
 
+## Computers
+
+```sh
+hexbot computers                           # every computer, what each offers, and its bots
+hexbot computers give vm owl               # owl works on the bots' computer
+hexbot computers take host owl             # owl no longer works on this computer
+hexbot computers vm off                    # stop using the bots' computer
+hexbot computers host desktop on           # Computer Use here: share this screen (sets up Cua first)
+hexbot computers forget device:ID          # one of your computers: take it from every bot
+hexbot plugins assign connector computer_use owl fox   # owl and fox see and use their computers' screens
+```
+
+A computer is `vm` (the bots' computer), `host` (this computer, where the daemon runs) or `device:ID` (one of your computers). `hexbot computers` lists the IDs. A computer you give a bot is one of its environments: its terminal runs there. **Computer Use** is a plugin: with it, a bot also sees and uses the screens of its environments where they are shared. One of your computers shows up once Hexbot there has **Let bots work here** on, and only that app can turn it, or **Computer Use here**, on. `forget` works only on one of your computers. Taking back an always allowed app is in the app, under Settings, Computers.
+
 ## Send a message and list rooms
 
 Quote the message so the shell passes it as one argument:
@@ -141,8 +155,8 @@ The native CLI lists rooms; create rooms and manage their members in the app or 
 hexbot plugins                                   # connectors, MCP servers, skills and their bots
 hexbot plugins list --bot writer                 # the same, with writer's switches
 hexbot plugins assign connector mcp:files writer researcher
-hexbot plugins assign skill himalaya writer
-hexbot plugins assign package github writer      # a server and its skills together
+hexbot plugins assign skill release-notes writer
+hexbot plugins assign package linear writer      # a server and its skills together
 ```
 
 `assign` gives the plugin to exactly the bots you name and takes it from your other bots. A plugin that is not set up yet can be taken away but not given. Set up connectors in the app or browser first.
@@ -154,7 +168,7 @@ hexbot devices list
 hexbot devices revoke "DEVICE_ID"
 ```
 
-Replace `DEVICE_ID` with an ID from the list. Revoking a device invalidates its token and ends its access. Pair it again to restore access.
+Replace `DEVICE_ID` with an ID from the list. Revoking a device invalidates its token and ends its access, and takes that computer and its allowed apps from every bot. Pair it again to restore access.
 
 ## Manage Hex Connect
 

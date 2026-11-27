@@ -4,7 +4,10 @@ import { createRouter, RouterProvider } from '@tanstack/react-router'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 
+import { installCleanCopy } from './lib/clean-copy'
 import { routeTree } from './routeTree.gen'
+
+installCleanCopy()
 
 const router = createRouter({ routeTree })
 

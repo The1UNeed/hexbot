@@ -12,9 +12,15 @@ import {
 import Svg, { Path } from 'react-native-svg'
 
 import { ComputerFrame } from '../ComputerFrame'
-import { COMPUTER_QUALITIES, computerActivity, screenPlays } from '../core/computer'
+import {
+  COMPUTER_QUALITIES,
+  computerAccess,
+  computerActivity,
+  type ComputersListed,
+  screenPlays
+} from '../core/computer'
 import { loadComputerQuality, saveComputerQuality } from '../core/storage'
-import type { Bot, ComputerCursor, ComputerQuality, ComputerStatus } from '../core/types'
+import type { Bot, Computer, ComputerCursor, ComputerQuality, ComputerStatus } from '../core/types'
 import {
   BotFace,
   Button,
@@ -40,6 +46,7 @@ const ARROW =
   'M4.5 3.2 20.4 10a.9.9 0 0 1-.1 1.7l-6.6 1.9-2 6.5a.9.9 0 0 1-1.7.1L3.2 4.5a.9.9 0 0 1 1.3-1.3Z'
 
 const BUSY: Partial<Record<ComputerStatus['state'], string>> = {
+  repairing: 'Repairing',
   resetting: 'Resetting',
   restarting: 'Restarting',
   starting: 'Starting',
@@ -231,7 +238,7 @@ function Cursors({
 function caption(status: ComputerStatus, nameOf: (bot: string) => string) {
   const busy = BUSY[status.state]
   if (busy) return `${busy} your bots' computer`
-  if (status.control === 'user') return 'You have control. Your bots wait until you give it back.'
+  if (status.control === 'user') return 'Your bots are paused until you resume them.'
   if (status.actor && status.activity) return computerActivity(nameOf(status.actor), status.activity)
   return "Your bots' computer"
 }
@@ -260,8 +267,26 @@ export interface ComputerSheetProps {
   call: (method?: string, params?: Record<string, unknown>) => Promise<ComputerStatus>
   /** A link to the screen; it is not a status, so it is never merged into one. */
   view: (control: boolean, quality: ComputerQuality) => Promise<{ path: string }>
-  /** Gives `bot` Computer use. */
-  onEnable?: () => void
+  /**
+   * Gives `bot` the bots' computer's desktop, or Computer use on a daemon
+   * from before computers (`older`).
+   */
+  onEnable?: (older: boolean) => void
+  /**
+   * The bots' computer as Settings, Computers lists it. A bot's Computer use
+   * may be a desktop elsewhere; this says whether it works here.
+   */
+  vm?: Computer
+  /** Reads the computers again, for this connection. */
+  loadComputers: () => Promise<unknown>
+  /**
+   * What the latest read of the computers said on this connection
+   * (`useMobile`): an older or overtaken read never sets it, and a reconnect
+   * makes it 'loading' again.
+   */
+  listed: ComputersListed
+  /** Opens Settings, Computers, where the bots' computer is turned on. */
+  onSettings?: () => void
   /** Moves on at every reconnect; a restarted daemon forgets the old link. */
   connects: number
 }
@@ -273,8 +298,7 @@ const SLOW_SCREEN_MS = 15_000
 
 /**
  * The screen at `src`. A new link loads under the screen on show and takes
- * its place once its picture is up, so taking control or giving it back
- * never blanks it. Screens keep their place, since moving one reloads it.
+ * its place once its picture is up, so a new link never blanks it. Screens keep their place, since moving one reloads it.
  */
 function Screens({ control, src }: { control: boolean; src: null | string }) {
   // The first is on show; a second is loading under it.
@@ -326,8 +350,8 @@ function Screens({ control, src }: { control: boolean; src: null | string }) {
 
 /**
  * The bots' shared computer on its own card: the live screen with each bot's
- * cursor, a line saying what is happening, and its controls. Take control
- * lets you use it with your fingers; the bots wait until you give it back.
+ * cursor, a line saying what is happening, and its controls. The screen takes
+ * your touches while the bots keep working; pausing them gives it to you alone.
  */
 export function ComputerSheet({
   bot,
@@ -335,10 +359,14 @@ export function ComputerSheet({
   call,
   connects,
   faceOf,
+  listed,
+  loadComputers,
   onEnable,
+  onSettings,
   origin,
   status,
-  view
+  view,
+  vm
 }: ComputerSheetProps) {
   const theme = useTheme()
   const [src, setSrc] = useState<null | string>(null)
@@ -347,8 +375,10 @@ export function ComputerSheet({
   const [width, setWidth] = useState(0)
   const [error, setError] = useState<null | string>(null)
   const running = status?.state === 'running'
-  const user = status?.control === 'user'
-  const enabled = !bot || (bot.tools ?? []).includes('computer_use')
+  const paused = status?.control === 'user'
+  // Nothing shows until this connection's list of computers answers.
+  const access = computerAccess(bot, listed, vm)
+  const enabled = access === 'screen'
   const plays = !origin || screenPlays(origin)
   // This phone's choice, read before the first link so it is made only once.
   const [quality, setQuality] = useState<ComputerQuality | null>(null)
@@ -367,40 +397,21 @@ export function ComputerSheet({
     call(method, params).catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
   }
 
-  // A new link waits for this connection's status, so a hold given back
-  // elsewhere while the phone was away is not taken again.
+  // A new link waits for this connection's status.
   const [read, setRead] = useState(-1)
+  // What the read says lands in `listed`; its own failure shows there too.
+  const readList = () => void loadComputers().catch(() => {})
   useEffect(() => {
     setError(null)
+    readList()
     call('hexbot.computer.status')
       .then(() => setRead(connects))
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
   }, [connects])
 
-  // Hand the computer back when the card closes, once a take-over still on
-  // its way has landed.
-  const holding = useRef(false)
-  holding.current = user
-  const taking = useRef<Promise<ComputerStatus | undefined>>(Promise.resolve(undefined))
-  const take = () => {
-    setError(null)
-    taking.current = call('hexbot.computer.control', { holder: 'user' }).catch((e: unknown) => {
-      setError(e instanceof Error ? e.message : String(e))
-      return undefined
-    })
-  }
-  useEffect(
-    () => () => {
-      void taking.current.then(taken => {
-        if (holding.current || taken?.control === 'user')
-          void call('hexbot.computer.control', { holder: 'bot' }).catch(() => {})
-      })
-    },
-    []
-  )
-
-  // A new link for the same screen, as taking control or giving it back asks
-  // for, leaves the old one up until it arrives.
+  // A new link for the same screen, as a new quality asks for, leaves the old
+  // one up until it arrives. The card is the large screen on a phone, so it
+  // always takes touches, with sound.
   useEffect(() => {
     if (!running || !origin || !plays || !enabled || !quality || read !== connects) {
       setSrc(null)
@@ -409,11 +420,11 @@ export function ComputerSheet({
     let current = true
     let renew: ReturnType<typeof setTimeout> | undefined
     const load = () =>
-      view(user, quality)
+      view(true, quality)
         .then(({ path }) => {
           if (!current || !path) return
-          // A watching screen needs no sound. The daemon sets size and frame rate.
-          setSrc(`${origin}${path}${user ? '' : '&audio=none'}`)
+          // The daemon sets size and frame rate.
+          setSrc(`${origin}${path}`)
           renew = setTimeout(load, 55 * 60_000)
         })
         .catch((e: unknown) => current && setError(e instanceof Error ? e.message : String(e)))
@@ -423,7 +434,7 @@ export function ComputerSheet({
       current = false
       if (renew) clearTimeout(renew)
     }
-  }, [running, origin, plays, user, enabled, quality, connects, read])
+  }, [running, origin, plays, enabled, quality, connects, read])
 
   const byName = new Map(bots.map(b => [b.name, b]))
   const faceFor = (name: string) => {
@@ -458,20 +469,47 @@ export function ComputerSheet({
       </View>
     )
 
+  if (access === 'loading')
+    return (
+      <View style={styles.center}>
+        <ActivityIndicator />
+      </View>
+    )
+
+  if (typeof access === 'object')
+    return (
+      <View style={[styles.center, styles.retry]}>
+        <Text tone="danger">{access.error}</Text>
+        <Button label="Try again" onPress={readList} testID="computer-list-retry" />
+      </View>
+    )
+
+  if (access === 'off')
+    return (
+      <View style={styles.body}>
+        {placeholder(
+          "Your bots aren't using their computer. Turn on Use the bots' computer in Settings, Computers.",
+          onSettings
+            ? { label: 'Open Computers', onPress: onSettings, testID: 'computer-settings' }
+            : undefined
+        )}
+      </View>
+    )
+
   if (!enabled)
     return (
       <View style={styles.body}>
         {placeholder(
-          `${bot?.display_name ?? 'This bot'} can work on your bots' computer: a Linux desktop you can watch and take over.`,
+          `${bot?.display_name ?? 'This bot'} can work on your bots' computer: a Linux desktop you can watch and use alongside them.`,
           onEnable
-            ? { label: 'Turn on Computer use', onPress: onEnable, testID: 'computer-enable' }
+            ? { label: 'Turn on Computer Use', onPress: () => onEnable(listed === 'older'), testID: 'computer-enable' }
             : undefined
         )}
       </View>
     )
 
   const busy = BUSY[status.state]
-  const lit = !!status.actor || user
+  const lit = !!status.actor || paused
 
   return (
     <View style={styles.body}>
@@ -489,7 +527,7 @@ export function ComputerSheet({
             ]}
             testID="computer-screen"
           >
-            <Screens control={user} src={src} />
+            <Screens control src={src} />
             <Cursors faceFor={faceFor} height={width / 1.6} status={status} width={width} />
           </View>
         ) : busy ? (
@@ -519,12 +557,12 @@ export function ComputerSheet({
           {caption(status, nameOf)}
         </Text>
       </View>
-      {running && (plays || user) ? (
+      {running || paused ? (
         <Button
-          label={user ? 'Give back' : 'Take control'}
-          onPress={() => (user ? act('hexbot.computer.control', { holder: 'bot' }) : take())}
+          label={paused ? 'Resume bots' : 'Pause bots'}
+          onPress={() => act('hexbot.computer.control', { holder: paused ? 'bot' : 'user' })}
           testID="computer-control"
-          variant={user ? 'primary' : 'secondary'}
+          variant={paused ? 'primary' : 'secondary'}
           wide
         />
       ) : null}
@@ -575,6 +613,7 @@ const styles = StyleSheet.create({
   caption: { flex: 1 },
   captionLine: { alignItems: 'center', flexDirection: 'row', gap: 8, paddingHorizontal: 4 },
   center: { alignItems: 'center', padding: space.xl },
+  retry: { gap: space.md },
   cursor: { height: 0, left: 0, position: 'absolute', top: 0, width: 0 },
   dot: { borderRadius: 3, height: 6, width: 6 },
   face: {

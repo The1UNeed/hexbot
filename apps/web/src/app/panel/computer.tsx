@@ -1,3 +1,4 @@
+import { useNavigate } from '@tanstack/react-router'
 import { Ellipsis, Monitor } from 'lucide-react'
 import { type CSSProperties, useEffect, useRef, useState } from 'react'
 
@@ -6,18 +7,21 @@ import { Button } from '../../components/ui/button'
 import { confirm } from '../../components/ui/confirm'
 import { Dialog } from '../../components/ui/dialog'
 import { Menu, MenuCheckIcon } from '../../components/ui/menu'
+import { computersGrant, connectorsSetForBot } from '../../lib/api'
 import { botFace } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
 import { targetOrigin } from '../../lib/connection'
 import type { Bot, ComputerCursor, ComputerQuality, ComputerStatus } from '../../lib/types'
 import { useBots } from '../../stores/bots'
 import { useComputer } from '../../stores/computer'
+import { useComputers } from '../../stores/computers'
 import { useConnection } from '../../stores/connection'
 import { useUi } from '../../stores/ui'
 import type { SaveBot } from '../bot-settings/shared'
 import { computerLabel } from '../conversation/steps'
 
 const BUSY: Partial<Record<ComputerStatus['state'], string>> = {
+  repairing: 'Repairing',
   resetting: 'Resetting',
   restarting: 'Restarting',
   starting: 'Starting',
@@ -63,7 +67,7 @@ const TYPING = new Set(['key', 'type'])
 function useScreen(live: boolean, control: boolean): null | string {
   const target = useConnection(state => state.target)
   // After a reconnect the old link may be gone (a restart, a reset meanwhile);
-  // a new one waits for fresh status, so a hold given up is not taken again.
+  // a new one waits for fresh status.
   const connects = useConnection(state => state.connects)
   const read = useComputer(state => state.read)
   const view = useComputer(state => state.view)
@@ -72,8 +76,8 @@ function useScreen(live: boolean, control: boolean): null | string {
   const [renewals, setRenewals] = useState(0)
 
   useEffect(() => {
-    // A new link for the same screen, as taking control or giving it back
-    // asks for, leaves the old one up until it arrives.
+    // A new link for the same screen, as a new quality asks for, leaves the
+    // old one up until it arrives.
     if (!live || !target || read !== connects || !screenPlays(targetOrigin(target))) {
       setScreen(null)
 
@@ -222,8 +226,7 @@ const SLOW_SCREEN_MS = 15_000
 
 /**
  * The screen at `src`. A new link loads under the screen on show and takes
- * its place once its picture is up, so taking control or giving it back
- * never blanks it. Frames keep their place in the page, since moving one
+ * its place once its picture is up, so a new link never blanks it. Frames keep their place in the page, since moving one
  * would reload it.
  */
 function Frames({ control, src }: { control: boolean; src: null | string }) {
@@ -315,7 +318,7 @@ function caption(status: ComputerStatus, actor: null | string): string {
   }
 
   if (status.control === 'user') {
-    return 'You have control. Your bots wait until you give it back.'
+    return 'Your bots are paused until you resume them.'
   }
 
   if (actor && status.activity) {
@@ -325,33 +328,29 @@ function caption(status: ComputerStatus, actor: null | string): string {
   return "Your bots' computer"
 }
 
+/** Pauses the bots so the user has the computer alone, or resumes them. */
+function PauseButton({ paused, variant }: { paused: boolean; variant: 'pill' | 'primary' }) {
+  const control = useComputer(state => state.control)
+
+  return (
+    <Button
+      onClick={() => void control(paused ? 'bot' : 'user')}
+      size="sm"
+      variant={paused ? 'primary' : variant}
+    >
+      {paused ? 'Resume bots' : 'Pause bots'}
+    </Button>
+  )
+}
+
 /**
- * The computer large, over the app: watch it, or take over and use it. Giving
- * it back, or closing the window, hands it back to the bots.
+ * The computer large, over the app. It takes the user's clicks and keys while
+ * the bots keep working; pausing them gives the user the computer alone.
  */
 function ComputerWindow({ onClose, status }: { onClose: () => void; status: ComputerStatus }) {
-  const control = useComputer(state => state.control)
-  const user = status.control === 'user'
-  const src = useScreen(status.state === 'running', user)
+  const paused = status.control === 'user'
+  const src = useScreen(status.state === 'running', true)
   const actor = useActorName(status.actor)
-  // Closing the window, or the panel going away under it, hands it back,
-  // once a take-over still on its way has landed.
-  useEffect(
-    () => () => {
-      // Only to the daemon that has it: a switch to another one leaves it be.
-      const target = useConnection.getState().target
-
-      void useComputer.getState().taking.then(() => {
-        if (
-          useConnection.getState().target === target &&
-          useComputer.getState().status?.control === 'user'
-        ) {
-          void useComputer.getState().control('bot')
-        }
-      })
-    },
-    []
-  )
 
   return (
     <Dialog
@@ -362,20 +361,7 @@ function ComputerWindow({ onClose, status }: { onClose: () => void; status: Comp
       title="Your bots' computer"
       toolbar={
         <div className="flex shrink-0 items-center gap-2">
-          {user ? (
-            <Button onClick={() => void control('bot')} size="sm" variant="primary">
-              Give back
-            </Button>
-          ) : (
-            <Button
-              disabled={status.state !== 'running'}
-              onClick={() => void control('user')}
-              size="sm"
-              variant="primary"
-            >
-              Take control
-            </Button>
-          )}
+          <PauseButton paused={paused} variant="primary" />
           <Button onClick={onClose} size="sm" variant="ghost">
             Close
           </Button>
@@ -386,10 +372,10 @@ function ComputerWindow({ onClose, status }: { onClose: () => void; status: Comp
         <div
           className={cn(
             'relative aspect-[16/10] w-full overflow-hidden rounded-[14px] bg-black shadow-card',
-            user ? 'ring-2 ring-info' : ''
+            paused ? 'ring-2 ring-info' : ''
           )}
         >
-          <Frames control={user} src={src} />
+          <Frames control src={src} />
           <Cursors status={status} />
         </div>
       </div>
@@ -407,18 +393,36 @@ function Placeholder({ children }: { children: React.ReactNode }) {
 
 /** The bots' computer: its live screen, each bot's cursor, and its controls. */
 function Screen({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
-  const status = useComputer(state => state.status)
+  const connects = useConnection(state => state.connects)
+  const status = useComputer(state => (state.read === connects ? state.status : null))
   const requestError = useComputer(state => state.error)
   const refresh = useComputer(state => state.refresh)
   const step = useComputer(state => state.step)
-  const control = useComputer(state => state.control)
   const [open, setOpen] = useState(false)
-  const enabled = bot.tools.includes('computer_use')
+  // computer_use means a desktop on any computer; this tab is the bots'
+  // computer, so it waits for Settings, Computers to say whether this bot
+  // works there. Only a daemon from before computers goes by its tools.
+  const computers = useComputers(state => state.computers)
+  const older = useComputers(state => state.older)
+  const listFailed = useComputers(state => state.listFailed)
+  const refreshComputers = useComputers(state => state.refresh)
+  const [grantError, setGrantError] = useState<null | string>(null)
+  const navigate = useNavigate()
+  const answered = useComputers(state => state.answered)
+  const vm = computers?.find(computer => computer.id === 'vm')
+  // This connection's answer, not a list kept from before a reconnect.
+  const known = answered === connects
+
+  const enabled =
+    known &&
+    (older
+      ? bot.tools.includes('computer_use')
+      : Boolean(vm?.on && vm.desktop.bots.includes(bot.name)))
+
   const running = status?.state === 'running'
   // It keeps playing while the window is open, so it is there when it closes.
   const src = useScreen(running && enabled, false)
   const actor = useActorName(status?.actor)
-  const connects = useConnection(state => state.connects)
   const target = useConnection(state => state.target)
   const plays = !target || screenPlays(targetOrigin(target))
   const quality = useUi(state => state.computerQuality)
@@ -426,11 +430,58 @@ function Screen({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
 
   useEffect(() => {
     void refresh()
-  }, [connects, refresh])
+    void refreshComputers()
+  }, [connects, refresh, refreshComputers])
 
-  // Nothing until the daemon answers; an older daemon has no computer.
-  if (!status) {
-    return null
+  if (!known || !status) {
+    const failure =
+      (!status && requestError) || (listFailed?.connects === connects && listFailed.message)
+
+    return (
+      <Placeholder>
+        <Monitor className="text-muted" size={20} />
+        {failure ? (
+          <>
+            <p className="max-w-64 text-[length:var(--text-secondary)] text-danger" role="alert">
+              {failure}
+            </p>
+            <Button
+              onClick={() => {
+                void refresh()
+                void refreshComputers()
+              }}
+              size="sm"
+            >
+              Try again
+            </Button>
+          </>
+        ) : (
+          <p className="text-[length:var(--text-secondary)] text-muted" role="status">
+            Loading computer…
+          </p>
+        )}
+      </Placeholder>
+    )
+  }
+
+  const turnOn = async () => {
+    setGrantError(null)
+
+    if (older) {
+      await onSave({ tools: [...bot.tools, 'computer_use'] })
+
+      return
+    }
+
+    try {
+      // The bots' computer as one of its environments, and Computer Use for
+      // its screen.
+      await computersGrant('vm', 'terminal', bot.name, true)
+      await connectorsSetForBot('computer_use', bot.name, true)
+      await refreshComputers()
+    } catch (error) {
+      setGrantError(error instanceof Error ? error.message : String(error))
+    }
   }
 
   if (!status.available) {
@@ -447,21 +498,41 @@ function Screen({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
     )
   }
 
+  if (vm && !vm.on) {
+    return (
+      <Placeholder>
+        <Monitor className="text-muted" size={20} />
+        <p className="max-w-64 text-[length:var(--text-secondary)] text-muted">
+          Your bots aren't using their computer. Turn on Use the bots' computer in Settings,
+          Computers.
+        </p>
+        <Button
+          onClick={() => void navigate({ params: { tab: 'computer' }, to: '/settings/$tab' })}
+          size="sm"
+          variant="secondary"
+        >
+          Open Computers
+        </Button>
+      </Placeholder>
+    )
+  }
+
   if (!enabled) {
     return (
       <Placeholder>
         <Monitor className="text-muted" size={20} />
         <p className="max-w-64 text-[length:var(--text-secondary)] text-muted">
-          {bot.display_name} can work on your bots' computer: a Linux desktop you can watch and take
-          over.
+          {bot.display_name} can work on your bots' computer: a Linux desktop you can watch and use
+          alongside them.
         </p>
-        <Button
-          onClick={() => void onSave({ tools: [...bot.tools, 'computer_use'] })}
-          size="sm"
-          variant="primary"
-        >
-          Turn on Computer use
+        <Button onClick={() => void turnOn()} size="sm" variant="primary">
+          Turn on Computer Use
         </Button>
+        {grantError ? (
+          <p className="text-[length:var(--text-meta)] text-danger" role="alert">
+            {grantError}
+          </p>
+        ) : null}
       </Placeholder>
     )
   }
@@ -547,23 +618,8 @@ function Screen({ bot, onSave }: { bot: Bot; onSave: SaveBot }) {
           ) : null}
           {caption(status, actor)}
         </span>
-        {running && (plays || status.control === 'user') ? (
-          status.control === 'user' ? (
-            <Button onClick={() => void control('bot')} size="sm" variant="pill">
-              Give back
-            </Button>
-          ) : (
-            <Button
-              onClick={() => {
-                void control('user')
-                setOpen(true)
-              }}
-              size="sm"
-              variant="pill"
-            >
-              Take control
-            </Button>
-          )
+        {running || status.control === 'user' ? (
+          <PauseButton paused={status.control === 'user'} variant="pill" />
         ) : null}
         <Menu
           items={[

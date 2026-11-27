@@ -159,14 +159,16 @@ impl Runtime {
                         "update": existing.is_some(),
                     },
                 });
+                // The apps show the closed card again from these first words (settled-cards.ts in apps/web).
                 let Some(answer) = self.ask_native(s, request, true).await? else {
                     return Err(Error::new(
                         4302,
                         "The user closed the sign-in card. Ask what they would like to do instead.",
                     ));
                 };
-                let typed: Value = serde_json::from_str(&answer)
-                    .map_err(|_| Error::new(5201, "The sign-in card sent no login."))?;
+                let typed: Value = serde_json::from_str(&answer).map_err(|_| {
+                    after_agreeing(Error::new(5201, "The sign-in card sent no login."))
+                })?;
                 let mut fields = json!({
                     "title": title,
                     "url": url,
@@ -176,7 +178,8 @@ impl Runtime {
                 if let Some(login) = &existing {
                     fields["id"] = login["id"].clone();
                 }
-                let login = crate::passwords::save(&self.home, owner, &fields)?;
+                let login =
+                    crate::passwords::save(&self.home, owner, &fields).map_err(after_agreeing)?;
                 self.passwords_changed(owner);
                 Ok(json!({
                     "id": login["id"],
@@ -243,6 +246,19 @@ impl Runtime {
                     )
                     .await?;
                 } else {
+                    // Only on a bots' computer this conversation started with,
+                    // as computer_use: a grant given mid-turn waits.
+                    let frozen = self.frozen_desktops(s)?;
+                    if !frozen.as_array().is_some_and(|list| {
+                        list.iter().any(|c| {
+                            c["id"] == crate::machines::VM && c[crate::machines::DESKTOP] == true
+                        })
+                    }) {
+                        return Err(Error::new(
+                            4302,
+                            "You can't use the bots' computer's desktop in this conversation. Your Computers list says what you may use.",
+                        ));
+                    }
                     let request = json!({
                         "tool": NAME,
                         "toolCall": {"title": format!("Type your {title} {typed} on the bots' computer")},

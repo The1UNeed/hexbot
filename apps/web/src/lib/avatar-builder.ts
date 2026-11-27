@@ -2,7 +2,8 @@
  * Generated bot faces: a shape and a colour with two capsule eyes, drawn as
  * if painted on a ball. Drawn as SVG in the UI and rasterised to PNG for the
  * profile asset (the daemon accepts png, jpeg or webp only). Bots without an
- * uploaded avatar get a face derived from their name so every bot has one.
+ * uploaded avatar get the face the daemon picked for them at random, which a
+ * new name never changes.
  *
  * The eyes live in the "ball frame": a group translated to the shape's eye
  * centre and scaled by the shape's ball radius over `BALL`. The mood poses in
@@ -27,7 +28,10 @@ import {
   EYES,
   eyeTransform,
   type FaceMood,
-  INK
+  INK,
+  NAME_COLORS,
+  NAME_SHAPES,
+  NEUTRAL_COLORS
 } from './face-geometry'
 
 export {
@@ -50,15 +54,38 @@ export {
   type FaceMood
 } from './face-geometry'
 
-/** A stable face for a bot that has no uploaded avatar. */
+/**
+ * The face a bot without a stored one draws: an older daemon's bots, and room
+ * members known only by name. The daemon stores a face for every bot it has.
+ */
 export function styleForName(name: string): AvatarStyle {
   const hue = hueFromString(name)
-  const colors = AVATAR_COLORS.filter(item => !['white', 'gray', 'brown'].includes(item.id))
 
   return {
-    color: colors[hue % colors.length]!.id,
-    shape: AVATAR_SHAPES[Math.floor(hue / 7) % AVATAR_SHAPES.length]!.id
+    color: NAME_COLORS[hue % NAME_COLORS.length]!,
+    shape: NAME_SHAPES[Math.floor(hue / 7) % NAME_SHAPES.length]!
   }
+}
+
+/**
+ * A random face for a new bot, one none of `taken` has while any is left; the
+ * daemon picks the same way when a client sends none. The bot keeps it
+ * whatever it is called.
+ */
+export function randomStyle(taken: readonly (AvatarStyle | null | undefined)[] = []): AvatarStyle {
+  const colors = AVATAR_COLORS.filter(item => !NEUTRAL_COLORS.includes(item.id))
+
+  const all = AVATAR_SHAPES.flatMap(shape =>
+    colors.map(color => ({ color: color.id, shape: shape.id }))
+  )
+
+  const free = all.filter(
+    face => !taken.some(other => other?.shape === face.shape && other?.color === face.color)
+  )
+
+  const pool = free.length ? free : all
+
+  return pool[Math.floor(Math.random() * pool.length)]!
 }
 
 export function resolveStyle(style: AvatarStyle) {

@@ -130,16 +130,7 @@ impl FileAccess {
     }
     pub(super) fn pi_read(&self, limit: usize) -> Result<Vec<u8>> {
         self.pi_mode(true, false)?;
-        let file = opened(unsafe {
-            libc::openat(
-                self.directory.as_raw_fd(),
-                self.name.as_ptr(),
-                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
-            )
-        })?;
-        if !file.metadata()?.is_file() {
-            return Err(Error::new(4202, "path is not a regular file"));
-        }
+        let file = self.open_regular()?;
         let mut bytes = Vec::new();
         file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
         if bytes.len() > limit {
@@ -154,7 +145,7 @@ impl FileAccess {
         let mode = self.pi_mode(false, true)?;
         self.replace(bytes, mode)
     }
-    pub(super) fn read(&self) -> Result<String> {
+    pub(super) fn open_regular(&self) -> Result<File> {
         let file = opened(unsafe {
             libc::openat(
                 self.directory.as_raw_fd(),
@@ -165,6 +156,10 @@ impl FileAccess {
         if !file.metadata()?.is_file() {
             return Err(Error::new(4202, "path is not a regular file"));
         }
+        Ok(file)
+    }
+    pub(super) fn read(&self) -> Result<String> {
+        let file = self.open_regular()?;
         let mut bytes = Vec::new();
         file.take(256 * 1024 + 1).read_to_end(&mut bytes)?;
         if bytes.len() > 256 * 1024 {
@@ -174,6 +169,37 @@ impl FileAccess {
     }
     pub(super) fn write(&self, bytes: &[u8]) -> Result<()> {
         self.replace(bytes, None)
+    }
+    /// Writes a file that is new, and says false when its name is taken:
+    /// by a file, a folder, or a link, which is never followed.
+    pub(super) fn create_new(&self, bytes: &[u8]) -> Result<bool> {
+        let fd = unsafe {
+            libc::openat(
+                self.directory.as_raw_fd(),
+                self.name.as_ptr(),
+                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                0o644,
+            )
+        };
+        if fd < 0 {
+            let error = std::io::Error::last_os_error();
+            return match error.kind() {
+                std::io::ErrorKind::AlreadyExists => Ok(false),
+                _ => Err(error.into()),
+            };
+        }
+        let mut file = opened(fd)?;
+        if let Err(error) = file.write_all(bytes) {
+            unsafe {
+                libc::unlinkat(self.directory.as_raw_fd(), self.name.as_ptr(), 0);
+            }
+            return Err(error.into());
+        }
+        Ok(true)
+    }
+    /// Replaces the file and keeps the permission bits it had.
+    pub(super) fn write_keeping_mode(&self, bytes: &[u8], mode: libc::mode_t) -> Result<()> {
+        self.replace(bytes, Some(mode))
     }
     fn replace(&self, bytes: &[u8], mode: Option<libc::mode_t>) -> Result<()> {
         let temporary = CString::new(format!(".hexbot-{}.tmp", crate::common::id()))

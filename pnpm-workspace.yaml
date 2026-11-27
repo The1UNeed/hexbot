@@ -154,3 +154,9 @@ minimumReleaseAgeExclude:
   - electron-builder-squirrel-windows
   - builder-util
   - electron-publish
+
+# expo-image-picker opens the camera without asking UIKit whether there is one,
+# and a simulator or a Mac without a camera ends the app. The patch refuses
+# instead. Drop it once upstream checks `isSourceTypeAvailable`.
+patchedDependencies:
+  expo-image-picker@58.0.10: patches/expo-image-picker@58.0.10.patch

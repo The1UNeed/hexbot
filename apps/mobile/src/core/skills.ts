@@ -6,11 +6,13 @@ const PLATFORMS: Record<string, string> = { linux: 'Linux', macos: 'macOS', wind
 export function requirementText(missing: SkillRequirement[]): string {
   return missing
     .map(item =>
-      item.kind === 'platform'
-        ? `Only on ${item.name.map(name => PLATFORMS[name] ?? name).join(' or ')}`
-        : item.kind === 'command'
-          ? `Needs ${item.name} installed`
-          : `Needs ${item.name}`
+      item.kind === 'connector'
+        ? `Comes with ${item.name.join(' or ')}`
+        : item.kind === 'platform'
+          ? `Only on ${item.name.map(name => PLATFORMS[name] ?? name).join(' or ')}`
+          : item.kind === 'command'
+            ? `Needs ${item.name} installed`
+            : `Needs ${item.name}`
     )
     .join(' · ')
 }

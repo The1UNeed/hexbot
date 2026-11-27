@@ -1,5 +1,6 @@
 import { botFace } from '../../lib/avatar-builder'
 import { cn } from '../../lib/cn'
+import { BRAND_ICONS } from '../../lib/connector-icons'
 import { moodForStatus } from '../../lib/face'
 import type { Bot, Room } from '../../lib/types'
 
@@ -10,10 +11,13 @@ import { type DotStatus, StatusDot } from './status-dot'
 export const activeBots = (room: Pick<Room, 'members'>) =>
   room.members.filter(member => member.member_kind === 'bot' && !member.left_at)
 
+const DISCORD = BRAND_ICONS.discord!
+
 /**
  * The room's face: one bot's face when it has one bot, otherwise up to four
- * faces in a 2x2 grid. The same cluster sits in the sidebar row, the room
- * header and room settings, so a room looks the same everywhere.
+ * faces in a 2x2 grid. A Discord room carries Discord's mark at its bottom
+ * left, clear of the status dot. The same cluster sits in the sidebar row,
+ * the room header and room settings, so a room looks the same everywhere.
  */
 export function RoomCluster({
   bots,
@@ -24,7 +28,7 @@ export function RoomCluster({
 }: {
   bots: Record<string, Bot>
   className?: string
-  room: Pick<Room, 'members' | 'name'>
+  room: Pick<Room, 'discord' | 'members' | 'name'>
   /** `sm` is 24px (headers), `lg` 40px (rows), `xl` 72px (settings). */
   size?: 'lg' | 'sm' | 'xl'
   status?: DotStatus
@@ -65,6 +69,31 @@ export function RoomCluster({
           ))}
         </span>
       )}
+      {room.discord ? (
+        <svg
+          aria-label="Discord"
+          className={cn(
+            'absolute overflow-visible stroke-canvas',
+            size === 'sm'
+              ? '-bottom-0.5 -left-1 h-[9.5px] w-3'
+              : size === 'xl'
+                ? '-bottom-1.5 -left-2.5 h-[22px] w-7'
+                : '-bottom-1 -left-1.5 h-[13.5px] w-[17px]'
+          )}
+          data-testid="room-discord-badge"
+          role="img"
+          viewBox="0 2.5 24 19"
+        >
+          {/* The outline, in the colour behind the face, keeps the mark off the bot. */}
+          <path
+            d={DISCORD.path}
+            fill={DISCORD.color}
+            paintOrder="stroke"
+            strokeLinejoin="round"
+            strokeWidth={4}
+          />
+        </svg>
+      ) : null}
       <StatusDot size={size === 'sm' ? 'sm' : 'md'} status={status} />
     </span>
   )

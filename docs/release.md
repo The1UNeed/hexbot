@@ -6,39 +6,60 @@ page is the procedure and the one-time setup. Modelled on T3 Code's
 
 ## iOS TestFlight
 
-iOS beta releases run in Expo EAS Workflows. The GitHub Release action's
-`testflight` job starts Expo after release checks pass when the resolved
+iOS beta releases build on GitHub and upload through Expo. The GitHub Release
+action's `testflight` job runs after release checks pass when the resolved
 channel is nightly. Manual nightlies and scheduled nightlies with new commits
 include iOS; stable releases and ordinary pushes to `main` do nothing for iOS.
-`apps/mobile/.eas/workflows/testflight.yml` checks the
-mobile app, builds with the production profile, then uploads that exact build
-through the standard EAS Submit job, which works on the free Expo plan.
-Success means Apple accepted the upload; Apple processes the binary afterward.
-Build numbers increment remotely. The app version remains in
-`apps/mobile/app.config.ts`.
+On a `macos-26` runner it builds the release checkout with
+`eas build --local` and the production profile, then uploads that `.ipa` to
+App Store Connect with `eas submit`. Once Apple has processed it, Apple's
+upload event starts `testflight-testers.yml` in Expo, whose `testflight` job
+adds the build to the external group `Website0`, which holds the public link
+on hexbot.app, and submits it for Beta App Review. The GitHub job waits for
+the build and the upload only: success means Apple accepted the upload. The
+tester step reports in Expo's Workflows page and emails, and public testers
+get the build once Apple approves it.
 
-Link `The1UNeed/hexbot` in the EAS project's GitHub settings and set its base
-directory to `apps/mobile`. Add an Expo access token with permission to run
-workflows on the owning account as the `EXPO_TOKEN` GitHub repository secret.
-Nightly preflight requires it; stable does not. The GitHub job passes its
-exact commit SHA to Expo and waits for the build and upload result, in
-parallel with desktop packaging. A failed iOS job fails the Release run;
-desktop publishing is independent of that job.
+The Expo account is on the free plan, which allows 15 iOS cloud builds a
+month, fewer than one a night; once they are used, Expo refuses to start a
+build until the month resets. Nightlies therefore build on GitHub's macOS
+runner, free for this public repository, and Expo only keeps the signing
+credentials and build number and uploads. Expo also starts a `testflight` job
+that takes an EAS build (`build_id`) only on paid plans, so uploads use
+`submit` and the `testflight` job takes the App Store Connect build
+(`asc_build_id`) from Apple's event. `scripts/desktop/testflight-release.test.mjs`
+keeps it that way. The tester workflow needs the App Store Connect connection
+in the Expo project (Project settings, General, Connections), made with the
+submission API key.
+Build numbers increment remotely, for local builds too. The app version
+remains in `apps/mobile/app.config.ts`.
+
+Add an Expo access token for the owning account as the `EXPO_TOKEN` GitHub
+repository secret. Nightly preflight requires it; stable does not. The job
+runs in parallel with desktop packaging and needs fastlane and CocoaPods on
+the runner, which it installs with Homebrew if the image lacks them. A failed iOS job fails
+the Release run; desktop publishing is independent of that job.
 The existing EAS signing credentials and assigned App Store Connect API key
 are used; the production submit profile targets Apple app `6824190699`.
-Enable automatic distribution on the internal TestFlight group once so its
-testers receive subsequent builds. External Beta App Review is not submitted
-by these workflows.
+The internal group `Team (Expo)` receives every build through automatic
+distribution. `Website0` must keep its name (it is set in `testflight-testers.yml`)
+and TestFlight's Test Information must stay filled in for Beta App Review.
 
-`pnpm mobile:testflight` starts the full workflow from a checkout and waits
-for its result. If only uploading failed, use
-`pnpm mobile:testflight:upload --input build_id=YOUR_EAS_BUILD_ID` to retry
-that build without incrementing its number or starting another build.
-Both commands return nonzero on workflow failure and print the run link.
-Inspect its failed job logs before retrying. A successful build is not proof
-of a successful upload, and a workflow cannot guarantee Apple approval.
-Do not retry an already accepted build. Full setup is in
-`apps/mobile/README.md`.
+When the job fails, its GitHub log has the reason. Re-run the job to retry:
+a local build costs nothing and takes a new build number. Do not retry an
+already accepted build: if the upload worked and only the group or review
+step failed, add that build to `Website0` in App Store Connect instead. A
+successful build is not proof of a successful upload, and a workflow cannot
+guarantee Apple approval.
+
+`pnpm mobile:testflight` still runs the Expo cloud workflow
+(`apps/mobile/.eas/workflows/testflight.yml`) from a checkout and uses one of
+the month's 15 cloud builds. If only its upload failed,
+`pnpm mobile:testflight:upload --input build_id=YOUR_EAS_BUILD_ID` retries
+that build without starting another. Both print the run link and return
+nonzero on failure; read the reason on that link or with
+`pnpm exec eas workflow:view RUN_ID --json` in `apps/mobile`, under the job's
+`errors`. Full setup is in `apps/mobile/README.md`.
 
 ## What `release.yml` does
 
@@ -53,8 +74,8 @@ Do not retry an already accepted build. Full setup is in
   Linux, POSIX bootstrap syntax and ShellCheck, service handoff, web, desktop,
   site, Connect, and the desktop script tests. Windowed installer typecheck
   and tests run when its package exists. Nothing is built until CI passes.
-- `testflight` (nightly only) starts the Expo iOS build and TestFlight upload
-  for the release commit, using `EXPO_TOKEN`, and waits for the result.
+- `testflight` (nightly only) builds iOS for the release commit on a macOS
+  runner and uploads it to TestFlight through Expo, using `EXPO_TOKEN`.
 - `build` makes six packages in parallel: full and client for macOS arm64,
   macOS x64, and Linux x64, signed and notarized when the Apple secrets are
   present.
@@ -84,9 +105,9 @@ Do not retry an already accepted build. Full setup is in
   to `main` as `github-actions[bot]`. That push does not trigger CI, but it
   does trigger a production build of hexbot.app on Vercel (`docs/deploy.md`).
 
-`ci.yml` runs `scripts/desktop/release-smoke.mjs` on every push: the version
-resolution, feed, manifest, and cask scripts against synthetic packages, so
-a broken release script fails before tag day.
+`ci.yml` runs `scripts/desktop/release-smoke.mjs` on every pull request and
+push to `main`: the version resolution, feed, manifest, and cask scripts
+against synthetic packages, so a broken release script fails before tag day.
 
 Full packages bundle the native daemon, pinned Node and Pi, checksum-verified
 ripgrep and fd, web assets and skills. Targets are macOS arm64, macOS x64 and Linux x64. Both macOS jobs use
@@ -410,6 +431,67 @@ a stapled ticket. Tauri receives the same certificate and password, the
 derived signing identity, and the API key ID, issuer and `.p8` path through
 its environment variables. See [Tauri's macOS signing documentation](https://v2.tauri.app/distribute/sign/macos/).
 
+### Google and Microsoft sign-in
+
+The Google and Microsoft connectors sign in through Hexbot's own OAuth
+clients, compiled into the daemon by the `build` job. Without them a build
+still works; users add their own client when they connect one. One client
+per account serves every connector of that account, so it must be allowed
+every permission below; a connector asks for its own only (`SERVICES` in
+`accounts.rs` is the list the daemon sends).
+
+- **Microsoft**: register a multitenant app in Microsoft Entra that also
+  takes personal accounts, turn on **Allow public client flows**, and add
+  the delegated Graph permissions `User.Read`, `Mail.ReadWrite`, `Mail.Send`
+  (Outlook), `Calendars.ReadWrite`, `MailboxSettings.Read` (Outlook
+  Calendar), `Files.ReadWrite` (OneDrive, Word, Excel, PowerPoint) and
+  `Tasks.ReadWrite` (Microsoft To Do, with `MailboxSettings.Read`). Save its application (client) ID as
+  the repository variable `HEXBOT_MICROSOFT_CLIENT_ID`. Publisher
+  verification removes the "unverified" label on the consent screen.
+- **Google**: in a Google Cloud project, enable the Gmail, Google Calendar,
+  Google Drive, Google Docs, Google Sheets, Google Slides and Tasks APIs,
+  and set up the OAuth consent screen with the scopes `gmail.readonly`,
+  `gmail.compose` (Gmail), `calendar.readonly`, `calendar.events` (Google
+  Calendar), `drive.readonly`, `drive.file` (Google Drive), `documents`,
+  `drive.metadata.readonly`, `drive.file` (Google Docs), `spreadsheets`,
+  `drive.metadata.readonly` (Google Sheets), `presentations`,
+  `drive.metadata.readonly` (Google Slides) and `tasks` (Google Tasks).
+  Create a **Desktop app** client. Save its client ID as the variable
+  `HEXBOT_GOOGLE_CLIENT_ID` and its client secret as the secret
+  `HEXBOT_GOOGLE_CLIENT_SECRET`; Google treats a desktop client's secret as
+  public, but it stays out of logs. Then create a **Web application** client
+  in the same project with the one authorized redirect URI
+  `https://connect.hexbot.app/oauth/google`, and add `hexbot.app` to the
+  consent screen's authorized domains. Save its ID as the variable
+  `HEXBOT_GOOGLE_WEB_CLIENT_ID` and its secret as the secret
+  `HEXBOT_GOOGLE_WEB_CLIENT_SECRET`. A browser or phone on another computer
+  comes back through Connect with it (`docs/connect.md`, "Google sign-in
+  return"); without it, those sign-ins fall back to pasting the address. Gmail's scopes, `drive.readonly` and
+  `drive.metadata.readonly` are restricted: until Google verifies the app
+  for every scope it asks for and its yearly security assessment passes,
+  only the project's test users (up to 100) can sign in. A scope added to
+  the daemon and not yet on the consent screen makes Google refuse that
+  connector's sign-in, so add scopes there before a release that uses them.
+
+### Brand permissions
+
+The app shows Google's and Microsoft's own logos for their connectors
+(`apps/web/src/assets/brands/README.md` lists the files and their terms).
+
+- **Google**: the Google Drive logo needs no pre-approval. For the other
+  product icons (Gmail, Calendar, Docs, Sheets, Slides, Tasks) Google asks
+  for permission: create a Partner Marketing Hub account at
+  <https://partnermarketinghub.withgoogle.com/> and submit the Plugins page
+  for approval. Until Google approves, ship those six with a plain glyph:
+  drop `logo` from their `BRAND_ICONS` entries and give the connectors a
+  `glyph:` icon in `connectors.json`.
+- **Microsoft**: the app icons are licensed by the Microsoft Fabric Assets
+  License Agreement to an app that uses a Microsoft API, so no request is
+  needed. Read the agreement once (<https://aka.ms/fluentui-assets-license>);
+  it lets Microsoft review the use and end it.
+- When either company publishes new logos, replace the files. Both require
+  the newest version.
+
 ### Optional
 
 - `SITE_DEPLOY_HOOK_URL` (secret): the `release-workflow` deploy hook on the
@@ -468,6 +550,8 @@ On Linux x86_64:
 
 - Launch the AppImage and install the Debian package on a clean supported
   distribution.
+- Launch the full and client-only AppImages on a system without `libfuse2`,
+  such as a fresh Ubuntu 24.04 desktop.
 - Confirm the application menu entry uses the Hexbot name, Utility category,
   and correct window grouping.
 - Start the daemon, pair a client, restart the machine, and confirm saved

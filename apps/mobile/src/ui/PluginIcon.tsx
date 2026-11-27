@@ -1,8 +1,11 @@
 import { Ionicons } from '@expo/vector-icons'
-import { StyleSheet, View } from 'react-native'
-import Svg, { Path } from 'react-native-svg'
+import { Image, StyleSheet, View } from 'react-native'
+import Svg, { Path, SvgXml } from 'react-native-svg'
 
 import { BRAND_ICONS } from '../../../web/src/lib/connector-icons'
+
+import { BRAND_LOGOS } from './brandLogos'
+import { BRAND_LOGO_XML } from './brandMarkup'
 
 import { useTheme } from './theme'
 
@@ -57,12 +60,44 @@ const GLYPHS: Record<string, IconName> = {
   wrench: 'construct-outline'
 }
 
-/** A plugin's icon, as the web app draws it: a brand on its colour, or a plain glyph. */
+/**
+ * A plugin's icon, as the web app draws it: Google's or Microsoft's own logo
+ * on white, another brand's glyph on its colour, or a plain glyph.
+ */
 export function PluginIcon({ icon, size = 28 }: { icon: string; size?: number }) {
   const theme = useTheme()
   const brand = BRAND_ICONS[icon]
 
-  if (brand) {
+  // The owner's own file, whole and in its own colours on white: sized
+  // inside the tile with clear space around it, so the tile never crops it.
+  if (brand?.logo && (BRAND_LOGOS[icon] || BRAND_LOGO_XML[icon])) {
+    const inner = Math.round(size * 0.7)
+    return (
+      <View
+        style={[
+          styles.box,
+          box(size),
+          {
+            backgroundColor: '#ffffff',
+            borderColor: theme.hairline,
+            borderWidth: StyleSheet.hairlineWidth
+          }
+        ]}
+      >
+        {BRAND_LOGOS[icon] ? (
+          <Image
+            resizeMode="contain"
+            source={BRAND_LOGOS[icon]}
+            style={{ height: inner, width: inner }}
+          />
+        ) : (
+          <SvgXml height={inner} width={inner} xml={BRAND_LOGO_XML[icon]!} />
+        )}
+      </View>
+    )
+  }
+
+  if (brand?.path) {
     return (
       <View style={[styles.box, box(size), { backgroundColor: brand.color }]}>
         <Svg fill="#ffffff" height={16} viewBox="0 0 24 24" width={16}>

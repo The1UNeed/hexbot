@@ -62,6 +62,10 @@ CREATE TABLE IF NOT EXISTS bot_messages(
 CREATE TABLE IF NOT EXISTS dreams(
  id TEXT PRIMARY KEY, bot TEXT NOT NULL, room_id TEXT, started_at REAL NOT NULL,
  finished_at REAL, status TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '');
+-- Pinned rooms. A table of its own: older daemons insert rooms by position.
+CREATE TABLE IF NOT EXISTS room_pins(
+ room_id TEXT PRIMARY KEY, pinned_at REAL NOT NULL,
+ FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS room_memory(
  room_id TEXT PRIMARY KEY, text TEXT NOT NULL DEFAULT '', updated_at REAL NOT NULL,
  FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE);
@@ -92,6 +96,50 @@ CREATE TABLE IF NOT EXISTS heartbeat_messages(
  id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, bot TEXT NOT NULL, section_id TEXT NOT NULL,
  heartbeat_id TEXT, text TEXT NOT NULL, created_at REAL NOT NULL, offered_at REAL, context_at REAL,
  push_due_at REAL);
+-- Reactions: one emoji on a message in a bot's chat (reactions.rs). by_bot is
+-- the bot that left it, '' for the user. offered counts the times a user's
+-- reaction was handed to the chat's next turn; noted_at: Pi took it.
+CREATE TABLE IF NOT EXISTS message_reactions(
+ section_id TEXT NOT NULL, message_id TEXT NOT NULL, by_bot TEXT NOT NULL DEFAULT '',
+ emoji TEXT NOT NULL, owner_id TEXT NOT NULL, created_at REAL NOT NULL,
+ offered INTEGER NOT NULL DEFAULT 0, noted_at REAL,
+ PRIMARY KEY(section_id, message_id, by_bot));
+-- Discord (discord.rs): each bot's own Discord app, the channels that became
+-- rooms (posted_seq: the last room event the outbox handled), and which
+-- Discord message is which room event (bot: the bot that posted it, NULL for people).
+CREATE TABLE IF NOT EXISTS discord_bots(
+ bot TEXT PRIMARY KEY, owner_id TEXT NOT NULL, application_id TEXT NOT NULL, user_id TEXT,
+ username TEXT, status TEXT NOT NULL DEFAULT 'connecting', error TEXT, connected_at REAL,
+ updated_at REAL);
+CREATE TABLE IF NOT EXISTS discord_channels(
+ channel_id TEXT PRIMARY KEY, guild_id TEXT NOT NULL, room_id TEXT NOT NULL UNIQUE,
+ guild_name TEXT, channel_name TEXT, posted_seq INTEGER NOT NULL DEFAULT 0,
+ FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS discord_messages(
+ message_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, seq INTEGER, bot TEXT,
+ FOREIGN KEY(room_id) REFERENCES rooms(id) ON DELETE CASCADE);
+CREATE INDEX IF NOT EXISTS idx_discord_messages_room_seq ON discord_messages(room_id,seq);
+-- When each channel's last Discord room was deleted (discord.rs `closing`).
+CREATE TABLE IF NOT EXISTS discord_closed(channel_id TEXT PRIMARY KEY, closed_at REAL NOT NULL);
+-- The bots Discord is turned on for in Plugins, and how each acts there by
+-- default (discord.rs MODES). Kept when the bot disconnects.
+CREATE TABLE IF NOT EXISTS discord_plugin(
+ bot TEXT PRIMARY KEY, owner_id TEXT NOT NULL, mode TEXT NOT NULL DEFAULT 'reads',
+ enabled_at REAL NOT NULL);
+-- The servers each bot's Discord app is in, from its Gateway connection, and
+-- how it acts in each when that differs from its default (mode NULL).
+-- joined_at: when the app was last added to it.
+CREATE TABLE IF NOT EXISTS discord_guilds(
+ bot TEXT NOT NULL, guild_id TEXT NOT NULL, name TEXT, mode TEXT,
+ present INTEGER NOT NULL DEFAULT 1, joined_at REAL, PRIMARY KEY(bot,guild_id));
+-- Persistent Auto-mode approval rules (approval_rules.rs): rules the user
+-- saves via Always allow on a card or manages in Settings, Approvals.
+CREATE TABLE IF NOT EXISTS approval_rules(
+ id TEXT PRIMARY KEY, owner_id TEXT NOT NULL DEFAULT 'local',
+ kind TEXT NOT NULL CHECK(kind IN ('allow','ask')), text TEXT NOT NULL,
+ source TEXT NOT NULL DEFAULT 'manual' CHECK(source IN ('manual','card')),
+ tool TEXT, computer TEXT, created_at REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_approval_rules_owner ON approval_rules(owner_id,kind,created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_heartbeats_bot_started ON heartbeats(bot,started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_heartbeat_messages_section ON heartbeat_messages(section_id,context_at);
 CREATE INDEX IF NOT EXISTS idx_sections_bot ON sections(bot);
@@ -134,6 +182,9 @@ const COLUMNS: &[(&str, &str, &str)] = &[
     ("sections", "purpose", "TEXT"),
     ("devices", "push_token", "TEXT"),
     ("devices", "push_platform", "TEXT"),
+    ("bots", "pinned_at", "REAL"),
+    ("bot_messages", "waited", "INTEGER NOT NULL DEFAULT 1"),
+    ("bot_messages", "failed", "INTEGER NOT NULL DEFAULT 0"),
 ];
 
 /// Open the explicitly selected database without running schema migrations.
@@ -185,13 +236,28 @@ pub fn migrate(home: &Path) -> Result<()> {
             ));
         }
     }
+    let discord_plugin = table_exists(&transaction, "discord_plugin")?;
     transaction.execute_batch(TABLES)?;
+    // Discord became a plugin: a bot connected before keeps it, once.
+    if !discord_plugin {
+        transaction.execute(
+            "INSERT OR IGNORE INTO discord_plugin(bot,owner_id,mode,enabled_at) SELECT bot,owner_id,'reads',COALESCE(connected_at,updated_at,0) FROM discord_bots",
+            [],
+        )?;
+    }
     for (table, column, definition) in COLUMNS {
         if !column_exists(&transaction, table, column)? {
             // All identifiers and definitions are constants above.
             transaction.execute_batch(&format!(
                 "ALTER TABLE {table} ADD COLUMN {column} {definition}"
             ))?;
+            // The primary bot starts pinned, once: an unpinned one stays unpinned.
+            if (*table, *column) == ("bots", "pinned_at") {
+                transaction.execute(
+                    "UPDATE bots SET pinned_at=COALESCE(created_at,CAST(strftime('%s','now') AS REAL)) WHERE is_primary=1",
+                    [],
+                )?;
+            }
         }
     }
     transaction.execute_batch(
@@ -218,6 +284,13 @@ pub fn migrate(home: &Path) -> Result<()> {
         "INSERT OR IGNORE INTO users(id,display_name,role,limits_json,created_at) VALUES ('local','Admin','admin','{}',?)",
         [now],
     )?;
+    // Earlier builds saved a run Hexbot stopped, such as a bot-to-bot request
+    // that ran out of time, as a failure when its abort said "This operation
+    // was aborted". Nothing failed; the bot's dot stayed red for good.
+    transaction.execute(
+        "UPDATE bot_incidents SET resolved_at=? WHERE kind='turn_failed' AND resolved_at IS NULL AND text='This operation was aborted'",
+        [now],
+    )?;
     #[allow(clippy::unnecessary_map_or)]
     if previous.map_or(true, |version| version < ONE_PERSON_VERSION) {
         name_from_about_you(&transaction, home)?;
@@ -231,6 +304,7 @@ pub fn migrate(home: &Path) -> Result<()> {
     transaction.commit()?;
     crate::skills::migrate(home)?;
     crate::connectors::migrate(home)?;
+    crate::accounts::migrate(home)?;
     Ok(())
 }
 
@@ -514,4 +588,33 @@ fn title_case(value: &str) -> String {
         previous_cased = character.is_lowercase() || character.is_uppercase();
     }
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migration_clears_stops_saved_as_failures_and_keeps_real_ones() {
+        let home = tempfile::tempdir().unwrap();
+        migrate(home.path()).unwrap();
+        open(home.path())
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO bot_incidents(id,bot,kind,text,created_at) VALUES
+                 ('stopped','owl','turn_failed','This operation was aborted',1),
+                 ('failed','owl','turn_failed','fetch failed',2);",
+            )
+            .unwrap();
+        migrate(home.path()).unwrap();
+        let open_ids: Vec<String> = open(home.path())
+            .unwrap()
+            .prepare("SELECT id FROM bot_incidents WHERE resolved_at IS NULL")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        assert_eq!(open_ids, ["failed"]);
+    }
 }

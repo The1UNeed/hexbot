@@ -6,6 +6,7 @@ import { isSubscription, ProviderPanel, supportsApiKey } from '../../components/
 import { Button } from '../../components/ui/button'
 import { Chip } from '../../components/ui/chip'
 import { Input } from '../../components/ui/input'
+import { ScrollArea } from '../../components/ui/scroll-area'
 import { Select } from '../../components/ui/select'
 import { settingsPageClass } from '../../components/ui/settings-shell'
 import { SkeletonLines } from '../../components/ui/skeleton'
@@ -19,7 +20,6 @@ import {
   modelsList,
   pairingCode,
   providerModels,
-  usageSummary,
   userMemoryGet,
   userMemorySet
 } from '../../lib/api'
@@ -38,6 +38,7 @@ import { pairWithDaemon, targetOrigin } from '../../lib/connection'
 import { primeSounds } from '../../lib/sounds'
 import type { DaemonInfo, ModelOption, PairingCode, Provider } from '../../lib/types'
 import { daemonBehind } from '../../lib/version-skew'
+import { useApprovalRules } from '../../stores/approval-rules'
 import { useBots } from '../../stores/bots'
 import { useConnection } from '../../stores/connection'
 import { useMe } from '../../stores/me'
@@ -50,15 +51,27 @@ import {
   useUpdates
 } from '../../stores/updates'
 import { MemoryEditor } from '../bot-settings/memory'
-import { ChoiceRow, dividerClass, Group, Heading, Row } from '../bot-settings/shared'
+import {
+  ChoiceRow,
+  DEFAULT_MEMORY_LIMIT,
+  DEFAULT_SOUL_LIMIT,
+  dividerClass,
+  Group,
+  Heading,
+  LimitRow,
+  Row
+} from '../bot-settings/shared'
 import { ConfirmUpdate, installTarget } from '../confirm-update'
 
 import { ComputerSettings } from './computer'
 import { DiagnosticsSettings } from './diagnostics'
+import { ExperimentalSettings } from './experimental'
 import { OPEN_SOURCE } from './licenses'
+import { NotificationsSettings } from './notifications'
 import { PasswordsSettings } from './passwords'
 import { PluginsSettings } from './plugins'
 import { PrivacySettings } from './privacy'
+import { UsageSettings } from './usage'
 
 export const SETTINGS_TABS = [
   'providers',
@@ -70,11 +83,13 @@ export const SETTINGS_TABS = [
   'memory',
   'usage',
   'approvals',
+  'notifications',
   'appearance',
   'updates',
   'privacy',
   'about',
-  'diagnostics'
+  'diagnostics',
+  'experimental'
 ] as const
 
 export type SettingsTab = (typeof SETTINGS_TABS)[number]
@@ -114,11 +129,19 @@ function ErrorLine({ children }: { children: React.ReactNode }) {
 
 /** Complete settings body; the file route owns the surrounding window and navigation. */
 export function SettingsPanel({ tab }: { tab: string }): React.JSX.Element {
+  // The plugins table needs the room its columns take.
+  const table = useUi(state => state.accessTable) && tab === 'plugins'
+
   return (
     <section
       aria-label={`${tab} settings`}
       // Diagnostics holds tables and charts; it takes the column's full measure.
-      className={cn(settingsPageClass, tab === 'diagnostics' && 'max-w-[820px]')}
+      className={cn(
+        settingsPageClass,
+        tab === 'diagnostics' && 'max-w-[820px]',
+        // The table measures itself, so its own queries follow the page and not the window.
+        table && '@container max-w-[860px]'
+      )}
     >
       {tab === 'providers' && <ProvidersSettings />}
       {tab === 'plugins' && <PluginsSettings />}
@@ -129,11 +152,13 @@ export function SettingsPanel({ tab }: { tab: string }): React.JSX.Element {
       {tab === 'memory' && <MemorySettings />}
       {tab === 'usage' && <UsageSettings />}
       {tab === 'approvals' && <ApprovalsSettings />}
+      {tab === 'notifications' && <NotificationsSettings />}
       {tab === 'appearance' && <AppearanceSettings />}
       {tab === 'updates' && <UpdatesSettings />}
       {tab === 'privacy' && <PrivacySettings />}
       {tab === 'about' && <AboutSettings />}
       {tab === 'diagnostics' && <DiagnosticsSettings />}
+      {tab === 'experimental' && <ExperimentalSettings />}
     </section>
   )
 }
@@ -148,12 +173,29 @@ export function MemorySettings() {
   const [about, setAbout] = useState<Awaited<ReturnType<typeof userMemoryGet>> | null>(null)
   const [aboutError, setAboutError] = useState<string | null>(null)
   const [nameError, setNameError] = useState<string | null>(null)
+  const [limitError, setLimitError] = useState<string | null>(null)
   useEffect(() => {
     void refresh()
     void userMemoryGet()
       .then(setAbout)
       .catch(cause => setAboutError(errorText(cause)))
   }, [refresh])
+
+  // Bots report the limits in effect, so a new default reaches them at once.
+  const setLimit = async (key: 'memory_char_limit' | 'soul_char_limit', limit: null | number) => {
+    if (limit === null) {
+      return
+    }
+
+    setLimitError(null)
+
+    try {
+      await patch({ [key]: limit })
+      await useBots.getState().refresh()
+    } catch (cause) {
+      setLimitError(errorText(cause))
+    }
+  }
 
   const rename = (value: string) => {
     const name = value.trim()
@@ -225,6 +267,30 @@ export function MemorySettings() {
             Your name, what you do, and how you like to be spoken to. Only you write this.
           </p>
         </div>
+        {settings && typeof settings.soul_char_limit === 'number' ? (
+          <div>
+            <Group
+              footer="Both sit in every message a bot sends to its model, so longer ones cost more. A bot can have its own in its settings."
+              title="Limits"
+            >
+              <LimitRow
+                description="The most characters a bot's soul can hold."
+                label="Soul limit"
+                onSave={limit => setLimit('soul_char_limit', limit)}
+                title="Soul"
+                value={settings.soul_char_limit ?? DEFAULT_SOUL_LIMIT}
+              />
+              <LimitRow
+                description="The most characters a bot's memory can hold."
+                label="Memory limit"
+                onSave={limit => setLimit('memory_char_limit', limit)}
+                title="Memory"
+                value={settings.memory_char_limit ?? DEFAULT_MEMORY_LIMIT}
+              />
+            </Group>
+            {limitError ? <ErrorLine>{limitError}</ErrorLine> : null}
+          </div>
+        ) : null}
         <Group title="Dreaming">
           <Row
             control={
@@ -468,67 +534,6 @@ export function ConnectSettings() {
   )
 }
 
-export function UsageSettings() {
-  const [summary, setSummary] = useState<Awaited<ReturnType<typeof usageSummary>> | null>(null)
-  useEffect(() => {
-    void usageSummary().then(setSummary)
-  }, [])
-
-  const bots = useBots(state => state.byName)
-
-  const rows = summary
-    ? Array.isArray(summary.by_bot)
-      ? summary.by_bot
-      : Object.entries(summary.by_bot).map(([bot, value]) => ({ bot, ...value }))
-    : []
-
-  const number = (value: number) => (
-    <span className="font-mono text-[length:var(--text-secondary)] tabular-nums">
-      {value.toLocaleString()}
-    </span>
-  )
-
-  return (
-    <>
-      <Heading description="Token use reported by this daemon.">Usage</Heading>
-      {summary ? (
-        <div className="space-y-8">
-          <Group title="This daemon">
-            <Row control={number(summary.input_tokens)} title="Input tokens" />
-            <Row control={number(summary.output_tokens)} title="Output tokens" />
-            <Row
-              control={
-                <span className="font-mono text-[length:var(--text-secondary)] tabular-nums">
-                  ${summary.estimated_cost_usd.toFixed(2)}
-                </span>
-              }
-              title="Estimated cost"
-            />
-          </Group>
-          {rows.length ? (
-            <Group title="By bot">
-              {rows.map(row => (
-                <Row
-                  control={
-                    <span className="font-mono text-[length:var(--text-secondary)] tabular-nums">
-                      ${(row.estimated_cost_usd ?? 0).toFixed(2)}
-                    </span>
-                  }
-                  description={`${row.input_tokens.toLocaleString()} in · ${row.output_tokens.toLocaleString()} out`}
-                  key={row.bot}
-                  title={bots[row.bot]?.display_name ?? row.bot}
-                />
-              ))}
-            </Group>
-          ) : null}
-        </div>
-      ) : (
-        <SkeletonLines label="Loading usage" />
-      )}
-    </>
-  )
-}
-
 type ProviderRowState = { busy: boolean; draft: string; open: boolean; result: null | string }
 
 const idleRow: ProviderRowState = { busy: false, draft: '', open: false, result: null }
@@ -710,15 +715,10 @@ function SubscriptionRow({
   )
 }
 
-function DefaultModels() {
-  const settings = useSettings(state => state.settings)
+/** Every model on a connected provider, as `provider/model` choices. */
+function useModelChoices() {
   const providers = useSettings(state => state.providers)
-  const refresh = useSettings(state => state.refresh)
-  const patch = useSettings(state => state.patch)
   const [choices, setChoices] = useState<{ label: string; value: string }[]>([])
-  useEffect(() => {
-    void refresh()
-  }, [refresh])
   useEffect(() => {
     const configured = providers.filter(item => item.configured === true)
     void Promise.all(
@@ -734,6 +734,18 @@ function DefaultModels() {
       )
     ).then(lists => setChoices(lists.flat()))
   }, [providers])
+
+  return choices
+}
+
+function DefaultModels() {
+  const settings = useSettings(state => state.settings)
+  const refresh = useSettings(state => state.refresh)
+  const patch = useSettings(state => state.patch)
+  const choices = useModelChoices()
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
 
   return (
     <Group
@@ -1191,19 +1203,133 @@ function formatDate(value: null | number): string {
   return value ? new Date(value * (value < 10_000_000_000 ? 1000 : 1)).toLocaleString() : 'never'
 }
 
+/** The review model choice that means no model of its own. */
+const OWN_MODEL = '__own__'
+
+function ApprovalRulesSection({
+  kind,
+  placeholder,
+  title,
+  footer
+}: {
+  footer: string
+  kind: 'allow' | 'ask'
+  placeholder: string
+  title: string
+}): React.JSX.Element {
+  const rules = useApprovalRules(state => state.rules)
+  const add = useApprovalRules(state => state.add)
+  const remove = useApprovalRules(state => state.remove)
+  const [draft, setDraft] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<null | string>(null)
+
+  const items = rules.filter(rule => rule.kind === kind)
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault()
+    const trimmed = draft.trim()
+
+    if (!trimmed || saving) {
+      return
+    }
+
+    setSaving(true)
+    setError(null)
+
+    try {
+      await add(kind, trimmed)
+      setDraft('')
+    } catch (caught) {
+      setError(errorText(caught))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div>
+      <Group footer={footer} title={title}>
+        {items.map(rule => (
+          <Row
+            control={
+              <Button
+                aria-label={`Remove rule ${rule.text}`}
+                className="rounded-full text-muted hover:bg-danger/10 hover:text-danger"
+                onClick={() => {
+                  setError(null)
+                  void remove(rule.id).catch(caught => setError(errorText(caught)))
+                }}
+                size="sm"
+                variant="ghost"
+              >
+                Remove
+              </Button>
+            }
+            description={
+              rule.source === 'card' ? (
+                <span className="text-[length:var(--text-meta)]">Saved from Always allow</span>
+              ) : undefined
+            }
+            key={rule.id}
+            title={rule.text}
+          />
+        ))}
+        <form
+          className="flex min-h-[50px] items-center gap-2.5 px-4 py-2 transition-colors duration-[var(--hex-motion-fast)] first:rounded-t-2xl last:rounded-b-2xl focus-within:bg-foreground/[0.025]"
+          onSubmit={event => void submit(event)}
+        >
+          <Plus aria-hidden className="shrink-0 text-muted/80" size={15} />
+          <input
+            aria-label={`Add ${title.toLowerCase()} rule`}
+            className="min-w-0 flex-1 bg-transparent py-1 text-[length:var(--text-body)] text-foreground outline-none placeholder:text-muted/75"
+            onChange={event => setDraft(event.target.value)}
+            placeholder={placeholder}
+            value={draft}
+          />
+          <Button
+            className="rounded-full"
+            disabled={!draft.trim() || saving}
+            size="sm"
+            type="submit"
+            variant={draft.trim() ? 'primary' : 'secondary'}
+          >
+            Add
+          </Button>
+        </form>
+      </Group>
+      {error ? <ErrorLine>{error}</ErrorLine> : null}
+    </div>
+  )
+}
+
 export function ApprovalsSettings(): React.JSX.Element {
   const role = useMe(state => state.me?.role)
   const settings = useSettings(state => state.settings)
   const refresh = useSettings(state => state.refresh)
   const patch = useSettings(state => state.patch)
   const [info, setInfo] = useState<DaemonInfo | undefined>(undefined)
+  const refreshProviders = useSettings(state => state.refreshProviders)
+  const refreshRules = useApprovalRules(state => state.refresh)
+  const rulesSupported = useApprovalRules(state => state.supported)
+  const choices = useModelChoices()
+  const reviewModel = settings?.review_model ?? OWN_MODEL
+  const target = useConnection(state => state.target)
+  const epoch = useConnection(state => state.epoch)
+  const connects = useConnection(state => state.connects)
   useEffect(() => {
     void refresh()
+    // The review model picker lists the connected providers' models. Without
+    // them it still shows the saved choice.
+    void refreshProviders().catch(() => {})
+    void refreshRules().catch(() => {})
     // Without daemon info, as from an older daemon, there is nothing to warn about.
     void daemonInfo()
       .then(setInfo)
       .catch(() => {})
-  }, [refresh])
+
+    return () => useApprovalRules.setState({ loaded: false })
+  }, [refresh, refreshProviders, refreshRules, target, epoch, connects])
 
   return (
     <>
@@ -1223,19 +1349,68 @@ export function ApprovalsSettings(): React.JSX.Element {
             : 'No OS sandbox is available, so Manual and Auto ask before every shell command and code run. Install bubblewrap on the computer running the daemon, then restart the daemon to restore isolation.'}
         </Notice>
       ) : null}
-      <Group title="Mode">
-        <div aria-label="Approval mode" className={dividerClass} role="radiogroup">
-          {approvalModes(role, settings?.approval_mode).map(mode => (
-            <ChoiceRow
-              checked={settings?.approval_mode === mode.value}
-              description={mode.description}
-              key={mode.value}
-              onSelect={() => void patch({ approval_mode: mode.value })}
-              title={mode.label}
+      <div className="space-y-8">
+        <Group title="Mode">
+          <div aria-label="Approval mode" className={dividerClass} role="radiogroup">
+            {approvalModes(role, settings?.approval_mode).map(mode => (
+              <ChoiceRow
+                checked={settings?.approval_mode === mode.value}
+                description={mode.description}
+                key={mode.value}
+                onSelect={() => void patch({ approval_mode: mode.value })}
+                title={mode.label}
+              />
+            ))}
+          </div>
+        </Group>
+        {/* A daemon from before the review model has no such setting. */}
+        {settings && 'review_model' in settings ? (
+          <Group
+            footer="In Auto, this model reviews each step outside the sandbox, for every bot. A small or local model judges less well."
+            title="Review"
+          >
+            <Row
+              control={
+                <div className="w-[min(260px,42vw)]">
+                  <Select
+                    label="Review model"
+                    onValueChange={value =>
+                      void patch({ review_model: value === OWN_MODEL ? null : value })
+                    }
+                    options={[
+                      { label: "Each bot's own model", value: OWN_MODEL },
+                      ...choices,
+                      // The saved model stays listed while its provider's models load.
+                      ...(choices.some(item => item.value === reviewModel) ||
+                      reviewModel === OWN_MODEL
+                        ? []
+                        : [{ label: reviewModel, value: reviewModel }])
+                    ]}
+                    value={reviewModel}
+                  />
+                </div>
+              }
+              title="Review model"
             />
-          ))}
-        </div>
-      </Group>
+          </Group>
+        ) : null}
+        {rulesSupported && (info?.approval_rules === true || info === undefined) ? (
+          <>
+            <ApprovalRulesSection
+              footer="Clicking Always allow on an Auto approval card adds a rule here so similar steps run without asking."
+              kind="allow"
+              placeholder="e.g. Push feature branches to GitHub"
+              title="Allow automatically"
+            />
+            <ApprovalRulesSection
+              footer="Always ask before steps matching these rules. Ask first rules win if an Allow automatically rule also matches."
+              kind="ask"
+              placeholder="e.g. Before pushing to main or deleting files"
+              title="Ask first"
+            />
+          </>
+        ) : null}
+      </div>
     </>
   )
 }
@@ -1688,12 +1863,17 @@ function ThirdPartyNotices() {
   }
 
   return text ? (
-    <pre
-      className="max-h-[60dvh] overflow-auto whitespace-pre rounded-2xl bg-foreground/[0.04] p-4 font-mono text-[length:var(--text-meta)]"
-      data-testid="third-party-notices"
+    <ScrollArea
+      className="max-h-[60dvh] overflow-hidden rounded-2xl bg-foreground/[0.04]"
+      viewportClassName="overflow-auto"
     >
-      {text}
-    </pre>
+      <pre
+        className="whitespace-pre p-4 font-mono text-[length:var(--text-meta)]"
+        data-testid="third-party-notices"
+      >
+        {text}
+      </pre>
+    </ScrollArea>
   ) : (
     <p className="px-1 text-[length:var(--text-secondary)] text-muted">
       The build adds them. This copy of Hexbot runs from source.

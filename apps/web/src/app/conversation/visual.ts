@@ -148,16 +148,28 @@ function rgb(hex: string): null | number[] {
   return digits ? [0, 2, 4].map(i => parseInt(digits.slice(i, i + 2), 16)) : null
 }
 
-/** Page defaults, before the page's own CSS: theme background, text and font, no body margin. */
+/**
+ * Page defaults, before the page's own CSS: theme background, text and font,
+ * no body margin, and scrollbars that stay visible. The frame grows with the
+ * page, so a scroll area inside it is the only place content can hide; with
+ * overlay scrollbars, a list capped by max-height spills sideways out of view
+ * with nothing to show it is there. The frame's own scrollbar keeps the
+ * system style, so it never takes width from the page it measures.
+ */
 const BASE_CSS =
-  'html{background:var(--background);color:var(--foreground);font:14px/1.5 var(--font-sans);-webkit-font-smoothing:antialiased}body{margin:0}'
+  'html{background:var(--background);color:var(--foreground);font:14px/1.5 var(--font-sans);-webkit-font-smoothing:antialiased}body{margin:0}' +
+  ':not(:root)::-webkit-scrollbar{width:8px;height:8px}' +
+  ':not(:root)::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--foreground) 30%,transparent);border-radius:4px}' +
+  ':not(:root)::-webkit-scrollbar-track,:not(:root)::-webkit-scrollbar-corner{background:transparent}'
 
 /**
  * Runs first inside the frame. It applies the theme before the page paints and
  * again on every `ui/notifications/host-context-changed`, reports the page's
  * height with `ui/notifications/size-changed`, and hands http(s) links to the
  * app with `ui/open-link`, since the sandbox allows no popups. The messages
- * follow the MCP Apps shapes.
+ * follow the MCP Apps shapes. A link the user clicked goes on the port the
+ * frame page left in `hexbotLinks`, which this takes before the page's own
+ * scripts run, so the app knows the click was real and opens it at once.
  */
 const BOOTSTRAP = `(function (theme) {
   var style = document.getElementById('hexbot-theme')
@@ -185,6 +197,9 @@ const BOOTSTRAP = `(function (theme) {
     if (event.source !== parent || !data || data.method !== 'ui/notifications/host-context-changed') return
     apply(data.params)
   })
+  var port = window.hexbotLinks
+  delete window.hexbotLinks
+  var clicked = port && port.postMessage.bind(port)
   var links = 0
   document.addEventListener('click', function (event) {
     var link = event.target instanceof Element ? event.target.closest('a[href]') : null
@@ -193,7 +208,9 @@ const BOOTSTRAP = `(function (theme) {
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return
     if (url.href.split('#')[0] === location.href.split('#')[0]) return
     event.preventDefault()
-    post({ id: 'link-' + ++links, method: 'ui/open-link', params: { url: url.href } })
+    var message = { id: 'link-' + ++links, method: 'ui/open-link', params: { url: url.href } }
+    if (clicked) clicked(message)
+    else post(message)
   })
 })`
 

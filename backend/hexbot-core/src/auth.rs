@@ -317,11 +317,13 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
             "hexbot.devices.list" => {
                 let mut devices = rows(
                     &db::open(home)?,
-                    "SELECT id,name,platform,created_at,last_seen_at FROM devices WHERE revoked_at IS NULL AND owner_id=? ORDER BY created_at DESC",
+                    "SELECT id,name,platform,created_at,last_seen_at,push_token IS NOT NULL AS push FROM devices WHERE revoked_at IS NULL AND owner_id=? ORDER BY created_at DESC",
                     &[&caller],
                 )?;
                 for device in &mut devices {
                     device["current"] = json!(false);
+                    // A phone that takes pushes; the token itself stays on the daemon.
+                    device["push"] = json!(device["push"] == 1);
                 }
                 Ok(json!({"devices":devices}))
             }
@@ -348,6 +350,11 @@ pub fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result
                     params![now(), id],
                 )?;
                 tx.commit()?;
+                // A revoked computer leaves every bot, as Forget does. The
+                // revoke stands either way; a failure here is only logged.
+                if let Err(error) = crate::machines::forget_device(home, caller, id) {
+                    eprintln!("Could not forget revoked computer {id}: {}", error.message);
+                }
                 Ok(json!({"revoked":true}))
             }
             "hexbot.pairing.code" => new_code(home, caller),

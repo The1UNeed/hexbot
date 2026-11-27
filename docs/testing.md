@@ -213,6 +213,8 @@ route and composer checked before continuing.
   replies stay silent. It calls the actual native API and records its delivery
   events in `notifications.json`. Set `HEXBOT_SMOKE_NATIVE_NOTIFICATIONS=1` on
   a host with notification permissions to require the OS `show` events too.
+  A `show` event means the OS took the notification, not that it displayed
+  it: macOS reports `show` for an app it does not allow to notify.
   On macOS it launches the ad-hoc signed `Hexbot (dev)` copy that
   `pnpm dev --desktop` uses (`scripts/dev/electron-launcher.mjs`); macOS
   rejects notifications from the Electron in `node_modules`, whose signature
@@ -225,6 +227,13 @@ route and composer checked before continuing.
   dbus-run-session -- xvfb-run -a -s '-screen 0 1600x1200x24' sh -c 'openbox >/dev/null 2>&1 & node scripts/dev/native-ui-smoke.mjs --desktop --edition=client'
   ```
 - Web bundle: `pnpm --filter ./apps/web run typecheck && pnpm --filter ./apps/web run test --run && pnpm --filter ./apps/web run lint && pnpm --filter ./apps/web run build`.
+- Speed of the app, in a real browser against a real daemon with a local
+  model (no live state): `node scripts/dev/switch-bench.mjs` times switching
+  between bots with long chats; `node scripts/dev/actions-bench.mjs` times Pin,
+  Unpin, Rename, Mark as read and a switch to a bot whose chat is not open yet,
+  until its message box takes typing. Build the daemon and web bundle first.
+  `LATENCY_MS` adds network delay (Tailscale 30, Hex Connect 60), and
+  `WEB_DIST` and `HEXBOT_BIN` measure another build, such as main's, to compare.
 - POSIX runtime selection and readiness: `node scripts/dev/runtime-selection-smoke.mjs`.
   Builds real `.58` and `.59` daemons with equal `builtAt` from a disposable source
   copy. Damaged identity metadata leaves `.58` running. Permission damage to a
@@ -280,10 +289,13 @@ With an Expo CLI login, validate the TestFlight workflow files from
 ```sh
 pnpm exec eas workflow:validate .eas/workflows/testflight.yml --non-interactive
 pnpm exec eas workflow:validate .eas/workflows/testflight-upload.yml --non-interactive
+pnpm exec eas workflow:validate .eas/workflows/testflight-testers.yml --non-interactive
 ```
 
-The build workflow runs the mobile checks before compiling iOS. Release
-commands and account setup are in `apps/mobile/README.md`. An actual
+The cloud build workflow runs the mobile checks before compiling iOS; the
+nightly's local build relies on CI's `pnpm mobile:check`.
+`scripts/desktop/testflight-release.test.mjs` covers the Release action's
+iOS job. Release commands and account setup are in `apps/mobile/README.md`. An actual
 TestFlight upload is a release operation, separate from these checks.
 
 For the integration test:
@@ -299,7 +311,8 @@ pnpm --filter @hexbot/mobile run smoke -- --static
 The test serves the exported Expo web app at iPhone size, pairs a device with
 DPoP, and uses the real Rust daemon and pinned Pi with a local streaming model.
 It checks chat, attachment-only sends, unlimited room turn budgets, rooms, soul,
-isolated memory, About you, scheduled jobs,
+a face picked on its page and saved with its picture, a photo and the way
+back to the face, isolated memory, About you, scheduled jobs,
 disconnect, reconnect and history. It writes screenshots and a JSON report to a
 new temporary directory. `HEXBOT_MOBILE_ARTIFACTS` selects an output directory.
 It creates and removes its own daemon home and workspace.
@@ -425,13 +438,28 @@ listener, managed Python and voice executable. Desktop unit tests cover bad uv
 checksums, consecutive updates, failed activation, running-runtime retention and
 service migration. Rust tests cover update pruning and legacy listener refusal.
 
+### Office files
+
+`word.rs`, `excel.rs` and `powerpoint.rs` write and change Word, Excel and
+PowerPoint files themselves. Their unit tests read back what they write; to
+see the files in Office, write one of each kind and open them:
+
+```sh
+HEXBOT_OFFICE_SAMPLES=/tmp/hexbot-office cargo test --locked \
+  --manifest-path backend/hexbot-core/Cargo.toml --lib -- --ignored writes_sample_files
+```
+
+Word, Excel and PowerPoint should open every file without offering to repair
+it, and Quick Look (`qlmanage -p`) should draw them. Check after any change
+to those three modules, `ooxml.rs` or `zip.rs`.
+
 ### Bot faces
 
 `node apps/web/scripts/face-rest.mjs --check` checks that mobile uses the
 web's face geometry. `node apps/web/scripts/face-smoke.mjs` launches a
 temporary Vite entry and Chromium, then removes the entry and closes both.
-It checks all 264 PNG shape and colour roundtrips (current, older capsule, and flat
-eyes), every mood and emotion moving with no CSS animation, no writes from offscreen or
+It checks every PNG shape and colour roundtrip (current, older capsule, and flat
+eyes; 1,197 of them), every mood and emotion moving with no CSS animation, no writes from offscreen or
 held faces, reduced-motion rest poses and all acts, offscreen pause/resume,
 keyed reorder/unmount cleanup, and 24 working faces under 4× CPU throttling.
 `HEXBOT_FACE_ARTIFACTS` selects the screenshot directory. It uses the desktop
@@ -440,7 +468,7 @@ workspace's Playwright installation and needs its Chromium browser.
 ### Connected tools through Pi
 
 `node --test backend/pi-runtime/*.test.mjs` includes `mcp.test.mjs`, which runs
-real Pi 1.0.1 against a local streaming model fixture and stdio server. It checks
+real Pi 1.5.2 against a local streaming model fixture and stdio server. It checks
 first-call connection, nested approval enforcement, literal credential values,
 untrusted workspace config, and stable provider prompt/tool declarations across
 turns. No provider account is needed. Rust tests cover frozen names, restricted

@@ -44,6 +44,11 @@ export const OPEN_SOURCE: OpenSourceGroup[] = [
         license: 'Apache-2.0',
         name: 'cloudflared',
         repository: 'https://github.com/cloudflare/cloudflared'
+      },
+      {
+        license: 'AGPL-3.0',
+        name: 'SearXNG',
+        repository: 'https://github.com/searxng/searxng'
       }
     ]
   },
@@ -52,45 +57,9 @@ export const OPEN_SOURCE: OpenSourceGroup[] = [
     projects: [
       {
         license: 'MIT',
-        name: 'architecture-diagram-generator',
-        repository: 'https://github.com/Cocoon-AI/architecture-diagram-generator',
-        skills: ['architecture-diagram']
-      },
-      {
-        license: 'MIT',
-        name: 'awesome-design-md',
-        repository: 'https://github.com/VoltAgent/awesome-design-md',
-        skills: ['popular-web-designs']
-      },
-      {
-        license: 'MIT',
-        name: 'baoyu-skills',
-        repository: 'https://github.com/JimLiu/baoyu-skills',
-        skills: ['baoyu-infographic']
-      },
-      {
-        license: 'MIT',
-        name: 'Get Shit Done',
-        repository: 'https://github.com/gsd-build/get-shit-done',
-        skills: ['spike']
-      },
-      {
-        license: 'MIT',
-        name: 'Humanizer',
-        repository: 'https://github.com/blader/humanizer',
-        skills: ['humanizer']
-      },
-      {
-        license: 'MIT',
         name: 'OpenClaw',
         repository: 'https://github.com/openclaw/openclaw',
         skills: ['xurl']
-      },
-      {
-        license: 'MIT',
-        name: 'Superpowers',
-        repository: 'https://github.com/obra/superpowers',
-        skills: ['requesting-code-review', 'systematic-debugging', 'test-driven-development']
       }
     ]
   },
@@ -177,6 +146,12 @@ export const OPEN_SOURCE: OpenSourceGroup[] = [
       },
       {
         license: 'MIT',
+        name: 'fflate',
+        packages: ['fflate'],
+        repository: 'https://github.com/101arrowz/fflate'
+      },
+      {
+        license: 'MIT',
         name: 'ProseMirror',
         repository: 'https://github.com/ProseMirror/prosemirror'
       },
@@ -223,7 +198,7 @@ export const OPEN_SOURCE: OpenSourceGroup[] = [
       {
         license: 'MIT',
         name: 'Tokio',
-        packages: ['tokio'],
+        packages: ['tokio', 'tokio-util'],
         repository: 'https://github.com/tokio-rs/tokio'
       },
       {
@@ -237,6 +212,12 @@ export const OPEN_SOURCE: OpenSourceGroup[] = [
         name: 'tower-http',
         packages: ['tower-http'],
         repository: 'https://github.com/tower-rs/tower-http'
+      },
+      {
+        license: 'MIT',
+        name: 'http-range-header',
+        packages: ['http-range-header'],
+        repository: 'https://github.com/MarcusGrass/parse-range-headers'
       },
       {
         license: 'MIT',
@@ -297,6 +278,48 @@ export const OPEN_SOURCE: OpenSourceGroup[] = [
         name: 'keepass-rs',
         packages: ['keepass'],
         repository: 'https://github.com/sseemayer/keepass-rs'
+      },
+      {
+        license: 'Apache-2.0',
+        name: 'htmd',
+        packages: ['htmd'],
+        repository: 'https://github.com/letmutex/htmd'
+      },
+      {
+        license: 'MIT',
+        name: 'pulldown-cmark',
+        packages: ['pulldown-cmark'],
+        repository: 'https://github.com/raphlinus/pulldown-cmark'
+      },
+      {
+        license: 'MIT OR Apache-2.0',
+        name: 'async-imap',
+        packages: ['async-imap'],
+        repository: 'https://github.com/async-email/async-imap'
+      },
+      {
+        license: 'MIT',
+        name: 'Lettre',
+        packages: ['lettre'],
+        repository: 'https://github.com/lettre/lettre'
+      },
+      {
+        license: 'Apache-2.0 OR MIT',
+        name: 'mail-parser',
+        packages: ['mail-parser'],
+        repository: 'https://github.com/stalwartlabs/mail-parser'
+      },
+      {
+        license: 'MIT OR Apache-2.0',
+        name: 'tokio-rustls',
+        packages: ['tokio-rustls'],
+        repository: 'https://github.com/rustls/tokio-rustls'
+      },
+      {
+        license: 'CDLA-Permissive-2.0',
+        name: 'webpki-roots',
+        packages: ['webpki-roots'],
+        repository: 'https://github.com/rustls/webpki-roots'
       },
       {
         license: 'MIT',
