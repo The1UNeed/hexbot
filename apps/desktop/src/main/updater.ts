@@ -132,7 +132,8 @@ export async function checkForUpdates(reason: string): Promise<UpdateState> {
   const current = state!
   if (current.status === 'disabled') return current
   // A prepared update waits for its commit; a background check would clear it.
-  if ((reason === 'startup' || reason === 'poll') && remoteHolds()) return current
+  // Only the run's own check runs while it holds a prepared update.
+  if (reason !== 'run' && remoteHolds()) return current
   if (pending) return pending
   if (active) return current
   active = 'check'
@@ -399,9 +400,10 @@ export async function commitRemote(
   if (state!.downloadedVersion !== remote.version)
     return setRemote({ ...remote, state: 'failed', error: 'The prepared update is gone. Retry.' })
   clearTimeout(expiry)
+  const waiting: RemoteState = delayMs > 0 ? 'countdown' : 'ready'
   const install = async (): Promise<void> => {
     const prepared = remote
-    if (prepared?.requestId !== requestId || !prepared.version) return
+    if (prepared?.requestId !== requestId || prepared.state !== waiting || !prepared.version) return
     const version = prepared.version
     const channel = state!.channel
     const switched = !!remoteChannel && remoteChannel.previous !== channel
@@ -413,10 +415,18 @@ export async function commitRemote(
         [appId]: { version, requestId, daemon, edition, expiresAt: Date.now() + PREPARED_MS }
       }
     }))
+    // "Later" may have come while the state was saved.
+    if (remote?.requestId !== requestId || remote.state !== waiting) return
     remoteChannel = null
+    // Install the prepared version whatever a later check said about the feed.
+    if (state!.downloadedVersion !== version) {
+      setRemote({ ...prepared, state: 'failed', error: 'The prepared update is gone. Retry.' })
+      return
+    }
+    if (state!.status !== 'downloaded') setState(onDownloaded(state!, version))
     setRemote({ ...prepared, state: 'installing', installsAt: null })
     const result = await installUpdate()
-    if (result.status === 'error')
+    if (result.status !== 'installing')
       setRemote({
         ...prepared,
         state: 'failed',

@@ -222,9 +222,12 @@ describe('runUpdateEverything', () => {
       'prepare studio/app.hexbot.client id2',
       'prepare laptop/app.hexbot.client id3',
       'prepare this-app id4',
+      // The claim is renewed at each phase.
+      'claim id0',
       'restart-daemon id1 0.1.7',
       'wait studio/app.hexbot.client id2',
       'wait laptop/app.hexbot.client id3',
+      'claim id0',
       'commit laptop/app.hexbot.client id3',
       'commit studio/app.hexbot.client id2',
       'countdown',

@@ -72,8 +72,19 @@ describe('daemonSteps', () => {
     expect(await steps.commitApp(row, 'r1')).toBe('postponed')
     state = 'installing'
     expect(await steps.commitApp(row, 'r1')).toBe('installing')
-    // An app that left after the commit is restarting.
-    expect(await daemon(() => null).steps.commitApp(row, 'r1')).toBe('installing')
+    // An app that left once its countdown began is restarting.
+    let seen = false
+    const leaving = daemon(() => {
+      if (seen) {
+        return null
+      }
+
+      seen = true
+
+      return { request: { downloaded_version: '0.1.7', error: null, id: 'r1', state: 'countdown' } }
+    })
+
+    expect(await leaving.steps.commitApp(row, 'r1')).toBe('installing')
   })
 
   it('makes ids the daemon takes as names', () => {

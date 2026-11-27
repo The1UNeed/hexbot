@@ -258,6 +258,9 @@ export async function resumeSavedRun(): Promise<void> {
 
   const state = saved.state
   const bridge = getBridge()
+
+  // This app's restart may have restarted the daemon too: wait for it.
+  await connected(2 * 60_000)
   const remote = await bridge?.updater.remote?.().catch(() => null)
 
   for (const row of state.rows) {
@@ -283,7 +286,42 @@ export async function resumeSavedRun(): Promise<void> {
   const [ok, message] = describeResult(state)
 
   useUpdateRun.setState({ run: { ...state, phase: 'done', result: { message, ok } } })
-  await rpcCall('hexbot.update.run', { action: 'end', run_id: state.runId }).catch(() => undefined)
+
+  // Every client waits on this run until it ends.
+  for (let tries = 0; tries < 24; tries += 1) {
+    try {
+      await rpcCall('hexbot.update.run', { action: 'end', run_id: state.runId })
+
+      return
+    } catch {
+      await new Promise(resolve => setTimeout(resolve, 5_000))
+    }
+  }
+}
+
+/** Resolves once connected, or after `timeoutMs`. */
+function connected(timeoutMs: number): Promise<void> {
+  return new Promise(resolve => {
+    if (useConnection.getState().status === 'connected') {
+      resolve()
+
+      return
+    }
+
+    const timer = setTimeout(done, timeoutMs)
+
+    const off = useConnection.subscribe(state => {
+      if (state.status === 'connected') {
+        done()
+      }
+    })
+
+    function done() {
+      clearTimeout(timer)
+      off()
+      resolve()
+    }
+  })
 }
 
 /**

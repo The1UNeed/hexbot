@@ -16,9 +16,10 @@ use tokio::sync::mpsc::UnboundedSender;
 
 const RUN: &str = "runtime/update-run.json";
 const RUN_SECONDS: f64 = 30.0 * 60.0;
-const REQUEST_STATES: [&str; 6] = [
+const REQUEST_STATES: [&str; 7] = [
     "preparing",
     "ready",
+    "countdown",
     "installing",
     "postponed",
     "failed",
@@ -181,7 +182,7 @@ pub fn report(
     let mut report = report;
     report["device"] = json!(device);
     report["label"] = json!(label);
-    {
+    let changed_more = {
         let mut registry = lock();
         registry.unreported.remove(&(home.to_owned(), connection));
         let key = (
@@ -189,6 +190,16 @@ pub fn report(
             device.to_owned(),
             report["app_id"].as_str().unwrap_or_default().to_owned(),
         );
+        // Download progress alone doesn't make every client ask again.
+        let without_percent = |report: &Value| {
+            let mut report = report.clone();
+            report["updater"]["percent"] = Value::Null;
+            report
+        };
+        let changed_more = registry.apps.get(&key).is_none_or(|entry| {
+            entry.connection != connection
+                || without_percent(&entry.report) != without_percent(&report)
+        });
         registry.apps.insert(
             key,
             Entry {
@@ -198,8 +209,11 @@ pub fn report(
                 report,
             },
         );
+        changed_more
+    };
+    if changed_more {
+        changed(home, owner);
     }
-    changed(home, owner);
     Ok(json!({"reported": true}))
 }
 

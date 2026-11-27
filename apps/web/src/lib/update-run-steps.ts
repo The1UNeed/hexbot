@@ -148,15 +148,20 @@ export function daemonSteps(rpc: Rpc): DaemonSteps {
         return 'failed'
       }
 
-      // The countdown runs there, so give it time; an app that left is restarting.
+      // The countdown runs there, so give it time. An app that left after its
+      // countdown or install began is restarting; one that just dropped isn't.
+      let committing = false
+
       const settled = await until(async () => {
         const entry = await app(row)
 
         if (!entry) {
-          return 'installing' as const
+          return committing ? ('installing' as const) : null
         }
 
         const state = entry.request?.id === requestId ? entry.request.state : null
+
+        committing ||= state === 'countdown' || state === 'installing'
 
         return state === 'installing' || state === 'postponed' || state === 'failed' ? state : null
       }, 60_000)

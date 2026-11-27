@@ -19,13 +19,13 @@ export function canReport(): boolean {
   return Boolean(app?.appId && app.updater.prepare)
 }
 
-/** What the daemon keeps of a request: a countdown is still a prepared update. */
+/** What the daemon keeps of a request. */
 function requestState(remote: RemoteRequest) {
   return {
     downloaded_version: remote.version,
     error: remote.error,
     id: remote.requestId,
-    state: remote.state === 'countdown' ? 'ready' : remote.state
+    state: remote.state
   }
 }
 

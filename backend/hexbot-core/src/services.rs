@@ -3075,7 +3075,11 @@ pub async fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<
                                     update_state(&worker_service, status, Some(&version), None)
                                         .await;
                                     let mut data = worker_service.data.lock().await;
-                                    data.staged = Some(staged);
+                                    if let Some(old) = data.staged.replace(staged)
+                                        && data.staged.as_ref().is_some_and(|new| new.dir != old.dir)
+                                    {
+                                        let _ = fs::remove_dir_all(&old.dir);
+                                    }
                                     if !stage_only {
                                         data.restart = Some(id);
                                     }

@@ -31,7 +31,8 @@ export interface ReportedApp {
   }
   request: null | {
     id: string
-    state: 'failed' | 'installing' | 'not_applied' | 'postponed' | 'preparing' | 'ready'
+    state:
+      'countdown' | 'failed' | 'installing' | 'not_applied' | 'postponed' | 'preparing' | 'ready'
     downloaded_version: null | string
     error: null | string
   }
@@ -487,7 +488,21 @@ export async function runUpdateEverything(
     try {
       const result = await run()
 
-      if (result.ok) {
+      if (
+        result.ok &&
+        row.kind === 'app' &&
+        row.to &&
+        row.to !== 'newest' &&
+        result.version &&
+        result.version !== row.to
+      ) {
+        // That app's own feed decides what it installs; it isn't what the run expects.
+        set(
+          row,
+          'failed',
+          `A different build (${result.version}) is on ${row.label}'s feed · Retry`
+        )
+      } else if (result.ok) {
         set(row, 'ready')
       } else {
         set(row, 'failed', result.error ?? 'Could not prepare the update.')
@@ -517,7 +532,11 @@ export async function runUpdateEverything(
   const ready = (row: RunRow | undefined): row is RunRow => !!row && row.status === 'ready'
 
   // 2. A service daemon restarts on trial; read its outcome by id.
+  // Each phase renews the claim, so a long download can't let it lapse mid-run.
+  const renew = () => steps.claim(runId).catch(() => undefined)
+
   if (ready(daemon) && plan.daemon === 'service') {
+    await renew()
     state.phase = 'restarting-daemon'
     set(daemon, 'updating')
     let outcome: DaemonUpdateOutcome | null = null
@@ -562,6 +581,7 @@ export async function runUpdateEverything(
   }
 
   // 4. Other apps, the one that runs the daemon last.
+  await renew()
   state.phase = 'committing'
   emit()
   const order = apps.filter(ready).sort((a, b) => Number(!!a.hostsDaemon) - Number(!!b.hostsDaemon))
