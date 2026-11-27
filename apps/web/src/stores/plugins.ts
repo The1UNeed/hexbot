@@ -51,6 +51,14 @@ export interface PluginsState {
 /** Only the latest refresh may change the list or end the loading state. */
 let latest = 0
 
+/**
+ * One read at a time. A change sends several events, and each asks for the
+ * list again; reading it costs the daemon more the more bots there are, so
+ * the asks made while one is on its way share a single read after it.
+ */
+let reading: null | Promise<void> = null
+let queued: null | Promise<void> = null
+
 export const usePlugins = create<PluginsState>((set, get) => {
   const replace = (key: string, plugin: Plugin) =>
     set(state => ({
@@ -68,30 +76,61 @@ export const usePlugins = create<PluginsState>((set, get) => {
       set({ sought })
     },
 
-    async refresh() {
-      const current = connectionRead()
-      const mine = ++latest
-      set({ error: null, loaded: true, loading: true })
+    refresh() {
+      const read = async () => {
+        const current = connectionRead()
+        const mine = ++latest
+        set({ error: null, loaded: true, loading: true })
 
-      try {
-        const list = await pluginsList()
+        try {
+          const list = await pluginsList()
 
-        if (current() && mine === latest) {
-          set({ plugins: pluginRows(list) })
-        }
-      } catch (error) {
-        if (current() && mine === latest) {
-          set({ error: errorText(error) })
-        }
-      } finally {
-        if (mine === latest) {
-          set({ loading: false })
+          if (current() && mine === latest) {
+            set({ plugins: pluginRows(list) })
+          }
+        } catch (error) {
+          if (current() && mine === latest) {
+            set({ error: errorText(error) })
+          }
+        } finally {
+          if (mine === latest) {
+            set({ loading: false })
+          }
         }
       }
+
+      const start = () => {
+        const mine: Promise<void> = read().finally(() => {
+          if (reading === mine) {
+            reading = null
+          }
+        })
+
+        reading = mine
+
+        return mine
+      }
+
+      if (!reading) {
+        return start()
+      }
+
+      // The read on its way may predate this ask: one more after it answers
+      // this one and every other made meanwhile.
+      queued ??= reading.then(() => {
+        queued = null
+
+        return start()
+      })
+
+      return queued
     },
 
     reset() {
       latest++
+      // Another daemon's list is not waited for.
+      reading = null
+      queued = null
       set({ error: null, loaded: false, loading: false, plugins: [], sought: null })
     },
 

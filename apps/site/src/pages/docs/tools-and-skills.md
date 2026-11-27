@@ -10,6 +10,20 @@ Tools let a bot act in its workspace and on its own computer. Plugins are everyt
 
 Open Settings, Plugins. It has three tabs: **Connectors**, **MCP servers** and **Skills**, each with its own search. Every plugin has an icon; skills you or a bot write share one. Open a plugin to choose the bots that get it, set it up, test it, or remove it. To work through one bot's plugins, choose the bot at the top of the page: each plugin then shows a switch for that bot. A plugin that isn't set up can be taken from bots but not given to them until it is. Bot settings, Connectors and Skills show the same plugins for one bot.
 
+### Plugins as a table (experimental)
+
+With many bots, the cards get long. Turn on **Plugins as a table** in Settings, Experimental, and Settings, Plugins opens as a table instead: every bot down the side, every plugin across the top under the account it comes from, and a box where they meet. A tick means the bot has the plugin, and a dash means only some of the row's bots do. The switch applies to that device only.
+
+- **Add plugin.** One window with three steps: choose, connect, give to bots. Choose a Google or Microsoft account, tick the connectors you want and sign in once for all of them; set up a service with its key; or add an MCP server or a skill. What you connect becomes columns under the address you signed in with, so signing in with a second address for other connectors gives that address its own group. A connector uses one account at a time: to move one, disconnect it from its column's heading first. The last step asks which bots get it, by label, and adds your answer to the changes that wait.
+- **Rows.** Bots that share a label and hold the same plugins fold into one row, such as **48 Sales bots**. A bot's label is the Label in its profile; a label only one bot has groups nothing. Open a row to see its bots, or choose **One row for every bot**.
+- **Changes wait.** Ticking a box changes nothing yet. A bar shows how many changes wait; **Review** lists them as sentences, such as "All 48 Sales bots get Gmail", names every bot a line covers, and marks a bot's first plugin from an account. Take out any line, then **Apply**. **Undo** puts back exactly what the last apply changed. Closing Settings keeps the changes that wait; Escape asks once before it closes.
+- **The field.** Type a name to find a bot, or a sentence that starts with give, take, who or what: `give Research bots Gmail`, `take GitHub from Scout`, `who has Notion`, `what does Quill have`. Hexbot says what it understood before anything is staged, and a word it can't place stops the sentence, so a misspelt name never changes other bots.
+- **One bot.** A bot's name opens everything it has, account by account, with a switch for each plugin and how it differs from the other bots with its label.
+- **Columns.** A plugin's heading opens the plugin, where you test, disconnect or remove it, shows only the bots with or without it, or gives it to every bot shown. An account's heading connects more from that account or hides its columns. An account whose sign-in stopped working is marked above the table with **Sign in again**: its bots keep the plugin, and nothing new is given through it until you do.
+- **Keyboard.** The table is one stop for the Tab key. Arrow keys move between boxes, Space changes one, Home and End run along a row.
+
+On a phone the table shows one account's plugins at a time.
+
 ## Local tools
 
 Open Bot settings, Tools. Each switch controls one capability. Terminal acts on [computers](#computers): turning it on gives the bot its default computer, and turning it off takes every one. Which computers each bot works on is chosen in Settings, Computers, and Computer Use, for their screens, in Settings, Plugins.

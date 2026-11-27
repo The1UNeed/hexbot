@@ -28,6 +28,7 @@ export interface DaemonArea {
     | 'connect'
     | 'connectors'
     | 'devices'
+    | 'experimental'
     | 'licenses'
     | 'network'
     | 'notifications'

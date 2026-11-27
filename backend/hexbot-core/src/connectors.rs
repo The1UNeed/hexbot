@@ -39,7 +39,32 @@ fn strings(v: &Value) -> Vec<String> {
         .map(str::to_owned)
         .collect()
 }
+thread_local! {
+    /// The bots' names while a plugin list is built. A list asks about every
+    /// bot for every connector and skill, and each question checks the bot
+    /// exists; without this each check opens the database again, thousands
+    /// of times for a roster of hundreds.
+    static LISTED: std::cell::RefCell<Option<Vec<String>>> =
+        const { std::cell::RefCell::new(None) };
+}
+/// Holds the bots' names for the length of one list. A list inside a list
+/// keeps the outer one's names when it ends.
+pub(crate) struct Listed(Option<Vec<String>>);
+impl Listed {
+    pub(crate) fn hold(home: &Path) -> Result<Self> {
+        let names = names(home)?;
+        Ok(Self(LISTED.with(|held| held.borrow_mut().replace(names))))
+    }
+}
+impl Drop for Listed {
+    fn drop(&mut self) {
+        LISTED.with(|held| *held.borrow_mut() = self.0.take());
+    }
+}
 pub(crate) fn names(home: &Path) -> Result<Vec<String>> {
+    if let Some(names) = LISTED.with(|held| held.borrow().clone()) {
+        return Ok(names);
+    }
     Ok(
         rows(&db::open(home)?, "SELECT name FROM bots ORDER BY name", &[])?
             .iter()
@@ -647,11 +672,29 @@ pub(crate) fn with_skills(home: &Path, bot: &str) -> Result<BTreeSet<String>> {
 }
 /// Turn a connector on or off for one bot. One that is not set up for that
 /// bot can be turned off but not on.
+/// Whether a catalog connector is set up for `bot`: what its row says under
+/// `ready`, learned without listing every connector for every bot.
+pub(crate) fn ready_for(home: &Path, bot: &str, id: &str) -> Result<bool> {
+    profile(home, bot)?;
+    set_up_for(home, Some(bot), &spec(id)?)
+}
 pub(crate) fn set_enabled(home: &Path, bot: &str, id: &str, on: bool) -> Result<()> {
     if on {
-        let row = get(home, Some(bot), id)?;
-        if row["ready"] != true {
-            return Err(not_set_up(row["name"].as_str().unwrap_or(id)));
+        // A server's row is the only place its readiness is worked out.
+        let (ready, name) = if id.starts_with("mcp:") {
+            let row = get(home, Some(bot), id)?;
+            (
+                row["ready"] == true,
+                row["name"].as_str().unwrap_or(id).to_owned(),
+            )
+        } else {
+            (
+                ready_for(home, bot, id)?,
+                spec(id)?["name"].as_str().unwrap_or(id).to_owned(),
+            )
+        };
+        if !ready {
+            return Err(not_set_up(&name));
         }
     }
     if !id.starts_with("mcp:") {
@@ -739,7 +782,15 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
     if let Some(b) = bot {
         profile(home, b)?;
     }
+    let _listed = Listed::hold(home)?;
     let names = names(home)?;
+    // Each bot's toolsets, and its skills and servers when a row needs them,
+    // are read once here instead of once a connector.
+    let tools = names
+        .iter()
+        .map(|n| toolsets(home, n))
+        .collect::<Result<Vec<_>>>()?;
+    let mut skills: Option<Vec<Vec<crate::skills::Skill>>> = None;
     let mut out = vec![];
     let conn = db::open(home)?;
     let incidents = rows(
@@ -861,13 +912,37 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
         let mut ready_bots = vec![];
         // On for a bot but waiting for its key: kept, and given once set up.
         let mut waiting_bots = vec![];
-        for n in &names {
-            if set_up_for(home, Some(n), &s)? {
+        // A connector that is a skill is on for a bot when that skill is.
+        if s["skill"].is_string() && skills.is_none() {
+            skills = Some(crate::skills::resolve_for_bots(
+                home,
+                names.iter().map(String::as_str),
+            )?);
+        }
+        // A signed-in account is set up for every bot alike.
+        let signed_in = if s["account"].is_string() {
+            Some(set_up_for(home, None, &s)?)
+        } else {
+            None
+        };
+        for (at, n) in names.iter().enumerate() {
+            let on = match (s["skill"].as_str(), &skills) {
+                (Some(skill), Some(skills)) => skills[at]
+                    .iter()
+                    // Readiness only hides the skill; the bot's grant is its own.
+                    .any(|s| s.name == skill && s.enabled_for_bot && !s.disabled_globally),
+                _ => toolsets_on(&s, &tools[at]),
+            };
+            let set_up = match signed_in {
+                Some(signed_in) => signed_in,
+                None => set_up_for(home, Some(n), &s)?,
+            };
+            if set_up {
                 ready_bots.push(n.clone());
-                if enabled(home, n, id)? {
+                if on {
                     bots.push(n.clone())
                 }
-            } else if enabled(home, n, id)? {
+            } else if on {
                 waiting_bots.push(n.clone());
             }
         }
@@ -909,6 +984,15 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
     }
     let config = read_config(home)?;
     if let Some(servers) = config["mcp_servers"].as_object() {
+        // Each bot's servers, read once for all the rows.
+        let granted = if servers.values().any(Value::is_object) {
+            names
+                .iter()
+                .map(|n| mcp_servers(home, n))
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            vec![]
+        };
         for (name, entry) in servers {
             if !entry.is_object() {
                 continue;
@@ -918,12 +1002,12 @@ pub(crate) fn list(home: &Path, bot: Option<&str>) -> Result<Value> {
             let disabled = entry["disabled"] == true;
             let missing = missing_values(entry);
             let ready = !disabled && missing.is_empty();
-            let mut bots = vec![];
-            for n in &names {
-                if enabled(home, n, &id)? {
-                    bots.push(n.clone())
-                }
-            }
+            let bots = names
+                .iter()
+                .zip(&granted)
+                .filter(|(_, servers)| servers.get(name.as_str()).is_some())
+                .map(|(n, _)| n.clone())
+                .collect::<Vec<_>>();
             let tested = last_test(home, &id)?;
             let failed = tested.as_ref().is_some_and(|v| v["ok"] == false);
             // A value left empty keeps the server from starting, so it

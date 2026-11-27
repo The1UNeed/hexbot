@@ -4,6 +4,7 @@ import {
   Bell,
   Brain,
   Download,
+  FlaskConical,
   Gauge,
   Globe,
   Info,
@@ -43,6 +44,7 @@ const ITEMS: Record<SettingsTab, SettingsTabItem<SettingsTab>> = {
   computer: { icon: Monitor, id: 'computer', label: 'Computers' },
   connect: { icon: Globe, id: 'connect', label: 'Hex Connect' },
   diagnostics: { icon: Activity, id: 'diagnostics', label: 'Diagnostics' },
+  experimental: { icon: FlaskConical, id: 'experimental', label: 'Experimental' },
   memory: { icon: Brain, id: 'memory', label: 'Memory' },
   network: { icon: Wifi, id: 'network', label: 'Network' },
   notifications: { icon: Bell, id: 'notifications', label: 'Notifications' },
@@ -60,7 +62,7 @@ const GROUPS: { ids: SettingsTab[]; label: string }[] = [
   { ids: ['network', 'connect'], label: 'Devices' },
   { ids: ['memory', 'approvals', 'notifications', 'appearance'], label: 'You' },
   { ids: ['updates', 'privacy', 'about'], label: 'App' },
-  { ids: ['diagnostics'], label: 'Advanced' }
+  { ids: ['diagnostics', 'experimental'], label: 'Advanced' }
 ]
 
 function SettingsDialog() {

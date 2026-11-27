@@ -31,6 +31,43 @@ async fn rpc(home: &Path, method: &str, p: Value) -> Value {
     call(home, "alice", method, p).await.unwrap()
 }
 
+/// A list asks about every bot for every connector. It reads the roster
+/// once and holds it; the next list, and anything outside one, reads it again.
+#[test]
+fn a_list_holds_the_roster_and_lets_it_go() {
+    let home = setup();
+    let add = |name: &str| {
+        db::open(home.path())
+            .unwrap()
+            .execute("INSERT INTO bots(name,owner_id) VALUES (?,'alice')", [name])
+            .unwrap();
+    };
+    {
+        let _outer = connectors::Listed::hold(home.path()).unwrap();
+        add("ant");
+        // Held for the length of the list, whatever happens to the table.
+        assert_eq!(connectors::names(home.path()).unwrap(), ["fox", "owl"]);
+        {
+            let _inner = connectors::Listed::hold(home.path()).unwrap();
+            assert_eq!(connectors::names(home.path()).unwrap(), ["fox", "owl"]);
+        }
+        // A list inside a list leaves the outer one's roster in place.
+        assert_eq!(connectors::names(home.path()).unwrap(), ["fox", "owl"]);
+    }
+    assert_eq!(
+        connectors::names(home.path()).unwrap(),
+        ["ant", "fox", "owl"]
+    );
+    // A bot the roster knows is listed with the rest; one it does not is refused.
+    assert!(connectors::ready_for(home.path(), "owl", "web_search").is_ok());
+    assert_eq!(
+        connectors::ready_for(home.path(), "nobody", "web_search")
+            .unwrap_err()
+            .code,
+        4205
+    );
+}
+
 #[tokio::test]
 async fn testing_computer_use_says_which_screens_bots_reach_and_never_marks_it_broken() {
     let home = setup();

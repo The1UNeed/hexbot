@@ -995,6 +995,10 @@ function MobileApp({ children }: { children?: ReactNode }) {
             area('updates', 'Updates', 'download-outline', mobile.info?.version ?? null),
             area('licenses', 'Licenses', 'document-text-outline')
           ]
+        },
+        {
+          title: 'Advanced',
+          areas: [area('experimental', 'Experimental', 'flask-outline', 'Features still being tried')]
         }
       ]
   // The bot whose chat this is; a room's messages name their own.

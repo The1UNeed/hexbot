@@ -64,6 +64,8 @@ import { DISCORD_MODES, discordModeLabel, discordModeListens } from '../../web/s
 import { skillContent } from '../../web/src/lib/skill-file'
 import { BrandSignInButton } from './ui/BrandSignInButton'
 import { PluginIcon } from './ui/PluginIcon'
+import { PluginAccess } from './screens/PluginAccess'
+import { loadPluginsTable, savePluginsTable } from './core/storage'
 import { botStatusOf, isOpenRoom } from './core/routes'
 import { allowPush, pushPermission, testNotification } from './core/push'
 import { FaceEditor } from './FaceEditor'
@@ -82,6 +84,7 @@ export type Panel = {
     | 'devices'
     | 'discord'
     | 'dreams'
+    | 'experimental'
     | 'face'
     | 'heartbeat'
     | 'job'
@@ -587,6 +590,13 @@ export function Management({
   const [loadedPanel, setLoadedPanel] = useState<Panel | null>(null)
   // The new-bot card's shapes and colours, behind its Change face button.
   const [choosingFace, setChoosingFace] = useState(false)
+  // Experimental, on this phone only: Plugins as a table, with today's list under Set up.
+  const [pluginsTable, setPluginsTable] = useState(false)
+  useEffect(() => {
+    void loadPluginsTable()
+      .then(setPluginsTable)
+      .catch(() => {})
+  }, [requested?.kind])
   // While a closed card slides away it keeps showing what it showed.
   const panel = requested ?? loadedPanel
   const panelLoading = loading || loadedPanel !== panel
@@ -786,9 +796,10 @@ export function Management({
         }
         // A Google or Microsoft connector: the account's other connectors,
         // to connect with the same sign-in, and the primary bot to give it to.
+        // With plugins as a table no bot is chosen here: it is ticked there.
         if (panel?.data?.account) {
           detail = { plugins: pluginRows(await rpc<PluginsList>('hexbot.plugins.list')) }
-          if (!bot && pluginRoster[0]) fields[`give:${pluginRoster[0].name}`] = true
+          if (!bot && pluginRoster[0] && !pluginsTable) fields[`give:${pluginRoster[0].name}`] = true
         }
         break
       case 'plugins':
@@ -1044,7 +1055,9 @@ export function Management({
     // From a bot's own plugins, that bot gets it, as on the web.
     const give = bot
       ? [bot.name]
-      : pluginRoster.filter(b => latestValues.current[`give:${b.name}`] === true).map(b => b.name)
+      : pluginsTable
+        ? []
+        : pluginRoster.filter(b => latestValues.current[`give:${b.name}`] === true).map(b => b.name)
     if (!account?.signed_in && give.length) {
       // An older daemon connects the one connector and does not say so.
       const ids = Array.isArray(next.connected) ? next.connected.map(str) : [str(panel?.data?.id)]
@@ -2078,7 +2091,8 @@ export function Management({
       content = (
         <>
           <Text tone="muted">{c.description}</Text>
-          {account && !account.signed_in && !bot && !pending && pluginRoster.length > 1 ? (
+          {/* With plugins as a table, bots are ticked there once it is a column. */}
+          {account && !account.signed_in && !bot && !pending && pluginRoster.length > 1 && !pluginsTable ? (
             <Group title="Bots that get it">
               {pluginRoster.map(b => (
                 <SwitchRow
@@ -2116,7 +2130,9 @@ export function Management({
               footer={
                 pasteBack
                   ? `Google ends on a page that doesn't load on this phone. Copy that page's address and paste it here.`
-                  : `You sign in once on this daemon. Bots you turn ${c.name} on for use it.`
+                  : pluginsTable
+                    ? `You sign in once on this daemon. ${c.name} then becomes a column in Plugins, where you tick its bots.`
+                    : `You sign in once on this daemon. Bots you turn ${c.name} on for use it.`
               }
             >
               <Row
@@ -2421,7 +2437,7 @@ export function Management({
           onPress={() => navigate('plugin', p as unknown as RowData)}
         />
       )
-      content = (
+      const list = (
         <>
           {connected.length ? (
             <Group
@@ -2452,8 +2468,47 @@ export function Management({
           </Group>
         </>
       )
+      content = pluginsTable ? (
+        <PluginAccess
+          bots={mobile.bots}
+          daemon={mobile.active?.id ?? ''}
+          // The pages that add a server or a skill are the list's own.
+          onAdd={what => navigate(what === 'server' ? 'mcp' : 'skill-create')}
+          // Straight to the sign-in or the keys, past the plugin's own page.
+          onConnect={p => navigate('connector', p.connector as unknown as RowData)}
+          onOpenPlugin={p => navigate('plugin', p as unknown as RowData)}
+          plugins={plugins}
+          reload={() => load()}
+          // Only bots that still exist are sent: one deleted elsewhere
+          // would make the daemon refuse the whole change.
+          setBots={(p, names) =>
+            rpc('hexbot.plugins.set_bots', {
+              kind: p.kind,
+              id: p.id,
+              bots: names.filter(name => bots.some(b => b.name === name))
+            })
+          }
+        />
+      ) : (
+        list
+      )
       break
     }
+    case 'experimental':
+      content = (
+        <Group footer="Settings, Plugins opens as a table of every bot against every plugin. Bots with the same label and plugins fold into one row, and changes wait until you review them. Plugins are added and connected there too, from Add plugin.">
+          <SwitchRow
+            onValueChange={on => {
+              setPluginsTable(on)
+              void savePluginsTable(on).catch(() => {})
+            }}
+            testID="experimental-plugins-table"
+            title="Plugins as a table"
+            value={pluginsTable}
+          />
+        </Group>
+      )
+      break
     case 'plugin': {
       const bots = pluginRoster
       const p = (extra.plugin ?? panel!.data) as unknown as Plugin
@@ -3562,6 +3617,7 @@ export function Management({
     connector: str(panel?.data?.name),
     mcp: 'Add MCP server',
     plugins: 'Plugins',
+    experimental: 'Experimental',
     plugin: str(panel?.data?.name),
     passwords: 'Passwords',
     password: str(panel?.data?.title),
@@ -3591,7 +3647,11 @@ export function Management({
     passwords:
       "Sign-ins your bots use for you. A bot has Hexbot type them into a page and never sees them. They're kept in a KeePass vault on this daemon.",
     plugins:
-      'Connectors, MCP servers and skills your bots can use. Choose which bots get each one.',
+      pluginsTable
+        ? 'Every bot against every plugin, under the account it comes from. Changes wait until you review them.'
+        : 'Connectors, MCP servers and skills your bots can use. Choose which bots get each one.',
+    experimental:
+      'Features still being tried. Each is off until you switch it on, applies to this phone only, and may change or go.',
     providers:
       'The model providers your bots can use. Usage is billed by them; Hexbot includes no credits.',
     settings:
