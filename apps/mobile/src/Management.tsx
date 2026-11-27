@@ -62,6 +62,8 @@ import {
 } from '../../web/src/lib/plugin-rows'
 import { DISCORD_MODES, discordModeLabel, discordModeListens } from '../../web/src/lib/discord-modes'
 import { skillContent } from '../../web/src/lib/skill-file'
+import type { DaemonUpdateOutcome } from '../../web/src/lib/types'
+import { outcomeFailure } from '../../web/src/lib/update-outcome'
 import { BrandSignInButton } from './ui/BrandSignInButton'
 import { PluginIcon } from './ui/PluginIcon'
 import { PluginAccess } from './screens/PluginAccess'
@@ -3442,6 +3444,19 @@ export function Management({
               meta={str(extra.version) || mobile.info?.version}
               testID="update-version"
             />
+            {extra.outcome &&
+            Date.now() - Date.parse((extra.outcome as DaemonUpdateOutcome).at) < 86_400_000 ? (
+              <Row
+                title="Last update"
+                subtitle={
+                  outcomeFailure(
+                    extra.outcome as DaemonUpdateOutcome,
+                    (extra.outcome as DaemonUpdateOutcome).id
+                  ) ?? `Updated to ${(extra.outcome as DaemonUpdateOutcome).to}.`
+                }
+                testID="update-outcome"
+              />
+            ) : null}
           </Group>
           {extra.capability ? (
             <>

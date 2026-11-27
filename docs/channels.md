@@ -217,8 +217,51 @@ its machine. The daemon says how, through `update_capability` in
   the signed bytes. Existing Python services use the historical source feed,
   published with every release, to install this native runtime and hand over
   their home.
+  A service update starts on trial (below).
 - unset: a checkout or a hand-started daemon. The page says to update by
   hand.
+
+### Trial and rollback
+
+A service-run daemon starts each update on trial and goes back to the old
+build by itself if the new one can't start (`backend/hexbot-core/src/update_trial.rs`).
+This is T3 Code's server update, adapted to a daemon with no separate
+launcher process: the service (launchd `KeepAlive`, systemd `Restart=always`)
+is what restarts it.
+
+1. While the old daemon still serves, it downloads and checks the new build
+   into `runtime/native/.staged-*`. It refuses the update, and keeps serving,
+   if there isn't room for twice the size of `hexbot.db`, `hexbot-runtime.db`,
+   their write-ahead logs and `config.yaml`.
+2. It stops serving, then copies the databases (`VACUUM INTO`) and
+   `config.yaml` into `runtime/update-snapshots/<id>/`. Older
+   `profiles/*/state.db` files, skills and other files aren't copied.
+3. Under the activation lock it checks the staged files and the `builtAt`
+   floor again, writes `runtime/update-trial.json`, switches
+   `runtime/native-executable` and starts the new build. Paths the old
+   bundle's launcher set (`HEXBOT_WEB_DIST`, `HEXBOT_BUNDLED_SKILLS`, `PATH`)
+   are not passed on.
+4. The new build counts its start in the trial file before it opens a
+   database. Once migrations, the port, rooms, Discord and dreaming are up,
+   and before it serves anyone or starts Connect, it commits: it writes
+   `committed` to `runtime/update-outcome.json` and deletes the trial file and
+   the snapshot.
+5. If it fails before that, starts a second time without committing (a crash
+   loop), or hasn't committed after 10 minutes, it points the selection back
+   at the old build and exits with status 75. The selection record keeps the
+   failed build's `builtAt`, so it is never tried again automatically.
+6. The service starts the old build. Before it opens a database it restores
+   the snapshot, removing the new build's `-wal` and `-shm` files first, and
+   writes `rolled-back` with the reason.
+
+A client reads the result by the update's id in `hexbot.update.status`
+(`outcome`). Limits: the first update into a build with this code has no
+trial, because the old build doesn't write the trial file; a build that
+can't even load is caught by the version check before the switch, not by the
+trial; a daemon the Full package runs is restarted by its app and has no
+trial; the trial is POSIX only; and if pointing the selection back fails
+(a full disk, say), the failed build is started again and fails again until
+the selection is fixed by hand.
 
 The client polls `hexbot.update.status` every two seconds and treats the
 connection dropping and coming back on a version no longer older than the client as success,
@@ -247,6 +290,9 @@ reference for Hexbot's. Kept as-is:
   user switches tracks. The check cadence (15 s after launch, then every
   4 minutes), the single-action updater, the sidebar pill, and the
   "server behind the client, update it from here" flow are T3 Code's.
+- A server update starts on trial: snapshot the databases, record the pending
+  update durably, commit only once the new build is ready, and otherwise
+  restore the snapshot on the old build and report the outcome by update id.
 - Apple signing and notarization are optional and detected from secrets. The
   `.p8` key is stored as text and written to a file on the runner.
 - Release notes compare against the previous release in the same channel.

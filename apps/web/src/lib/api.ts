@@ -145,7 +145,7 @@ export function daemonInfo(): Promise<DaemonInfo> {
 /** Ask the daemon to update itself to `version` (docs/api.md, "Updates"). */
 export function updateRequest(
   version: string
-): Promise<{ accepted: boolean; method: 'desktop' | 'service'; version: string }> {
+): Promise<{ accepted: boolean; method: 'desktop' | 'service'; update_id?: string; version: string }> {
   return rpcCall('hexbot.update.request', { version })
 }
 

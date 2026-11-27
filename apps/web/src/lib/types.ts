@@ -731,6 +731,16 @@ export interface DaemonInfo {
   version: string
 }
 
+/** The last service update's result, by its id (docs/channels.md, "Trial and rollback"). */
+export interface DaemonUpdateOutcome {
+  at: string
+  from: string
+  id: string
+  reason: null | string
+  status: 'committed' | 'failed' | 'rolled-back' | 'superseded'
+  to: string
+}
+
 /** `hexbot.update.status` (docs/api.md, "Updates"). */
 export interface DaemonUpdateStatus {
   at: null | string
@@ -747,6 +757,9 @@ export interface DaemonUpdateStatus {
     | 'requested'
     | 'restarting'
     | 'up-to-date'
+  /** Older daemons leave these out. */
+  update_id?: null | string
+  outcome?: DaemonUpdateOutcome | null
   version: null | string
 }
 

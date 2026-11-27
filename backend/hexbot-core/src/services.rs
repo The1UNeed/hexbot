@@ -288,7 +288,20 @@ struct Data {
     port: u16,
     update: Value,
     update_task: Option<JoinHandle<()>>,
-    restart: Option<PathBuf>,
+    /// A downloaded and checked build waiting for its restart.
+    staged: Option<Staged>,
+    /// The update id of a requested restart into `staged`.
+    restart: Option<String>,
+}
+/// A build `stage_native` downloaded, checked and placed in
+/// `runtime/native/.staged-*`, with the SHA-256 of every file, so the
+/// restart can check again that nothing changed before it switches.
+pub struct Staged {
+    pub dir: PathBuf,
+    pub version: String,
+    pub entrypoint: String,
+    pub manifest: Value,
+    pub digests: std::collections::BTreeMap<String, String>,
 }
 impl Default for Data {
     fn default() -> Self {
@@ -301,6 +314,7 @@ impl Default for Data {
             port: 9119,
             update: json!({"status":"idle","requested":null,"version":null,"message":null,"percent":null,"at":null}),
             update_task: None,
+            staged: None,
             restart: None,
         }
     }
@@ -1233,8 +1247,21 @@ pub async fn shutdown(home: &Path) -> Result<()> {
     }
     Ok(())
 }
-pub async fn take_restart(home: &Path) -> Result<Option<PathBuf>> {
-    Ok(service(home).await?.data.lock().await.restart.take())
+/// The update id and the staged build of a requested restart.
+/// A LAN rebind restarts Connect only; a download or a staged update stays.
+pub async fn stop_connect(home: &Path) -> Result<()> {
+    let service = service(home).await?;
+    let _operation = service.lifecycle.lock().await;
+    stop_workers(&service).await;
+    Ok(())
+}
+pub async fn take_restart(home: &Path) -> Result<Option<(String, Staged)>> {
+    let service = service(home).await?;
+    let mut data = service.data.lock().await;
+    let Some(id) = data.restart.take() else {
+        return Ok(None);
+    };
+    Ok(data.staged.take().map(|staged| (id, staged)))
 }
 async fn connect_status(home: &Path) -> Result<Value> {
     let config = ConnectConfig::load(home)?;
@@ -1464,6 +1491,7 @@ async fn update_status(home: &Path) -> Result<Value> {
         }
     }
     current["capability"] = json!(capability);
+    current["outcome"] = crate::update_trial::outcome(home).unwrap_or(Value::Null);
     Ok(current)
 }
 async fn update_state(
@@ -1532,11 +1560,23 @@ fn prune_native(
 }
 
 /// Retry deferred cleanup after restart, when the former daemon no longer uses
-/// its bundle. Called only after this process holds the home lock.
-pub fn prune_current_native(home: &Path) -> Result<()> {
+/// its bundle. Called only after this process holds the home lock. At start
+/// (`first`) no update can be staged yet, so leftover `.staged-*` builds go
+/// too; a LAN rebind keeps them.
+pub fn prune_current_native(home: &Path, first: bool) -> Result<()> {
     let runtime = home.join("runtime");
     if !runtime.is_dir() {
         return Ok(());
+    }
+    if first && let Ok(entries) = fs::read_dir(runtime.join("native")) {
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with(".staged-")
+                && entry.file_type().is_ok_and(|kind| kind.is_dir())
+                && let Err(error) = fs::remove_dir_all(entry.path())
+            {
+                eprintln!("Runtime cleanup: {error}");
+            }
+        }
     }
     let _lock = activation_lock(&runtime)?;
     let metadata = match fs::read(runtime.join("native-current.json")) {
@@ -1918,7 +1958,7 @@ fn publish_native_with_repair_floor_locked(
 }
 
 #[cfg(test)]
-fn activate_native(native: &Path, version: &str, executable: &Path) -> Result<()> {
+pub(crate) fn activate_native(native: &Path, version: &str, executable: &Path) -> Result<()> {
     let _lock = activation_lock(native.parent().unwrap())?;
     activate_native_locked(native, version, executable)
 }
@@ -2345,7 +2385,10 @@ async fn signed_manifest(url: &str) -> Result<Value> {
         .map_err(|_| Error::new(5243, "native update manifest is invalid JSON"))
 }
 
-async fn native_update(home: &Path, version: &str, service: &Service) -> Result<PathBuf> {
+/// Downloads and checks a build into `runtime/native/.staged-*` without
+/// switching to it. The old daemon keeps serving whatever happens here.
+async fn stage_native(home: &Path, version: &str, service: &Service) -> Result<Staged> {
+    crate::update_trial::require_space(home)?;
     let config = common::read_config(home)?;
     let base = config
         .pointer("/updates/base_url")
@@ -2378,7 +2421,6 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
     if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(Error::new(5243, "invalid native update checksum"));
     }
-    let staging = tempfile::tempdir_in(&native)?;
     let tmp = tempfile::NamedTempFile::new_in(&native)?;
     update_state(service, "downloading", None, None).await;
     download(url.as_str(), tmp.path(), 1024 * 1024 * 1024, false).await?;
@@ -2386,19 +2428,35 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
         return Err(Error::new(5243, "native update checksum mismatch"));
     }
     update_state(service, "installing", None, None).await;
+    let staging = native.join(format!(".staged-{version}-{}", common::id()));
+    fs::create_dir(&staging)?;
+    let staged = place_staged(home, version, &manifest, tmp.path(), &staging).await;
+    if staged.is_err() {
+        let _ = fs::remove_dir_all(&staging);
+    }
+    staged
+}
+
+async fn place_staged(
+    home: &Path,
+    version: &str,
+    manifest: &Value,
+    archive: &Path,
+    staging: &Path,
+) -> Result<Staged> {
     let entrypoint = manifest
         .get("entrypoint")
         .and_then(Value::as_str)
         .unwrap_or("hexbot");
     common::identifier(entrypoint)?;
     if manifest["format"] == "tar.gz" {
-        extract_archive(tmp.path(), staging.path(), 4 * 1024 * 1024 * 1024)?;
+        extract_archive(archive, staging, 4 * 1024 * 1024 * 1024)?;
     } else if manifest["format"].is_null() || manifest["format"] == "binary" {
-        fs::copy(tmp.path(), staging.path().join(entrypoint))?;
+        fs::copy(archive, staging.join(entrypoint))?;
     } else {
         return Err(Error::new(5243, "unsupported native update format"));
     }
-    let staged_executable = staging.path().join(entrypoint);
+    let staged_executable = staging.join(entrypoint);
     if !staged_executable.is_file() {
         return Err(Error::new(5243, "native update entrypoint missing"));
     }
@@ -2448,13 +2506,216 @@ async fn native_update(home: &Path, version: &str, service: &Service) -> Result<
             "updated daemon version does not match request",
         ));
     }
+    Ok(Staged {
+        dir: staging.to_owned(),
+        version: version.into(),
+        entrypoint: entrypoint.into(),
+        manifest: manifest.clone(),
+        digests: staged_digests(staging)?,
+    })
+}
+
+/// The SHA-256 of every file under a staged build, by relative path.
+pub(crate) fn staged_digests(root: &Path) -> Result<std::collections::BTreeMap<String, String>> {
+    fn visit(
+        root: &Path,
+        directory: &Path,
+        digests: &mut std::collections::BTreeMap<String, String>,
+    ) -> Result<()> {
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            let path = entry.path();
+            let kind = entry.file_type()?;
+            let name = path
+                .strip_prefix(root)
+                .map_err(|_| Error::new(5243, "staged update path escaped"))?
+                .to_string_lossy()
+                .into_owned();
+            if kind.is_dir() {
+                visit(root, &path, digests)?;
+            } else if kind.is_symlink() {
+                digests.insert(name, format!("link:{}", fs::read_link(&path)?.display()));
+            } else {
+                digests.insert(name, file_sha256(&path)?);
+            }
+        }
+        Ok(())
+    }
+    let mut digests = Default::default();
+    visit(root, root, &mut digests)?;
+    Ok(digests)
+}
+
+/// Switches to a staged build on trial, after the old daemon stopped serving
+/// (`daemon.rs`, the restart branch). Under the activation lock: check the
+/// build again, snapshot, place it, write the trial file and switch.
+#[cfg(unix)]
+pub fn begin_update(home: &Path, staged: Staged, update_id: &str) -> Result<PathBuf> {
+    let native = native_directory(home)?;
+    let runtime = native.parent().unwrap();
+    let _lock = activation_lock(runtime)?;
+    if staged_digests(&staged.dir)? != staged.digests {
+        return Err(Error::new(5243, "The downloaded update changed on disk"));
+    }
+    // Setup or the installer may have published a newer build since staging.
+    let floor = automatic_native_floor(&native)?;
+    require_newer_native_build(&staged.manifest, &json!({"builtAt":floor}))?;
+    // Without a selected build and its record there is nothing to go back
+    // to: such a home updates as before, without a trial.
+    let from = match (
+        selected_native_executable(home),
+        native_metadata(&runtime.join("native-current.json"))?,
+    ) {
+        (Ok(executable), Some(record)) => Some((executable, record)),
+        _ => None,
+    };
+    let snapshot = match from {
+        Some(_) => Some(crate::update_trial::snapshot(home, update_id)?),
+        None => None,
+    };
+    let directory = native.join(format!("{}-{}", staged.version, common::id()));
+    fs::rename(&staged.dir, &directory)?;
+    let to_executable = directory.join(&staged.entrypoint).canonicalize()?;
+    if let (Some((from_executable, from_record)), Some(snapshot)) = (from, snapshot) {
+        crate::update_trial::write_trial(
+            home,
+            &crate::update_trial::Trial {
+                id: update_id.into(),
+                from_version: from_record["version"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(crate::version),
+                to_version: staged.version.clone(),
+                from_executable,
+                from_record,
+                to_executable: to_executable.clone(),
+                to_built_at: native_built_at(&staged.manifest)?,
+                snapshot,
+                attempts: 0,
+                status: crate::update_trial::Status::Trying,
+                reason: None,
+                started_at: chrono::Utc::now().to_rfc3339(),
+            },
+        )?;
+    }
+    activate_native_with_update_locked(
+        &native,
+        &staged.version,
+        &to_executable,
+        Some(&staged.manifest),
+        None,
+    )?;
+    Ok(to_executable)
+}
+
+/// Without symlinks there is no trial: publish as before.
+#[cfg(not(unix))]
+pub fn begin_update(home: &Path, staged: Staged, _update_id: &str) -> Result<PathBuf> {
+    let native = native_directory(home)?;
     publish_native(
         &native,
-        version,
-        staging.path(),
-        entrypoint,
-        Some(&manifest),
+        &staged.version,
+        &staged.dir,
+        &staged.entrypoint,
+        Some(&staged.manifest),
     )
+}
+#[cfg(not(unix))]
+pub(crate) fn roll_back_selection(_: &Path, _: &crate::update_trial::Trial) -> Result<()> {
+    Ok(())
+}
+#[cfg(not(unix))]
+pub(crate) fn repair_rolled_back_selection(_: &Path, _: &crate::update_trial::Trial) -> Result<()> {
+    Ok(())
+}
+
+/// Writes a selection record and points `native-executable` at `executable`.
+/// The record's `builtAt` never goes down, so a failed build stays refused.
+#[cfg(unix)]
+fn reselect_native_locked(
+    home: &Path,
+    record: &Value,
+    executable: &Path,
+    floor: u64,
+) -> Result<()> {
+    let runtime = native_directory(home)?.parent().unwrap().to_owned();
+    let current = native_metadata(&runtime.join("native-current.json"))
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| json!({}));
+    let built_at = [
+        native_built_at(record).unwrap_or(0),
+        native_built_at(&current).unwrap_or(0),
+        native_built_at(&current["updateManifest"]).unwrap_or(0),
+        floor,
+    ]
+    .into_iter()
+    .max()
+    .unwrap_or(0);
+    let mut record = record.clone();
+    record["builtAt"] = json!(built_at);
+    common::atomic_write(
+        &runtime.join("native-current.json"),
+        &serde_json::to_vec(&record).unwrap(),
+    )?;
+    let link = tempfile::tempdir_in(&runtime)?;
+    std::os::unix::fs::symlink(executable, link.path().join("launcher"))?;
+    fs::rename(
+        link.path().join("launcher"),
+        runtime.join("native-executable"),
+    )?;
+    fs::File::open(&runtime)?.sync_all()?;
+    Ok(())
+}
+
+/// A failed trial points the selection back at the old build, but only while
+/// it still names the trial's build: a build setup selected meanwhile stays.
+/// The old build can only have been pruned by an activation, which changed
+/// the selection, so a pruned build is never selected again here.
+#[cfg(unix)]
+pub(crate) fn roll_back_selection(home: &Path, trial: &crate::update_trial::Trial) -> Result<()> {
+    let native = native_directory(home)?;
+    let _lock = activation_lock(native.parent().unwrap())?;
+    if selected_native_executable(home)?.canonicalize()? != trial.to_executable {
+        return Ok(());
+    }
+    reselect_native_locked(
+        home,
+        &trial.from_record,
+        &trial.from_executable,
+        trial.to_built_at,
+    )
+}
+
+/// Activation writes the record before the symlink. If it stopped between the
+/// two, the old build is selected but the record names the new one; put the
+/// old record back, keeping the higher `builtAt`.
+#[cfg(unix)]
+pub(crate) fn repair_rolled_back_selection(
+    home: &Path,
+    trial: &crate::update_trial::Trial,
+) -> Result<()> {
+    let native = native_directory(home)?;
+    let runtime = native.parent().unwrap();
+    let _lock = activation_lock(runtime)?;
+    let Some(selected) = selected_native_executable(home)
+        .ok()
+        .and_then(|path| path.canonicalize().ok())
+    else {
+        return Ok(());
+    };
+    if Some(&selected) != trial.from_executable.canonicalize().ok().as_ref() {
+        return Ok(());
+    }
+    let recorded = native_metadata(&runtime.join("native-current.json"))
+        .ok()
+        .flatten()
+        .and_then(|record| record["executable"].as_str().map(PathBuf::from))
+        .and_then(|path| path.canonicalize().ok());
+    if recorded.as_deref() == Some(selected.as_path()) {
+        return Ok(());
+    }
+    reselect_native_locked(home, &trial.from_record, &selected, trial.to_built_at)
 }
 
 /// CLI registration persists credentials without starting a tunnel outside the daemon.
@@ -2611,6 +2872,13 @@ pub async fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<
                     if !valid_version(version) {
                         return Err(Error::new(4200, "invalid parameter: version"));
                     }
+                    // A driver passes its own id, so a reply the restart cuts
+                    // off doesn't lose it. It becomes a directory name.
+                    let update_id = match p.get("update_id").and_then(Value::as_str) {
+                        Some(id) if crate::update_trial::valid_id(id) => id.to_owned(),
+                        Some(_) => return Err(Error::new(4200, "invalid parameter: update_id")),
+                        None => common::id(),
+                    };
                     let method = capability().ok_or_else(|| {
                         Error::new(
                             4210,
@@ -2629,7 +2897,7 @@ pub async fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<
     Some("requested"|"checking"|"downloading"|"installing"|"restarting")) {
                         return Err(Error::new(4211, "A daemon update is already in progress"));
                     }
-                    data.update = json!({"status":"requested","requested":version,"version":null,"message":null,"percent":null,"at":chrono::Utc::now().to_rfc3339()});
+                    data.update = json!({"status":"requested","requested":version,"version":null,"message":null,"percent":null,"update_id":update_id,"at":chrono::Utc::now().to_rfc3339()});
                     if method == "desktop" {
                         match fs::remove_file(home.join("runtime/update-status.json")) {
                             Ok(()) => {}
@@ -2642,9 +2910,10 @@ pub async fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<
                         let home = home.to_owned();
                         let version = version.to_owned();
                         let worker_service = service.clone();
+                        let id = update_id.clone();
                         data.update_task = Some(tokio::spawn(async move {
-                            match native_update(&home, &version, &worker_service).await {
-                                Ok(executable) => {
+                            match stage_native(&home, &version, &worker_service).await {
+                                Ok(staged) => {
                                     update_state(
                                         &worker_service,
                                         "restarting",
@@ -2652,7 +2921,9 @@ pub async fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<
                                         None,
                                     )
                                     .await;
-                                    worker_service.data.lock().await.restart = Some(executable);
+                                    let mut data = worker_service.data.lock().await;
+                                    data.staged = Some(staged);
+                                    data.restart = Some(id);
                                 }
                                 Err(error) => {
                                     update_state(
@@ -2666,7 +2937,7 @@ pub async fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<
                             }
                         }));
                     }
-                    Ok(json!({"accepted":true,"method":method,"version":version}))
+                    Ok(json!({"accepted":true,"method":method,"version":version,"update_id":update_id}))
                 }
                 _ => unreachable!(),
             }
