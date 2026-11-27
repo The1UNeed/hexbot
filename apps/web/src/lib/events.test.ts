@@ -442,3 +442,35 @@ it('refreshes your identity when another client renames you', () => {
   expect(refresh).toHaveBeenCalledOnce()
   refresh.mockRestore()
 })
+
+it('dismisses open transcript incident cards when hexbot.bots.changed carries resolved_incidents', () => {
+  const refreshBots = vi.fn()
+  useTranscripts.setState({
+    bySession: {
+      'live-1': emptyTranscript('live-1', 'section-1'),
+      'live-2': emptyTranscript('live-2', 'section-2')
+    }
+  })
+  const store = useTranscripts.getState()
+  store.incidentEvent('live-1', 'Codex error: The usage limit has been reached', {
+    connector: null,
+    incidentId: 'inc-quota-1'
+  })
+  store.incidentEvent('live-2', 'Other failure', {
+    connector: null,
+    incidentId: 'inc-other-2'
+  })
+
+  routeEvent(
+    {
+      payload: { resolved_incidents: ['inc-quota-1'], resolved_sections: ['section-1'] },
+      type: 'hexbot.bots.changed'
+    } as unknown as GatewayEvent,
+    { refreshBots }
+  )
+
+  expect(refreshBots).toHaveBeenCalledOnce()
+  expect(useTranscripts.getState().bySession['live-1']!.messages).toEqual([])
+  expect(useTranscripts.getState().bySession['live-1']!.error).toBeNull()
+  expect(useTranscripts.getState().bySession['live-2']!.messages).toHaveLength(1)
+})

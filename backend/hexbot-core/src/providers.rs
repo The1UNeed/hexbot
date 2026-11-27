@@ -3,7 +3,15 @@
 const CATALOG: &str = include_str!("providers.json");
 
 use crate::{Error, Result, common};
+
+#[path = "provider_recovery.rs"]
+mod recovery;
 use base64::Engine;
+pub use recovery::{
+    attach, check_recovery, check_recovery_at, detach, note_provider_recovered,
+    note_quota_incident, watch,
+};
+pub(crate) use recovery::{bot_credential_scope, incident_recovery_model, notify_resolved};
 use serde_json::{Value, json};
 use std::{
     collections::{HashMap, HashSet},
@@ -105,6 +113,28 @@ pub fn pi_provider(name: &str) -> String {
         other => other,
     }
     .to_owned()
+}
+/// Resolve a Pi-reported provider name back to Hexbot's canonical provider slug,
+/// preserving OAuth/API distinctions (such as `xai-oauth` vs `xai`) when Pi's
+/// reported provider matches the session's configured provider.
+pub fn canonical_from_pi(configured: Option<&str>, pi_reported: Option<&str>) -> Option<String> {
+    let configured = configured.map(str::trim).filter(|s| !s.is_empty());
+    let reported = pi_reported.map(str::trim).filter(|s| !s.is_empty());
+    if let (Some(cfg), Some(rep)) = (configured, reported)
+        && (pi_provider(cfg) == rep || canonical_provider(cfg) == canonical_provider(rep))
+    {
+        return Some(canonical_provider(cfg));
+    }
+    if let Some(rep) = reported {
+        return Some(match rep {
+            "google-vertex" => "vertex".to_owned(),
+            "amazon-bedrock" => "bedrock".to_owned(),
+            "opencode" => "opencode-zen".to_owned(),
+            "vercel-ai-gateway" => "ai-gateway".to_owned(),
+            other => canonical_provider(other),
+        });
+    }
+    configured.map(canonical_provider)
 }
 fn profile(name: &str) -> Result<&'static Value> {
     profiles()
@@ -528,6 +558,7 @@ pub fn set_key(home: &Path, provider: &str, value: &str) -> Result<Value> {
     disabled[&slug] = json!(false);
     write_json(&home.join("providers-disabled.json"), &disabled)?;
     refresh_pi_mirrors(home)?;
+    recovery::on_credentials_updated(home, &slug);
     Ok(json!({"provider":slug,"configured":true}))
 }
 pub fn clear_key(home: &Path, provider: &str) -> Result<Value> {
@@ -2011,7 +2042,9 @@ fn save_tokens(home: &Path, login: &Login, tokens: &Value) -> Result<()> {
     write_json(&home.join("auth.json"), &store)?;
     disabled[&login.provider] = json!(false);
     write_json(&home.join("providers-disabled.json"), &disabled)?;
-    refresh_pi_mirrors(home)
+    refresh_pi_mirrors(home)?;
+    recovery::on_credentials_updated(home, &login.provider);
+    Ok(())
 }
 pub async fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<Result<Value>> {
     if !matches!(

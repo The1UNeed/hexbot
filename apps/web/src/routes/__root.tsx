@@ -5,7 +5,7 @@ import { ChatChooser } from '../app/chat-chooser'
 import { ConnectionLost, useConnectionLost } from '../app/connection-lost'
 import { UpdateInstalling, useUpdateInstalling } from '../app/update-installing'
 import { cancelConfirm, ConfirmHost } from '../components/ui/confirm'
-import { sectionsList, userMemoryGet } from '../lib/api'
+import { providersCheckRecovery, sectionsList, userMemoryGet } from '../lib/api'
 import { getBridge, hasLocalRuntime } from '../lib/bridge'
 import { getSupervisor, setLocalDaemonPort } from '../lib/connection'
 import { OPEN_SECTION_EVENT } from '../lib/notify'
@@ -63,6 +63,49 @@ function RootLayout() {
     }
   }, [target])
   useEffect(() => () => getSupervisor().stop(), [])
+  const botsLoaded = useBots(state => state.loaded)
+  const lastRecoveryCheck = useRef(0)
+
+  useEffect(() => {
+    if (status !== 'connected') {
+      lastRecoveryCheck.current = 0
+
+      return
+    }
+
+    const check = () => {
+      if (document.visibilityState === 'hidden') {
+        return
+      }
+
+      const now = Date.now()
+
+      if (now - lastRecoveryCheck.current < 2000) {
+        return
+      }
+
+      const hasStopped = Object.values(useBots.getState().byName).some(
+        bot => bot.status === 'stopped'
+      )
+
+      if (hasStopped) {
+        lastRecoveryCheck.current = now
+        void providersCheckRecovery().catch(() => undefined)
+      }
+    }
+
+    if (botsLoaded) {
+      check()
+    }
+
+    window.addEventListener('focus', check)
+    document.addEventListener('visibilitychange', check)
+
+    return () => {
+      window.removeEventListener('focus', check)
+      document.removeEventListener('visibilitychange', check)
+    }
+  }, [botsLoaded, status])
   useAboutYouGate()
   useEffect(() => bindAppUpdates(), [])
   useEffect(() => {

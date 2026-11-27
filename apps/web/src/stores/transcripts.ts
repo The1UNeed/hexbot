@@ -259,6 +259,8 @@ export interface TranscriptsState {
   requestFailed: (sessionId: string, message: string) => void
   /** The owner closed a Stopped card. */
   dismiss: (sessionId: string, messageId: string) => void
+  /** The daemon resolved these incidents across open transcripts. */
+  dismissIncidents: (incidentIds: string[], resolvedSections?: string[]) => void
   /** The owner recalled this message: it and everything after it go. */
   recallFrom: (sessionId: string, messageId: string) => void
   /**
@@ -2498,6 +2500,70 @@ export const useTranscripts = create<TranscriptsState>((set, get) => {
           error: messages.some(message => message.error) ? transcript.error : null,
           messages
         }
+      })
+    },
+
+    dismissIncidents(incidentIds, resolvedSections = []) {
+      if (incidentIds.length === 0 && resolvedSections.length === 0) {
+        return
+      }
+
+      const resolved = new Set(incidentIds)
+      const sections = new Set(resolvedSections)
+
+      set(state => {
+        let changed = false
+        const next: Record<string, Transcript> = {}
+
+        for (const [sessionId, transcript] of Object.entries(state.bySession)) {
+          let sessionChanged = false
+          const sectionResolved = Boolean(transcript.sectionId && sections.has(transcript.sectionId))
+          const messages: TranscriptMessage[] = []
+
+          for (const message of transcript.messages) {
+            const incidentId = message.errorDetail?.incidentId
+            const matchesIncident = Boolean(incidentId && resolved.has(incidentId))
+
+            const matchesOrphanSectionError =
+              sectionResolved && !incidentId && !message.request && Boolean(message.error)
+
+            if (!matchesIncident && !matchesOrphanSectionError) {
+              messages.push(message)
+
+              continue
+            }
+
+            sessionChanged = true
+
+            const hasContent =
+              message.role !== 'system' &&
+              (Boolean(message.text) ||
+                Boolean(message.parts?.length) ||
+                message.attachments.length > 0 ||
+                message.toolCalls.length > 0 ||
+                Boolean(message.thinking) ||
+                Boolean(message.approvals?.length) ||
+                Boolean(message.clarifies?.length))
+
+            if (hasContent) {
+              const { error: _error, errorDetail: _detail, status, ...rest } = message
+              messages.push(status === 'error' ? rest : { ...rest, ...(status !== undefined && { status }) })
+            }
+          }
+
+          if (sessionChanged) {
+            changed = true
+            next[sessionId] = {
+              ...transcript,
+              error: messages.some(message => message.error) ? transcript.error : null,
+              messages
+            }
+          } else {
+            next[sessionId] = transcript
+          }
+        }
+
+        return changed ? { bySession: next } : state
       })
     },
 
