@@ -77,10 +77,17 @@ describe('collectTargets', () => {
     const moving = collectTargets(fleet({ apps: list([nightly]) }))
     expect(row(moving, 'laptop/app.hexbot.client')).toMatchObject({ skip: null, track: 'stable' })
 
+    // Switched to Stable, but the daemon still runs Nightly until the next Stable release.
     const still = collectTargets(
       fleet({
         apps: list([nightly]),
-        check: { current: '0.1.6', latest: '0.1.6', newer: false, track: 'stable' }
+        check: {
+          current: '0.1.7-nightly.20261120.1',
+          latest: '0.1.6',
+          newer: false,
+          track: 'stable'
+        },
+        daemon: { capability: 'service', version: '0.1.7-nightly.20261120.1' }
       })
     )
 
@@ -88,6 +95,24 @@ describe('collectTargets', () => {
     // A remote Mac can't relaunch a bundle the switch renamed.
     const mac = collectTargets(fleet({ apps: list([{ ...nightly, platform: 'darwin' }]) }))
     expect(row(mac, 'laptop/app.hexbot.client').skip).toBe('Switch tracks on that Mac')
+  })
+
+  it('lets an app catch up with a daemon already on the fleet track', () => {
+    const plan = collectTargets(
+      fleet({
+        apps: list([app({ track: 'stable', version: '0.1.6' })]),
+        check: {
+          current: '0.1.7-nightly.20261120.1',
+          latest: '0.1.7-nightly.20261120.1',
+          newer: false,
+          track: 'nightly'
+        },
+        daemon: { capability: 'service', version: '0.1.7-nightly.20261120.1' }
+      })
+    )
+
+    expect(row(plan, 'daemon').skip).toBe('Up to date')
+    expect(row(plan, 'laptop/app.hexbot.client')).toMatchObject({ skip: null, track: 'nightly' })
   })
 
   it('says when a daemon moves to the new track only with its next release', () => {

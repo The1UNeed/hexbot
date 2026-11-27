@@ -124,6 +124,7 @@ export function UpdateEverythingGroup() {
   const setTrack = useUpdateRun(state => state.setTrack)
   const [open, setOpen] = useState(false)
   const [switching, setSwitching] = useState(false)
+  const [trackError, setTrackError] = useState<null | string>(null)
   const running = !!run && !run.result
 
   useEffect(() => {
@@ -157,7 +158,10 @@ export function UpdateEverythingGroup() {
       >
         <UpdateRows rows={run?.rows ?? plan?.rows ?? []} />
       </Group>
-      <Group footer="Stable is tagged releases. Nightly is built from main every day and may break. The daemon and every app switch together, and each moves once the new track has a newer build than it runs.">
+      <Group
+        description={trackError ?? undefined}
+        footer="Stable is tagged releases. Nightly is built from main every day and may break. The daemon and every app switch together, and each moves once the new track has a newer build than it runs."
+      >
         <Row
           control={
             <div className="w-[160px]">
@@ -166,10 +170,19 @@ export function UpdateEverythingGroup() {
                 label="Track"
                 onValueChange={value => {
                   setSwitching(true)
+                  setTrackError(null)
                   void setTrack(value === 'nightly' ? 'nightly' : 'stable')
                     // The daemon has a newer build there: update everything onto it.
-                    .then(next => next?.actionable && !next.rows[0]?.skip && setOpen(true))
-                    .catch(() => undefined)
+                    .then(next => {
+                      if (next?.actionable && !next.rows.find(row => row.kind === 'daemon')?.skip) {
+                        setOpen(true)
+                      }
+                    })
+                    .catch((error: unknown) =>
+                      setTrackError(
+                        `Could not switch tracks: ${error instanceof Error ? error.message : String(error)}`
+                      )
+                    )
                     .finally(() => setSwitching(false))
                 }}
                 options={[
