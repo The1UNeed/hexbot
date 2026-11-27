@@ -103,6 +103,7 @@ import {
   unreadOf as unreadOfBot
 } from './src/core/routes'
 import { previewLine } from '../web/src/lib/preview'
+import { toMillis } from '../web/src/lib/time'
 import { attachmentPrompt, mediaKind, mediaOf, mediaSource, mimeOf } from '../web/src/lib/media'
 import { type FileComment, withComments } from '../web/src/lib/file-comments'
 import { asksOf, askTarget, askWords } from '../web/src/lib/asks'
@@ -1793,6 +1794,22 @@ function MobileApp({ children }: { children?: ReactNode }) {
                   ? 'Open this chat to send'
                   : undefined,
     error: mobile.chat.error || mobile.error || stoppedElsewhere?.text || null,
+    // A turn that stopped names who stopped; anything else, such as a refused
+    // send, is its own heading.
+    errorTitle: (() => {
+      if (route?.kind !== 'section' || (mobile.error && !mobile.chat.error)) return undefined
+      const owner = botByName(route.bot.name) ?? route.bot
+      return stoppedElsewhere ||
+        (mobile.chat.error &&
+          owner.status === 'stopped' &&
+          owner.status_detail?.section_id === route.section.id)
+        ? `${route.bot.display_name} stopped`
+        : undefined
+    })(),
+    errorAt:
+      !mobile.chat.error && !mobile.error && stoppedElsewhere
+        ? toMillis(stoppedElsewhere.since)
+        : undefined,
     onDismissError: () => {
       setClosedOn(mobile.chat.messages.findLast(m => m.role === 'user')?.id ?? null)
       if (stoppedElsewhere) setClosedSince(stoppedElsewhere.since)

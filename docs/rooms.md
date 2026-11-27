@@ -268,8 +268,8 @@ The native daemon provides `message_bot {to, text, wait: bool}` for bots:
 - Room creation dialog: name, members, optional main bot, approval mode,
   limits prefilled from settings.
 - Room view reuses the conversation column with sender avatars per bot, a
-  "waiting on you" banner on `waiting.human`, a red banner on
-  `turn.failed`, a limit notice on `limit.tripped`, and a header with the
+  "waiting on you" notice on `waiting.human` and a "This turn stopped"
+  notice on `turn.failed`, both in the notice stack above the composer, a limit notice on `limit.tripped`, and a header with the
   room cluster, name, member count, status dot and a Room settings button.
 - Room settings (`/r/$room/settings`): name, Bots (Make main, Remove
   with an inline confirm, Add bot), approval mode, limits, Delete room. A
