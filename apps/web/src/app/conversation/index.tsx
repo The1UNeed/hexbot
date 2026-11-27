@@ -101,7 +101,15 @@ import { EmailDraftCard } from './email-draft-card'
 import { FileCard } from './file-card'
 import { filesOf, type FileTarget, flushOpenFiles, mimeOf, openFile } from './file-tab'
 import { type ImageOpener, MediaView } from './media'
-import { NotificationsBanner } from './notifications-banner'
+import {
+  loadFailureNotice,
+  stoppedNotice,
+  useNotificationsNotice,
+  useToolsNotice,
+  waitingNotice
+} from './notices/chat-notices'
+import type { Notice } from './notices/notice'
+import { NoticeDock } from './notices/notice-dock'
 import { PluginCard } from './plugin-card'
 import { providerGone, ProviderGoneCard } from './provider-gone-card'
 import { BubbleReactions, ReactButton } from './reactions'
@@ -114,42 +122,7 @@ import { ThreadView } from './thread-view'
 import { DeliveryMark, NotSent, useLate } from './unsent'
 import { visualsOf } from './visual'
 import { Visuals } from './visual-frame'
-import { WaitingBanner } from './waiting-banner'
 import { isWorking, LiveStatus } from './work-status'
-
-export function ConnectedToolsNotice({ sectionId }: { sectionId: string }) {
-  const warnings = useTranscripts(state => state.warnings)
-
-  const entries = Object.entries(warnings).filter(
-    ([key]) =>
-      key === sectionId || (sectionId.startsWith('room:') && key.startsWith(`${sectionId}:`))
-  )
-
-  const warning = entries.map(([, text]) => text).join('\n')
-
-  if (!warning) {
-    return null
-  }
-
-  return (
-    <div
-      className="hex-glass hex-fade pointer-events-auto mx-auto flex w-fit max-w-full shrink-0 items-center gap-2 rounded-[15px] py-1.5 pr-2 pl-3.5 text-[length:var(--text-secondary)] text-warning"
-      role="status"
-    >
-      <span className="line-clamp-2 min-w-0" title={warning}>
-        {entries.map(([, text]) => text.split('\n')[0]).join(' · ')}
-      </span>
-      <button
-        aria-label="Dismiss notice"
-        className="grid size-5 shrink-0 place-items-center rounded-full text-muted hover:text-foreground"
-        onClick={() => entries.forEach(([key]) => transcriptActions().setWarning(key, null))}
-        type="button"
-      >
-        <X size={13} />
-      </button>
-    </div>
-  )
-}
 
 const dayKey = (time: number) => new Date(toMillis(time)).toDateString()
 
@@ -688,31 +661,40 @@ export function StoppedCard({
 }
 
 /**
- * A read of the chat that failed while messages are on screen: what was
- * shown stays, and this small card under it says the chat may be incomplete.
+ * A failure the chat has moved past: one muted line in the history, the
+ * reason on hover. The live one floats above the composer.
  */
-export function MissingMessagesCard({ reason, onRetry }: { reason: string; onRetry: () => void }) {
+export function StoppedLine({ message, name }: { message: TranscriptMessage; name: string }) {
+  const reason = plainError(message.error ?? '')
+
   return (
     <div
-      className="hex-bubble hex-fade mt-4 flex max-w-[min(85%,40rem)] items-center gap-3 rounded-[20px] border border-border bg-background py-2 pr-2 pl-3.5"
-      data-testid="missing-messages"
-      role="alert"
+      className="hex-fade my-2 flex items-center justify-center gap-1.5 px-6 text-[length:var(--text-meta)] text-muted"
+      data-testid="stopped-line"
+      title={reason}
     >
-      <div className="min-w-0 flex-1">
-        <p className="font-medium">This chat didn't finish loading</p>
-        <p className="text-[length:var(--text-meta)] break-words text-muted">
-          {plainError(reason)}
-        </p>
-      </div>
-      <Button onClick={onRetry} size="sm">
-        Retry
-      </Button>
+      <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-danger/70" />
+      <span className="shrink-0">{message.request ? "Didn't go through" : `${name} stopped`}</span>
+      <span aria-hidden>·</span>
+      <span className="min-w-0 truncate">{reason}</span>
+      {message.createdAt > 0 ? (
+        <>
+          <span aria-hidden>·</span>
+          <time className="shrink-0">
+            {new Date(toMillis(message.createdAt)).toLocaleTimeString([], {
+              hour: 'numeric',
+              minute: '2-digit'
+            })}
+          </time>
+        </>
+      ) : null}
     </div>
   )
 }
 
 export const MessageRow = memo(function MessageRow({
   bot,
+  docked = false,
   failed = false,
   lined = false,
   message,
@@ -733,6 +715,8 @@ export const MessageRow = memo(function MessageRow({
   showFace = false
 }: {
   bot?: Bot
+  /** A failure shown above the composer (`NoticeDock`): nothing here. */
+  docked?: boolean
   /** Your message that did not reach the bot: the red mark beside it, its line under it. */
   failed?: boolean
   /** A failure line already shows under your message: draw no second one. */
@@ -794,6 +778,15 @@ export const MessageRow = memo(function MessageRow({
   const retryMark = resend ?? (onRetry && retryMessage ? () => onRetry(retryMessage) : undefined)
 
   if (message.error) {
+    if (docked) {
+      return null
+    }
+
+    // An earlier failure stays in the history as one quiet line.
+    if (!(mine && (quiet || message.request))) {
+      return <StoppedLine message={message} name={bot?.display_name ?? 'The bot'} />
+    }
+
     return (
       <StoppedCard
         message={message}
@@ -1593,6 +1586,7 @@ function stranded(message: TranscriptMessage): boolean {
 function Composer({
   accessory,
   bot,
+  dock,
   draftVersion,
   onFile,
   onImage,
@@ -1603,6 +1597,8 @@ function Composer({
 }: {
   accessory?: React.ReactNode
   bot?: Bot
+  /** The chat's notices, just above the field. */
+  dock?: React.ReactNode
   /** Changes when the draft was written outside the composer, as by Recall. */
   draftVersion?: number
   /** Opens an uploaded file beside the chat. */
@@ -1991,6 +1987,7 @@ function Composer({
       }
       accessory={accessory}
       canSend={(Boolean(text.trim()) || files.length > 0 || comments.length > 0) && draft.ready}
+      dock={dock}
       onAttach={() => picker.current?.click()}
       onSend={() => void send()}
       sending={sending || queued}
@@ -2368,6 +2365,8 @@ function BotConversation() {
   const chat = Boolean(section && !section.peer_bot && !section.purpose)
   // Reactions live in the bot's chat with you, on a daemon that keeps them.
   const reactIn = useChatReactions(chat ? params.section : null)
+  const notificationsNotice = useNotificationsNotice()
+  const toolsNotice = useToolsNotice(params.section ?? '')
   const stoppedCard = stoppedCardFor(bot, params.section ?? null, messages, chat)
   const stoppedHere = stoppedCard?.createdAt === dismissedSince ? null : stoppedCard
 
@@ -3071,8 +3070,6 @@ function BotConversation() {
       : undefined
   }
 
-  const stoppedRetry = stoppedHere ? retryFor(stoppedHere) : undefined
-
   const botName = bot?.name
 
   const fixConnector = useCallback(
@@ -3188,6 +3185,62 @@ function BotConversation() {
   // A failed read covers the chat only when nothing of it is on screen.
   const failure = openFailure?.section === params.section ? openFailure : null
   const retryOpen = () => setOpenAttempt(attempt => attempt + 1)
+
+  // Failures float above the composer, not in the chat: the bot's Stopped
+  // state, an error row the chat ends on, and any failure whose Retry still
+  // sends your message. A failed send stays as its message's "Not sent" line;
+  // a failure the chat moved past is a quiet line in the history.
+  const tailError = (() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const item = messages[index]
+
+      if (!item) {
+        continue
+      }
+
+      if (item.error) {
+        return item
+      }
+
+      if (item.role === 'user' || (item.role === 'assistant' && bubbleShown(item))) {
+        return undefined
+      }
+    }
+
+    return undefined
+  })()
+
+  const docked = messages.filter(
+    item =>
+      item.error &&
+      !(ownerOf.get(item.id) && (item.request || quietLine(item))) &&
+      (item === tailError || retryFor(item))
+  )
+
+  const dockedCards = stoppedHere ? [...docked, stoppedHere] : docked
+
+  const dockNotices: Notice[] = [
+    ...dockedCards.map(card => {
+      const retryWith = retryFor(card)
+      const connector = card.errorDetail?.connector ?? null
+
+      return stoppedNotice({
+        connectorName: card.errorDetail?.connectorName ?? humanConnector(connector),
+        message: card,
+        name: bot?.display_name ?? 'The bot',
+        onDismiss: () => dismiss(card),
+        onFix: connector ? () => fixConnector(connector) : undefined,
+        onRetry: retryWith ? () => retryWith[0](retryWith[1]) : undefined
+      })
+    }),
+    // With nothing on screen the failure fills the chat instead (below).
+    ...(failure && messages.length ? [loadFailureNotice(failure.message, retryOpen)] : []),
+    ...(status === 'needs_you' ? [waitingNotice(undefined, () => toEnd('smooth'))] : []),
+    ...(toolsNotice ? [toolsNotice] : []),
+    ...(notificationsNotice ? [notificationsNotice] : [])
+  ]
+
+  const dock = <NoticeDock notices={dockNotices} />
 
   return (
     <div
@@ -3379,6 +3432,7 @@ function BotConversation() {
                 return (
                   <MessageRow
                     bot={bot}
+                    docked={docked.includes(shownMessage)}
                     failed={unsent(shownMessage)}
                     fresh={toMillis(shownMessage.createdAt) > openedAt}
                     joined={shownMessage === message && joined}
@@ -3414,17 +3468,6 @@ function BotConversation() {
               )
             })}
             <CheckingRow bot={bot} transcript={transcript} />
-            {stoppedHere ? (
-              <StoppedCard
-                message={stoppedHere}
-                mine={Boolean(stoppedOwner)}
-                name={bot?.display_name ?? 'Bot'}
-                onDismiss={() => dismiss(stoppedHere)}
-                onFix={fixConnector}
-                onRetry={stoppedRetry ? () => stoppedRetry[0](stoppedRetry[1]) : undefined}
-              />
-            ) : null}
-            {failure ? <MissingMessagesCard onRetry={retryOpen} reason={failure.message} /> : null}
             <div className="h-2" />
           </div>
         )}
@@ -3454,9 +3497,6 @@ function BotConversation() {
             {name}
           </span>
         </button>
-        {status === 'needs_you' ? <WaitingBanner /> : null}
-        <ConnectedToolsNotice sectionId={params.section ?? ''} />
-        <NotificationsBanner />
       </header>
       <div className="hex-no-drag absolute top-2.5 right-3 z-30 flex items-center gap-1.5">
         {panelOpen ? null : (
@@ -3486,11 +3526,15 @@ function BotConversation() {
       ) : null}
       {/* Messages fade out under the composer instead of meeting the card's edge. */}
       <div className="hex-chrome absolute inset-x-0 bottom-0 z-20" ref={composerBox}>
+        {!composer && dockNotices.length ? (
+          <div className="relative mx-auto max-w-[52rem] px-5 pb-4">{dock}</div>
+        ) : null}
         {composer ? (
           <div className="relative mx-auto max-w-[52rem] px-1">
             {providerGone(bot) ? <ProviderGoneCard bot={bot} /> : null}
             <Composer
               bot={bot}
+              dock={dock}
               draftVersion={draftVersion}
               key={params.section}
               onFile={openBeside}

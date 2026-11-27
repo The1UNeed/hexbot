@@ -30,12 +30,12 @@ import { useUi } from '../../stores/ui'
 import { AskRows } from './asking-row'
 import { ClarifyCard } from './clarify-card'
 import { composerFieldClass, ComposerShell } from './composer'
-import { NotificationsBanner } from './notifications-banner'
+import { useNotificationsNotice, useToolsNotice, waitingNotice } from './notices/chat-notices'
+import { NoticeDock } from './notices/notice-dock'
 import { useSearchJump } from './search-jump'
 import { type Ask, liveMood } from './steps'
 import { TagScope } from './tags'
 import { DeliveryMark, NotSent, SEND_TIMEOUT_MS } from './unsent'
-import { WaitingBanner } from './waiting-banner'
 import { StatusLine, WorkStatus } from './work-status'
 
 import {
@@ -43,7 +43,6 @@ import {
   botBubbleStyle,
   bubbleClass,
   CardRow,
-  ConnectedToolsNotice,
   DaySeparator,
   LoadEarlierMessages,
   Markdown,
@@ -437,6 +436,8 @@ export function RoomConversation() {
   const streaming = Object.keys(turns).length > 0
   const status = roomStatus(events, turns)
   const failure = roomFailure(events)
+  const notificationsNotice = useNotificationsNotice()
+  const toolsNotice = useToolsNotice(`room:${roomId}`)
 
   const waiting = Object.values(turns).reduce((count, turn) => {
     const transcript = turn.live_session_id ? transcripts[turn.live_session_id] : undefined
@@ -639,7 +640,27 @@ export function RoomConversation() {
                 )
               }
               canSend={!room.discord && Boolean(text.trim())}
-              notice={status === 'stopped' && failure ? plainError(failure) : null}
+              dock={
+                <NoticeDock
+                  notices={[
+                    ...(status === 'stopped' && failure
+                      ? [
+                          {
+                            detail: plainError(failure),
+                            id: 'room-failure',
+                            title: 'This turn stopped',
+                            tone: 'danger' as const
+                          }
+                        ]
+                      : []),
+                    ...(status === 'needs_you'
+                      ? [waitingNotice(waitingBot(events, bots, room.members))]
+                      : []),
+                    ...(toolsNotice ? [toolsNotice] : []),
+                    ...(notificationsNotice ? [notificationsNotice] : [])
+                  ]}
+                />
+              }
               onSend={room.discord ? undefined : send}
               onStop={() => void roomsStop(roomId)}
               status={status}
@@ -698,11 +719,6 @@ export function RoomConversation() {
                   {members.length} bot{members.length === 1 ? '' : 's'}
                 </span>
               </div>
-              {status === 'needs_you' ? (
-                <WaitingBanner name={waitingBot(events, bots, room.members)} />
-              ) : null}
-              <ConnectedToolsNotice sectionId={`room:${roomId}`} />
-              <NotificationsBanner />
             </header>
             <div className="absolute top-2.5 right-3 flex items-center gap-1.5">
               {searching ? null : (
