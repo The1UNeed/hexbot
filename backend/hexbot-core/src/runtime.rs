@@ -122,6 +122,10 @@ struct State {
     last_activity: f64,
     output: String,
     error: Option<String>,
+    /// Canonical provider reported by Pi on the most recent assistant message in this turn.
+    last_provider: Option<String>,
+    /// Model id reported by Pi on the most recent assistant message in this turn.
+    last_model: Option<String>,
     pending: HashMap<String, Value>,
     tool_dialogs: std::collections::HashSet<String>,
     /// Tool dialogs finishing what the user agreed to on their card: an email
@@ -315,6 +319,8 @@ impl State {
         self.busy = false;
         self.owner_run = false;
         self.announced = false;
+        self.last_provider = None;
+        self.last_model = None;
         self.on_computer = None;
         self.computer_calls.clear();
         self.turn_asks.clear();
@@ -1670,6 +1676,8 @@ impl Runtime {
                 last_activity: common::now(),
                 output: String::new(),
                 error: None,
+                last_provider: None,
+                last_model: None,
                 pending: HashMap::new(),
                 tool_dialogs: std::collections::HashSet::new(),
                 finishing: std::collections::HashSet::new(),
@@ -3916,14 +3924,49 @@ impl Runtime {
         }
     }
 
-    fn incident(&self, s: &Live, text: &str) {
-        if let Ok(incident) = crate::settings::record_incident(
-            &self.home,
-            &s.bot,
-            "turn_failed",
-            text,
-            &json!({"section_id":s.stored,"session_id":s.id}),
-        ) {
+    fn configured_provider(s: &Live) -> Option<String> {
+        s.model
+            .lock()
+            .unwrap()
+            .get(0)
+            .and_then(Value::as_str)
+            .filter(|provider| !provider.is_empty())
+            .map(crate::providers::canonical_provider)
+    }
+
+    fn configured_model(s: &Live) -> Option<String> {
+        s.model
+            .lock()
+            .unwrap()
+            .get(1)
+            .and_then(Value::as_str)
+            .filter(|model| !model.is_empty())
+            .map(str::to_owned)
+    }
+
+    fn incident(&self, s: &Live, text: &str, provider: Option<&str>, model: Option<&str>) {
+        let mut context = json!({"section_id":s.stored,"session_id":s.id});
+        if let Some(provider) = provider.filter(|p| !p.is_empty()) {
+            context["provider"] = json!(provider);
+        }
+        if let Some(model) = model.filter(|m| !m.is_empty()) {
+            context["model"] = json!(model);
+        }
+        if let Ok(incident) =
+            crate::settings::record_incident(&self.home, &s.bot, "turn_failed", text, &context)
+        {
+            if incident["category"] == "quota"
+                && let Some(provider) = incident["provider"].as_str().or(provider)
+            {
+                let scope = crate::providers::bot_credential_scope(&self.home, &s.bot, provider);
+                let incident_model = incident["model"].as_str().or(model);
+                crate::providers::note_quota_incident(
+                    &self.home,
+                    provider,
+                    scope.as_deref(),
+                    incident_model,
+                );
+            }
             self.events.emit(
                 &s.owner,
                 None,
@@ -5991,6 +6034,8 @@ impl Runtime {
                     // A fallback continuation starts a new Pi turn_id before agent_settled
                     // without ending the active run; preserve earlier turn asks for reconnects.
                     if !announced {
+                        state.last_provider = None;
+                        state.last_model = None;
                         state.turn_asks.clear();
                         state.live_tool_contexts.clear();
                         state.announced_occurrences.clear();
@@ -6147,9 +6192,28 @@ impl Runtime {
                             Some(seed)
                         };
                         self.persist_message(s, message, None, seed);
+                        let configured = Self::configured_provider(s);
+                        let resolved_provider = crate::providers::canonical_from_pi(
+                            configured.as_deref(),
+                            message["provider"].as_str(),
+                        );
+                        let resolved_model = message["model"]
+                            .as_str()
+                            .filter(|m| !m.is_empty())
+                            .map(str::to_owned)
+                            .or_else(|| {
+                                (resolved_provider.is_some()
+                                    && resolved_provider.as_deref() == configured.as_deref())
+                                .then(|| Self::configured_model(s))
+                                .flatten()
+                            });
                         {
                             let mut state = s.state.lock().unwrap();
                             state.output = body.clone();
+                            if resolved_provider.is_some() {
+                                state.last_provider = resolved_provider;
+                                state.last_model = resolved_model;
+                            }
                             if message["stopReason"] != "error"
                                 && message["stopReason"] != "aborted"
                             {
@@ -7214,7 +7278,7 @@ impl Runtime {
                     .as_ref()
                     .map(|end| end.fields.clone())
                     .unwrap_or_else(|| json!({}));
-                let (text, error, pending) = {
+                let (text, error, pending, last_provider, last_model, superseded) = {
                     let mut state = s.state.lock().unwrap();
                     if !state.display.is_empty() {
                         return Ok(());
@@ -7223,6 +7287,8 @@ impl Runtime {
                     if superseded && state.error.as_deref() == Some("The turn was interrupted") {
                         state.error = None;
                     }
+                    let last_provider = state.last_provider.take();
+                    let last_model = state.last_model.take();
                     if state.end_turn() {
                         self.reload(s);
                     }
@@ -7253,13 +7319,48 @@ impl Runtime {
                             })
                             .filter(|e| !(superseded && e == "The turn was interrupted")),
                         std::mem::take(&mut state.pending),
+                        last_provider,
+                        last_model,
+                        superseded,
                     )
                 };
                 self.expired(s, pending);
                 match error.as_deref() {
                     Some("The turn was interrupted") => {}
-                    Some(error) => self.incident(s, error),
+                    Some(error) => {
+                        let configured = Self::configured_provider(s);
+                        let error_provider = last_provider.or_else(|| configured.clone());
+                        let error_model = last_model.or_else(|| {
+                            (error_provider.as_deref() == configured.as_deref())
+                                .then(|| Self::configured_model(s))
+                                .flatten()
+                        });
+                        self.incident(s, error, error_provider.as_deref(), error_model.as_deref());
+                    }
                     None => {
+                        if !superseded && let Some(provider) = last_provider.as_deref() {
+                            let scope = crate::providers::bot_credential_scope(
+                                &self.home, &s.bot, provider,
+                            );
+                            // Any real successful turn clears flap-guard state for this scope/model.
+                            crate::providers::note_provider_recovered(
+                                &self.home,
+                                provider,
+                                scope.as_deref(),
+                                last_model.as_deref(),
+                            );
+                            if let Ok(resolved) = crate::settings::resolve_provider_quota_incidents(
+                                &self.home,
+                                provider,
+                                Some(common::now()),
+                                scope.as_deref(),
+                                last_model.as_deref(),
+                                Some(&s.bot),
+                            ) && !resolved.is_empty()
+                            {
+                                crate::settings::emit_resolved_incidents(&self.events, &resolved);
+                            }
+                        }
                         let _ = crate::settings::resolve_incidents(
                             &self.home,
                             &json!({"section_id":s.stored,"kind":"turn_failed"}),
@@ -7528,11 +7629,13 @@ fn pump(
                 Err(error) => Some(pi_error(error)),
             };
             if let Some(error) = error {
-                let (busy, was_closed, reread, fields, pending) = {
+                let (busy, was_closed, reread, fields, pending, last_provider, last_model) = {
                     let _gate = s.event_gate.lock().unwrap();
                     let mut state = s.state.lock().unwrap();
                     let was_closed = state.closed;
                     let busy = state.busy && !was_closed;
+                    let last_provider = state.last_provider.take();
+                    let last_model = state.last_model.take();
                     let reread = state.end_turn();
                     state.closed = true;
                     if !was_closed && s.ready.load(Ordering::Acquire) {
@@ -7547,6 +7650,8 @@ fn pump(
                         reread,
                         state.identity.turn_fields(),
                         pending,
+                        last_provider,
+                        last_model,
                     )
                 };
                 runtime.expired(&s, pending);
@@ -7557,7 +7662,14 @@ fn pump(
                             s.stored, stamp.message
                         );
                     }
-                    runtime.incident(&s, &error.message);
+                    let configured = Runtime::configured_provider(&s);
+                    let provider = last_provider.or_else(|| configured.clone());
+                    let model = last_model.or_else(|| {
+                        (provider.as_deref() == configured.as_deref())
+                            .then(|| Runtime::configured_model(&s))
+                            .flatten()
+                    });
+                    runtime.incident(&s, &error.message, provider.as_deref(), model.as_deref());
                     runtime.emit(
                         &s,
                         "error",

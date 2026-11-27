@@ -185,6 +185,9 @@ const COLUMNS: &[(&str, &str, &str)] = &[
     ("bots", "pinned_at", "REAL"),
     ("bot_messages", "waited", "INTEGER NOT NULL DEFAULT 1"),
     ("bot_messages", "failed", "INTEGER NOT NULL DEFAULT 0"),
+    ("bot_incidents", "provider", "TEXT"),
+    ("bot_incidents", "category", "TEXT"),
+    ("bot_incidents", "model", "TEXT"),
 ];
 
 /// Open the explicitly selected database without running schema migrations.

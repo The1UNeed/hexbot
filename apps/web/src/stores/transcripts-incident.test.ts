@@ -34,6 +34,43 @@ describe('incident after an error event', () => {
     expect(errors).toHaveLength(1)
     expect(errors[0]?.error).toBe('Token expired')
   })
+
+  it('strips error state while preserving partial assistant text when an incident resolves', () => {
+    const store = useTranscripts.getState()
+    store.messageStart('live-1')
+    store.messageDelta('live-1', 'Partial answer')
+    store.incidentEvent('live-1', 'Codex error: The usage limit has been reached', {
+      connector: null,
+      incidentId: 'inc-quota'
+    })
+    store.messageComplete('live-1', {
+      error: 'Codex error: The usage limit has been reached',
+      status: 'error',
+      text: 'Partial answer'
+    })
+
+    store.dismissIncidents(['inc-quota'])
+
+    const transcript = useTranscripts.getState().bySession['live-1']!
+    expect(transcript.error).toBeNull()
+    expect(transcript.messages).toHaveLength(1)
+    expect(transcript.messages[0]?.text).toBe('Partial answer')
+    expect(transcript.messages[0]?.error).toBeUndefined()
+    expect(transcript.messages[0]?.status).toBeUndefined()
+  })
+
+  it('clears incidentId-less live error rows when resolvedSections matches without touching request cards', () => {
+    const store = useTranscripts.getState()
+    store.errorEvent('live-1', 'Codex error: The usage limit has been reached')
+    store.requestFailed('live-1', 'Offline')
+
+    store.dismissIncidents([], ['s1'])
+
+    const transcript = useTranscripts.getState().bySession['live-1']!
+    expect(transcript.messages).toHaveLength(1)
+    expect(transcript.messages[0]?.request).toBe(true)
+    expect(transcript.messages[0]?.error).toBe('Offline')
+  })
 })
 
 describe('a card in the middle of a turn', () => {

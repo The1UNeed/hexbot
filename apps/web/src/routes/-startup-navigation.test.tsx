@@ -7,6 +7,7 @@ import {
 } from '@tanstack/react-router'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
+import type * as Api from '../lib/api'
 import type * as Connection from '../lib/connection'
 import { OPEN_SECTION_EVENT } from '../lib/notify'
 import type { Bot, ConnectionTarget } from '../lib/types'
@@ -23,6 +24,11 @@ import { Route as OnboardingRoute } from './onboarding'
 import { Route as HomeRoute } from './index'
 
 const supervisor = vi.hoisted(() => ({ start: vi.fn(), stop: vi.fn() }))
+const checkRecovery = vi.hoisted(() => vi.fn(async () => ({ checked: [], resolved: 0 })))
+vi.mock('../lib/api', async original => ({
+  ...(await original<typeof Api>()),
+  providersCheckRecovery: checkRecovery
+}))
 vi.mock('../lib/connection', async original => ({
   ...(await original<typeof Connection>()),
   getSupervisor: () => supervisor
@@ -231,4 +237,38 @@ it('opens a waiting peer thread in ThreadView from a notification click while in
     window.dispatchEvent(new CustomEvent(OPEN_SECTION_EVENT, { detail: 'th-notify' }))
   })
   await waitFor(() => expect(router.state.location.pathname).toBe('/b/writer/s/th-notify'))
+})
+
+it('checks provider recovery on connect and window focus only when a bot is stopped', async () => {
+  useConnection.setState({ status: 'connected', target: { kind: 'local' } })
+  useBots.setState({
+    byName: {
+      owl: { display_name: 'Owl', name: 'owl', status: 'idle' } as Bot
+    },
+    loaded: true
+  })
+
+  await mount('/b/owl/s/remembered')
+  await screen.findByText('Conversation content')
+  expect(checkRecovery).not.toHaveBeenCalled()
+
+  // A stopped bot triggers an on-connect check once bots are loaded, coalescing rapid focus events.
+  act(() => {
+    useBots.setState({
+      byName: {
+        owl: { display_name: 'Owl', name: 'owl', status: 'stopped' } as Bot
+      },
+      loaded: false
+    })
+  })
+  act(() => {
+    useBots.setState({ loaded: true })
+  })
+  await waitFor(() => expect(checkRecovery).toHaveBeenCalledTimes(1))
+
+  act(() => {
+    document.dispatchEvent(new Event('visibilitychange'))
+    window.dispatchEvent(new Event('focus'))
+  })
+  expect(checkRecovery).toHaveBeenCalledTimes(1)
 })
