@@ -364,7 +364,8 @@ export async function prepareRemote(
   if (remote?.requestId !== requestId) return remote
   const result = remoteReady(current)
   if (!result.ready) {
-    restoreChannel()
+    // Released first, so the restored track's own check isn't held back.
+    setTimeout(restoreChannel)
     return setRemote({
       requestId,
       state: 'failed',
@@ -446,6 +447,8 @@ export function cancelRemote(requestId: string, later: boolean): RemoteRequest |
   if (remote?.requestId !== requestId || remote.state === 'installing') return remote
   clearTimeout(expiry)
   clearTimeout(countdown)
+  const next = setRemote(later ? { ...remote, state: 'postponed', installsAt: null } : null)
+  // After the request stopped holding, so the restored track is checked now.
   restoreChannel()
-  return setRemote(later ? { ...remote, state: 'postponed', installsAt: null } : null)
+  return next
 }

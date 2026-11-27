@@ -152,19 +152,36 @@ export function daemonSteps(rpc: Rpc): DaemonSteps {
       // countdown or install began is restarting; one that just dropped isn't.
       let committing = false
 
-      const settled = await until(async () => {
-        const entry = await app(row)
+      const settled = await until(
+        async () => {
+          let entry: ReportedApp | null
 
-        if (!entry) {
-          return committing ? ('installing' as const) : null
-        }
+          try {
+            entry = await app(row)
+          } catch (error) {
+            // The app that runs the daemon takes the daemon with it.
+            if (committing && row.hostsDaemon) {
+              return 'installing' as const
+            }
 
-        const state = entry.request?.id === requestId ? entry.request.state : null
+            throw error
+          }
 
-        committing ||= state === 'countdown' || state === 'installing'
+          // Gone, or back on the new version, once it began: it restarted.
+          if (!entry || (committing && entry.version !== row.from)) {
+            return committing ? ('installing' as const) : null
+          }
 
-        return state === 'installing' || state === 'postponed' || state === 'failed' ? state : null
-      }, 60_000)
+          const state = entry.request?.id === requestId ? entry.request.state : null
+
+          committing ||= state === 'countdown' || state === 'installing'
+
+          return state === 'installing' || state === 'postponed' || state === 'failed'
+            ? state
+            : null
+        },
+        row.hostsDaemon ? RESTART_MS : 60_000
+      )
 
       return settled ?? 'failed'
     },

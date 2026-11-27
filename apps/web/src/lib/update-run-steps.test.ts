@@ -74,6 +74,7 @@ describe('daemonSteps', () => {
     expect(await steps.commitApp(row, 'r1')).toBe('installing')
     // An app that left once its countdown began is restarting.
     let seen = false
+
     const leaving = daemon(() => {
       if (seen) {
         return null
@@ -85,6 +86,53 @@ describe('daemonSteps', () => {
     })
 
     expect(await leaving.steps.commitApp(row, 'r1')).toBe('installing')
+  })
+
+  it('counts the app that runs the daemon as restarting when it takes the daemon down or comes back new', async () => {
+    let calls = 0
+
+    const rpc = async <T>(method: string): Promise<T> => {
+      if (method !== 'hexbot.apps.list') {
+        return {} as T
+      }
+
+      calls += 1
+
+      if (calls > 1) {
+        throw new Error('not connected')
+      }
+
+      return {
+        apps: [
+          {
+            app_id: 'app.hexbot.client',
+            device: 'laptop',
+            request: { downloaded_version: '0.1.7', error: null, id: 'r1', state: 'countdown' },
+            version: '0.1.6'
+          }
+        ],
+        older: [],
+        run: null
+      } as T
+    }
+
+    expect(await daemonSteps(rpc).commitApp({ ...row, hostsDaemon: true }, 'r1')).toBe('installing')
+    let back = false
+
+    const { steps } = daemon(() => {
+      const first = !back
+
+      back = true
+
+      return first
+        ? {
+            request: { downloaded_version: '0.1.7', error: null, id: 'r1', state: 'countdown' },
+            version: '0.1.6'
+          }
+        : { request: null, version: '0.1.7' }
+    })
+
+    expect(await steps.commitApp(row, 'r1')).toBe('installing')
   })
 
   it('makes ids the daemon takes as names', () => {
