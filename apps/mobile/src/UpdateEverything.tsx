@@ -86,13 +86,14 @@ export function UpdateEverything({
     return () => subscription.remove()
   }, [])
 
-  const start = async () => {
-    if (!plan?.actionable || running.current) return
+  // The plan to run comes in, so a switch's new plan isn't read from an older render.
+  const start = async (target: Plan | null = plan) => {
+    if (!target?.actionable || running.current) return
     running.current = true
     const daemon = daemonSteps(rpc)
     try {
       await runUpdateEverything(
-        plan,
+        target,
         {
           ...daemon,
           prepareApp: (row, requestId) => daemon.prepareRemoteApp(row, requestId),
@@ -184,7 +185,7 @@ export function UpdateEverything({
                     confirm(
                       'Update everything?',
                       `${next.summary}. Bots stop while the daemon restarts.`,
-                      () => void start()
+                      () => void start(next)
                     )
                 })
                 .catch((error: unknown) => {
