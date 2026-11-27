@@ -125,7 +125,8 @@ export const usePluginAccess = create<PluginAccessState>((set, get) => ({
     set(state => ({
       busy: false,
       error: failed.length ? failed.join(' ') : null,
-      last: done.length ? { flips: done, text: failed.length ? 'some of the changes' : text } : null,
+      // Nothing applied: the Undo of the apply before it stays.
+      last: done.length ? { flips: done, text: failed.length ? 'some of the changes' : text } : state.last,
       pinned: state.pinned ?? plugins,
       reviewing: false,
       staged: Object.fromEntries(left.map(flip => [grantKey(flip.bot, flip.key), flip.on]))

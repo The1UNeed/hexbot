@@ -64,7 +64,8 @@ const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 /** Finds `phrase` as whole words and blanks it, so no other name is read out of it. */
 function lift(text: string, phrase: string): null | string {
-  const found = new RegExp(`(^|[^a-z0-9])${escape(phrase)}(?=$|[^a-z0-9])`).exec(text)
+  // Letters and digits of any script: a name is never read out of a longer word.
+  const found = new RegExp(`(^|[^\\p{L}\\p{N}])${escape(phrase)}(?=$|[^\\p{L}\\p{N}])`, 'u').exec(text)
 
   if (!found) {
     return null
@@ -78,7 +79,7 @@ function lift(text: string, phrase: string): null | string {
 type Entry =
   | { bot: Bot; phrase: string; type: 'bot' }
   | { columns: AccessColumn[]; phrase: string; type: 'column' }
-  | { group: AccessGroup; phrase: string; type: 'account' }
+  | { groups: AccessGroup[]; phrase: string; type: 'account' }
   | { label: string; phrase: string; type: 'label' }
   | { phrase: string; type: 'everyone' }
 
@@ -119,6 +120,9 @@ function vocabulary({ bots, groups }: SentenceWorld): Entry[] {
     entries.push({ columns: found, phrase, type: 'column' })
   }
 
+  // "Google" names every Google account there is; its address names one.
+  const accounts = new Map<string, AccessGroup[]>()
+
   for (const group of groups) {
     if (!group.account) {
       continue
@@ -127,8 +131,12 @@ function vocabulary({ bots, groups }: SentenceWorld): Entry[] {
     const provider = ACCOUNT_NAMES[group.account.provider].toLowerCase()
 
     for (const phrase of new Set([group.account.email?.toLowerCase() ?? provider, provider])) {
-      entries.push({ group, phrase, type: 'account' })
+      accounts.set(phrase, [...(accounts.get(phrase) ?? []), group])
     }
+  }
+
+  for (const [phrase, found] of accounts) {
+    entries.push({ groups: found, phrase, type: 'account' })
   }
 
   return entries
@@ -152,7 +160,7 @@ function read(text: string, entries: Entry[]): { found: Entry[]; rest: string[] 
     }
   }
 
-  return { found, rest: left.split(/[^a-z0-9@._'-]+/).filter(Boolean) }
+  return { found, rest: left.split(/[^\p{L}\p{N}@._'-]+/u).filter(Boolean) }
 }
 
 const problem = (text: string): Sentence => ({ kind: 'problem', text })
@@ -196,7 +204,8 @@ export function parseSentence(input: string, world: SentenceWorld): null | Sente
 
   const verb = VERBS[text.split(/\s+/)[0] ?? '']
 
-  if (!verb) {
+  // A bot called Grant or Stop is searched for like any other.
+  if (!verb || world.bots.some(bot => plain(bot.display_name || bot.name).startsWith(text))) {
     return null
   }
 
@@ -225,9 +234,15 @@ export function parseSentence(input: string, world: SentenceWorld): null | Sente
     return problem('After "but", name the bots or the label to leave out.')
   }
 
+  const several = main.found.find(entry => entry.type === 'account' && entry.groups.length > 1)
+
+  if (several?.type === 'account') {
+    return problem(`Which account? Say ${several.groups.map(group => `"from ${group.name}"`).join(' or ')}.`)
+  }
+
   // In the order the table shows them, whichever the sentence named first.
   const accounts = world.groups.filter(group =>
-    main.found.some(entry => entry.type === 'account' && entry.group === group)
+    main.found.some(entry => entry.type === 'account' && entry.groups.includes(group))
   )
 
   if (accounts.length > 1) {

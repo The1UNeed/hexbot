@@ -111,6 +111,11 @@ export interface Offers {
   off: Plugin[]
   /** Connectors set up with a key, or in each bot's own settings, that are not set up yet. */
   services: Plugin[]
+  /**
+   * A server, a package or a skill that still needs something and that no
+   * bot holds: not a column yet, so this is the way to its own window.
+   */
+  setup: Plugin[]
 }
 
 export function offersOf(plugins: Plugin[]): Offers {
@@ -123,6 +128,7 @@ export function offersOf(plugins: Plugin[]): Offers {
   }))
 
   const services: Plugin[] = []
+  const setup: Plugin[] = []
 
   for (const plugin of plugins) {
     const account = plugin.kind === 'connector' ? plugin.connector?.account : null
@@ -137,13 +143,16 @@ export function offersOf(plugins: Plugin[]): Offers {
       }
     } else if (plugin.kind === 'connector' && plugin.category !== 'mcp' && !isConnected(plugin)) {
       services.push(plugin)
+    } else if (!plugin.disabled_globally && !isConnected(plugin) && !shownBots(plugin).bots.length) {
+      setup.push(plugin)
     }
   }
 
   return {
     accounts: accounts.filter(offer => offer.connected.length + offer.open.length + offer.waiting.length),
     off: plugins.filter(plugin => plugin.disabled_globally),
-    services
+    services,
+    setup
   }
 }
 

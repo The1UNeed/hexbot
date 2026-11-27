@@ -22,7 +22,9 @@ const fresh = (daemon: string): AccessState => ({ daemon, last: null, pinned: nu
 let state = fresh('')
 const listeners = new Set<() => void>()
 
-export function setAccess(change: (current: AccessState) => Partial<AccessState>): void {
+/** Changes the table's state. With `daemon`, only while it is still that daemon's. */
+export function setAccess(change: (current: AccessState) => Partial<AccessState>, daemon?: string): void {
+  if (daemon !== undefined && daemon !== state.daemon) return
   state = { ...state, ...change(state) }
   for (const listener of listeners) listener()
 }

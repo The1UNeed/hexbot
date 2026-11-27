@@ -82,7 +82,7 @@ export const usePlugins = create<PluginsState>((set, get) => {
       const read = async () => {
         const current = connectionRead()
         const mine = ++latest
-        set({ error: null, loaded: true, loading: true })
+        set({ error: null, loading: true })
 
         try {
           const list = await pluginsList()
@@ -100,6 +100,10 @@ export const usePlugins = create<PluginsState>((set, get) => {
           }
         }
       }
+
+      // Said when the list is asked for: a read that waited its turn starts
+      // after the page may have closed, and must not say it is open again.
+      set({ loaded: true })
 
       const start = () => {
         const mine: Promise<void> = read().finally(() => {

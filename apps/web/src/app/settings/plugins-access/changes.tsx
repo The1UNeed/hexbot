@@ -4,7 +4,7 @@
  */
 
 import { Check, ChevronRight, TriangleAlert, X } from 'lucide-react'
-import { Children, useMemo, useRef } from 'react'
+import { Children, useEffect, useMemo, useRef } from 'react'
 
 import { Button } from '../../../components/ui/button'
 import { ConnectorIcon } from '../../../components/ui/connector-icon'
@@ -37,6 +37,13 @@ export function ChangeBar({
   const changed = new Set(flips.map(flip => flip.bot)).size
   const summary = `${count(changes.length, 'change')} for ${count(changed, 'bot')}`
   const root = useRef<HTMLElement | null>(null)
+
+  // The last line taken out of the review ends it; the next box ticked does not open it again.
+  useEffect(() => {
+    if (reviewing && !flips.length) {
+      setReviewing(false)
+    }
+  }, [flips.length, reviewing, setReviewing])
 
   // Applying, undoing and discarding remove the button that was pressed, so
   // focus moves to what took its place instead of falling to the page.

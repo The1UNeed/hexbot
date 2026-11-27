@@ -245,6 +245,34 @@ describe('Settings, Plugins as a table', () => {
     expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument()
   })
 
+  it('ends the review when its last line is taken out, and keeps Undo when the next apply is refused', async () => {
+    render(<PluginsSettings />)
+    await screen.findByText('2 Sales bots')
+
+    fireEvent.click(cell('Gmail for 2 Sales bots'))
+    fireEvent.click(screen.getByRole('button', { name: 'Review 1 change' }))
+    fireEvent.click(await screen.findByRole('button', { name: /^Take out of the changes/ }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+    // The next box ticked is staged; the review does not come back by itself.
+    fireEvent.click(cell('Gmail for 2 Sales bots'))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Review 1 change' }))
+    vi.mocked(pluginsList).mockResolvedValue(list(['hexbot', 'ada', 'bea']))
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply 1 change' }))
+    await screen.findByRole('button', { name: 'Undo' })
+
+    vi.mocked(pluginsSetBots).mockRejectedValueOnce(new Error('The daemon did not answer.'))
+    fireEvent.click(cell('Gmail for Owl'))
+    fireEvent.click(screen.getByRole('button', { name: 'Review 1 change' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply 1 change' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Gmail: The daemon did not answer.')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Discard' }))
+    expect(await screen.findByRole('button', { name: 'Undo' })).toBeInTheDocument()
+  })
+
   it('keeps what a plugin refuses staged and says why', async () => {
     vi.mocked(pluginsSetBots).mockRejectedValueOnce(new Error('Set up Gmail before giving it to a bot.'))
     render(<PluginsSettings />)

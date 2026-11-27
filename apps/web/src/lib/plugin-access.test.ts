@@ -104,6 +104,19 @@ describe('offersOf', () => {
     expect(microsoft!.waiting.map(each => each.id)).toEqual(['outlook'])
     // A connector with a key that is not set up yet is offered; a server or a skill is added by hand.
     expect(offers.services.map(each => each.id)).toEqual(['slack'])
+    expect(offers.setup).toEqual([])
+  })
+
+  it('offers the way to a server or a skill that needs setup and is no column yet', () => {
+    const waiting = [
+      plugin('tracker', 'tracker', [], { category: 'mcp', ready: false, state: 'not_set_up' }),
+      plugin('held', 'held', ['scout'], { category: 'mcp', ready: false, state: 'not_set_up' }),
+      plugin('charts', 'charts', [], { category: 'other', kind: 'skill', ready: false, state: 'not_set_up' })
+    ]
+
+    // One a bot holds is a column already.
+    expect(offersOf([...PLUGINS, ...waiting]).setup.map(each => each.id)).toEqual(['tracker', 'charts'])
+    expect(accessGroups(waiting).flatMap(group => group.columns.map(column => column.name))).toEqual(['held'])
   })
 })
 
@@ -247,6 +260,33 @@ describe('parseSentence', () => {
     }
 
     expect(said('give Research bots Gmail but not Quill')).toMatchObject({ kind: 'change' })
+  })
+
+  it('stops at an unknown name in any script, and never reads a name out of a longer word', () => {
+    const named = { bots: [...BOTS, { ...bot('anya'), display_name: 'Аня' }, { ...bot('taro'), display_name: '太朗' }], groups }
+
+    expect(parseSentence('give 太朗 Notion', named)).toMatchObject({ kind: 'change', who: '太朗' })
+    expect(parseSentence('take Gmail from every bot except Scout and 太郎', named)).toMatchObject({
+      text: '"太郎" is not a bot, a label or a plugin here. Nothing is changed.'
+    })
+    expect(parseSentence('give Ваня Notion', named)).toMatchObject({ kind: 'problem' })
+  })
+
+  it('asks which account when a provider has two, and searches for a bot named like a verb', () => {
+    const two = accessGroups([
+      ...PLUGINS,
+      plugin('gdrive', 'Google Drive', [], { connector: account('other@work.co', 'google') })
+    ])
+
+    expect(parseSentence('give Sales bots Drive from Google', { bots: BOTS, groups: two })).toEqual({
+      kind: 'problem',
+      text: 'Which account? Say "from me@work.co" or "from other@work.co".'
+    })
+    expect(parseSentence('give Sales bots Drive from other@work.co', { bots: BOTS, groups: two })).toMatchObject({
+      kind: 'change'
+    })
+    expect(parseSentence('grant', { bots: [...BOTS, bot('grant')], groups })).toBeNull()
+    expect(said('grant')).toMatchObject({ kind: 'problem' })
   })
 
   it('finds a name with an apostrophe as it is typed', () => {

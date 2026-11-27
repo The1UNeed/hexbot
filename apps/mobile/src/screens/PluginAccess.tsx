@@ -196,7 +196,8 @@ export function PluginAccess({
         failed.push(`${step.plugin.name}: ${errorText(cause)}`)
       }
     }
-    await reload()
+    // What was sent is recorded whether or not the list can be read again.
+    await reload().catch(() => {})
     return { done, failed }
   }
   const apply = async () => {
@@ -207,11 +208,16 @@ export function PluginAccess({
     const { done, failed } = await send(flips)
     // What a plugin refused stays staged, so nothing asked for is lost.
     const left = flips.filter(flip => !done.includes(flip))
-    setAccess(current => ({
-      last: done.length ? { flips: done, text: failed.length ? 'some of the changes' : summary } : null,
-      pinned: current.pinned ?? before,
-      staged: Object.fromEntries(left.map(flip => [grantKey(flip.bot, flip.key), flip.on]))
-    }))
+    // Another daemon by now: its table is not this one's to change.
+    setAccess(
+      current => ({
+        // Nothing applied: the Undo of the apply before it stays.
+        last: done.length ? { flips: done, text: failed.length ? 'some of the changes' : summary } : current.last,
+        pinned: current.pinned ?? before,
+        staged: Object.fromEntries(left.map(flip => [grantKey(flip.bot, flip.key), flip.on]))
+      }),
+      daemon
+    )
     setError(failed.length ? failed.join(' ') : null)
     setBusy(false)
     setMode({ kind: 'table' })
@@ -223,7 +229,7 @@ export function PluginAccess({
     const { done, failed } = await send(reversed(last.flips))
     // What a plugin refused to put back keeps its Undo, to try again.
     const left = notUndone(last.flips, done)
-    setAccess(() => ({ last: left.length ? { ...last, flips: left } : null }))
+    setAccess(() => ({ last: left.length ? { ...last, flips: left } : null }), daemon)
     setError(failed.length ? failed.join(' ') : null)
     setBusy(false)
   }
@@ -414,6 +420,22 @@ export function PluginAccess({
             title="Skill"
           />
         </Group>
+        {offers.setup.length ? (
+          <Group title="Needs setup">
+            {offers.setup.map(plugin => (
+              // A server, a package or a skill: what it still needs is on its own page.
+              <Row
+                chevron
+                key={`${plugin.kind}:${plugin.id}`}
+                leading={<PluginIcon icon={plugin.icon} />}
+                onPress={() => onOpenPlugin(plugin)}
+                subtitle={plugin.state_text || plugin.description}
+                testID={`access-add-${plugin.kind}:${plugin.id}`}
+                title={plugin.name}
+              />
+            ))}
+          </Group>
+        ) : null}
         {offers.off.length ? (
           <Group footer="Open one to turn it on again." title="Off for every bot">
             {offers.off.map(plugin => open(plugin, plugin.state_text))}
@@ -833,10 +855,11 @@ export function PluginAccess({
             each.id === group?.id,
             () => setSolo(each.id),
             `access-group-${each.id}`,
-            each.account ? (
-              <View style={[styles.swatch, { backgroundColor: colorOf(each.id) }]} />
-            ) : each.waiting ? (
+            // An account whose sign-in stopped working says so wherever the table stands.
+            each.waiting ? (
               <Ionicons color={theme.warning} name="warning-outline" size={13} />
+            ) : each.account ? (
+              <View style={[styles.swatch, { backgroundColor: colorOf(each.id) }]} />
             ) : null
           )
         )}

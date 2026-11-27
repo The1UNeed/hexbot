@@ -225,6 +225,10 @@ function AddWindow({ data, step }: { data: AccessData; step: AddStep }) {
                     }
                   }}
                   onServer={() => go({ at: 'server' })}
+                  onSetup={plugin => {
+                    close()
+                    setSheet(pluginKey(plugin))
+                  }}
                   onShow={plugin => show([pluginKey(plugin)])}
                   onSkill={() => go({ at: 'skill' })}
                   onTurnOn={plugin => {
@@ -341,6 +345,7 @@ function Pick({
   onAgain,
   onOpen,
   onServer,
+  onSetup,
   onShow,
   onSkill,
   onTurnOn,
@@ -351,6 +356,7 @@ function Pick({
   onAgain: (provider: AccountOffer['provider'], services: string[]) => void
   onOpen: (plugin: Plugin) => void
   onServer: () => void
+  onSetup: (plugin: Plugin) => void
   onShow: (plugin: Plugin) => void
   onSkill: () => void
   onTurnOn: (plugin: Plugin) => void
@@ -369,9 +375,12 @@ function Pick({
 
   const services = offers.services.filter(plugin => !needle || matches(plugin))
   const off = offers.off.filter(plugin => !needle || matches(plugin))
+  const setup = offers.setup.filter(plugin => !needle || matches(plugin))
   const server = !needle || 'mcp server'.includes(needle)
   const skill = !needle || 'skill'.includes(needle)
-  const nothing = needle && !found.length && !services.length && !off.length && !server && !skill
+
+  const nothing =
+    needle && !found.length && !services.length && !off.length && !setup.length && !server && !skill
 
   return (
     <>
@@ -520,6 +529,24 @@ function Pick({
                 <ChevronRight aria-hidden className="shrink-0 text-muted" size={15} />
               </button>
             ) : null}
+          </div>
+        </>
+      ) : null}
+      {setup.length ? (
+        <>
+          <p className={section}>Needs setup</p>
+          <div className={cn(cardClass, 'divide-y divide-foreground/[0.07] overflow-hidden')}>
+            {setup.map(plugin => (
+              <button className={rowClass} key={pluginKey(plugin)} onClick={() => onSetup(plugin)} type="button">
+                <ConnectorIcon className="size-8 rounded-[10px]" icon={plugin.icon} />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[length:var(--text-body)] font-medium">{plugin.name}</span>
+                  <span className="block truncate text-muted">{plugin.state_text || plugin.description}</span>
+                </span>
+                <span className="shrink-0 text-muted">Open</span>
+                <ChevronRight aria-hidden className="shrink-0 text-muted" size={15} />
+              </button>
+            ))}
           </div>
         </>
       ) : null}
