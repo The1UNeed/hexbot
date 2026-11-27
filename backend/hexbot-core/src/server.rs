@@ -109,6 +109,7 @@ impl App {
         crate::computers::attach(&home, events.clone());
         crate::machines::attach_events(&home, events.clone());
         crate::app_updates::attach_events(&home, events.clone());
+        crate::providers::attach(&home, events.clone());
         let runtime = Runtime::new(home.clone(), events.clone(), pi)?;
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let runtime = runtime.clone();
@@ -574,6 +575,9 @@ impl App {
                         connectors::drop_sessions(&self.home, &server).await;
                     }
                     result
+                } else if method == "hexbot.providers.check_recovery" {
+                    common::user(&self.home, owner)?;
+                    providers::check_recovery(&self.home, &self.events, true).await
                 } else if let Some(result) = providers::call(&self.home, owner, method, p).await {
                     result
                 } else if let Some(result) =
@@ -787,6 +791,7 @@ impl App {
         self.rooms.shutdown().await;
         self.dreaming.shutdown().await;
         self.runtime.shutdown().await;
+        crate::providers::detach(&self.home);
         crate::searxng::stop(&self.home).await;
     }
     fn addresses(&self) -> Vec<String> {

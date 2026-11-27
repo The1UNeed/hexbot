@@ -1886,6 +1886,10 @@ fn profile_call(home: &Path, caller: &str, method: &str, p: &Value) -> Result<Va
                 patch["persona"] = value.clone();
             }
             validate_patch(home, &patch)?;
+            let before_provider = section_model(home, name)
+                .ok()
+                .and_then(|m| m["provider"].as_str().map(str::to_owned))
+                .unwrap_or_default();
             configure(home, name, &patch)?;
             let writer = common::config_writer()?;
             let mut cfg = config(home, name)?;
@@ -1913,6 +1917,7 @@ fn profile_call(home: &Path, caller: &str, method: &str, p: &Value) -> Result<Va
                     params![description, now(), name],
                 )?;
             }
+            resolve_switched_provider_incidents(home, name, &before_provider);
             Ok(json!({
                 "name": name,
                 "applied": {
@@ -2398,6 +2403,28 @@ pub(crate) fn section_model(home: &Path, name: &str) -> Result<Value> {
         "reasoning_effort": model["reasoning_effort"]
     }))
 }
+fn resolve_switched_provider_incidents(home: &Path, name: &str, before_provider: &str) {
+    let after_provider = section_model(home, name)
+        .ok()
+        .and_then(|m| m["provider"].as_str().map(str::to_owned))
+        .unwrap_or_default();
+    if after_provider.is_empty() {
+        return;
+    }
+    if crate::providers::canonical_provider(before_provider)
+        == crate::providers::canonical_provider(&after_provider)
+    {
+        return;
+    }
+    if let Ok(resolved) = crate::settings::resolve_bot_other_provider_quota_incidents(
+        home,
+        name,
+        before_provider,
+        &after_provider,
+    ) {
+        crate::providers::notify_resolved(home, &resolved);
+    }
+}
 fn update_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
     let name = required(p, "name")?;
     bot_row(home, caller, name)?;
@@ -2406,6 +2433,10 @@ fn update_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
     if p.get("face").is_some_and(|v| !v.is_null()) && p.get("avatar").is_none_or(Value::is_null) {
         return Err(Error::new(4202, "face needs the avatar it describes"));
     }
+    let before_provider = section_model(home, name)
+        .ok()
+        .and_then(|m| m["provider"].as_str().map(str::to_owned))
+        .unwrap_or_default();
     {
         let _lock = face_lock();
         configure(home, name, p)?;
@@ -2422,6 +2453,7 @@ fn update_bot(home: &Path, caller: &str, p: &Value) -> Result<Value> {
     )?;
     tx.commit()?;
     crate::settings::mirror(home, &profile(home, name)?)?;
+    resolve_switched_provider_incidents(home, name, &before_provider);
     Ok(json!({"bot":bot(home,caller,name)?}))
 }
 /// The catalog row goes first, in a transaction of its own, and the history

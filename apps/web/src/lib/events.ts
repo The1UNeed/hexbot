@@ -200,11 +200,23 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
       }
 
       return
-
-    case 'hexbot.bots.changed':
+    case 'hexbot.bots.changed': {
       effects.refreshBots()
 
+      const resolved = Array.isArray(payload.resolved_incidents)
+        ? payload.resolved_incidents.filter((id): id is string => typeof id === 'string')
+        : []
+
+      const resolvedSections = Array.isArray(payload.resolved_sections)
+        ? payload.resolved_sections.filter((id): id is string => typeof id === 'string')
+        : []
+
+      if (resolved.length > 0 || resolvedSections.length > 0) {
+        transcripts.dismissIncidents(resolved, resolvedSections)
+      }
+
       return
+    }
 
     case 'hexbot.users.changed':
       void useMe.getState().refresh()

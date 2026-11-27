@@ -372,6 +372,7 @@ export function useMobile() {
       }
       b.bots = b.bots.map(bot => overlay(`bot:${bot.name}`, bot))
       r.rooms = r.rooms.map(room => overlay(`room:${room.id}`, room))
+      botsRef.current = b.bots
       setBots(b.bots)
       prefetchRef.current(b.bots)
       setRooms(r.rooms)
@@ -897,6 +898,14 @@ export function useMobile() {
       }
       if (event.type === 'hexbot.heartbeat.changed') setHeartbeats(n => n + 1)
       if (event.type === 'hexbot.discord.changed') setDiscordChanges(n => n + 1)
+      if (
+        event.type === 'hexbot.bots.changed' &&
+        target?.kind === 'section' &&
+        Array.isArray(p.resolved_sections) &&
+        p.resolved_sections.includes(target.section.id)
+      ) {
+        setChat(c => (c.error ? { ...c, error: null } : c))
+      }
       if (event.type.endsWith('.changed')) {
         if (!refreshTimer.current)
           refreshTimer.current = setTimeout(() => {
@@ -1215,6 +1224,9 @@ export function useMobile() {
             } else {
               await syncChatRef.current()
             }
+            if (botsRef.current.some(b => b.status === 'stopped')) {
+              void rpc('hexbot.providers.check_recovery', {}).catch(() => undefined)
+            }
             void registerPush(rpc, daemon.deviceId).catch(() => undefined)
           } catch (error) {
             if (current()) setError(errorText(error))
@@ -1243,8 +1255,12 @@ export function useMobile() {
     })().catch(e => setError(errorText(e)))
     const subscription = AppState.addEventListener('change', state => {
       if (state === 'active') {
+        const alreadyOpen = session.current?.client.connectionState === 'open'
         void session.current?.connect().catch(e => setError(errorText(e)))
         readRef.current()
+        if (alreadyOpen && botsRef.current.some(b => b.status === 'stopped')) {
+          void rpc('hexbot.providers.check_recovery', {}).catch(() => undefined)
+        }
       }
       else if (state === 'background') session.current?.suspend()
     })
