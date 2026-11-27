@@ -1794,13 +1794,18 @@ function MobileApp({ children }: { children?: ReactNode }) {
                   ? 'Open this chat to send'
                   : undefined,
     error: mobile.chat.error || mobile.error || stoppedElsewhere?.text || null,
-    // A turn that stopped names who stopped; a request that failed is its own heading.
-    errorTitle:
-      mobile.chat.error || (!mobile.error && stoppedElsewhere)
-        ? route?.kind === 'section'
-          ? `${route.bot.display_name} stopped`
-          : 'This turn stopped'
-        : undefined,
+    // A turn that stopped names who stopped; anything else, such as a refused
+    // send, is its own heading.
+    errorTitle: (() => {
+      if (route?.kind !== 'section' || (mobile.error && !mobile.chat.error)) return undefined
+      const owner = botByName(route.bot.name) ?? route.bot
+      return stoppedElsewhere ||
+        (mobile.chat.error &&
+          owner.status === 'stopped' &&
+          owner.status_detail?.section_id === route.section.id)
+        ? `${route.bot.display_name} stopped`
+        : undefined
+    })(),
     errorAt:
       !mobile.chat.error && !mobile.error && stoppedElsewhere
         ? toMillis(stoppedElsewhere.since)

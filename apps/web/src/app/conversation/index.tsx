@@ -3324,7 +3324,7 @@ function BotConversation() {
           >
             <Avatar {...botFace(bot)} mood="loading" name={name} size="xl" />
           </div>
-        ) : messages.length === 0 && clarifies.length === 0 && !stoppedHere ? (
+        ) : messages.length === 0 && clarifies.length === 0 ? (
           <div className="hex-rise grid h-full place-content-center justify-items-center gap-6 p-8 text-center">
             <Avatar {...botFace(bot)} name={name} size="xl" />
             <div>
@@ -3541,7 +3541,7 @@ function BotConversation() {
               onImage={showImage}
               sectionId={params.section ?? null}
               sessionId={liveId}
-              // A stopped turn is the Retry pill under it; the field stays calm.
+              // A stopped turn is its card above the field; the field stays calm.
               status={status === 'stopped' ? 'idle' : status}
               // The bot works for the whole turn, tools and cards included.
               streaming={Boolean(transcript?.turnActive) || streaming}

@@ -7,7 +7,7 @@ import {
   TriangleAlert,
   X
 } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { Button } from '../../../components/ui/button'
 import { Menu } from '../../../components/ui/menu'
@@ -88,14 +88,12 @@ function Actions({ notice, className }: { notice: Notice; className?: string }) 
 function NoticeCard({
   notice,
   className,
-  header,
-  glass = 'hex-glass-strong'
+  header
 }: {
   notice: Notice
   className?: string
   /** Extra controls in the title row, before the time. */
   header?: React.ReactNode
-  glass?: string
 }) {
   const tone = TONES[notice.tone]
   const Icon = iconOf(notice)
@@ -104,8 +102,7 @@ function NoticeCard({
   return (
     <div
       className={cn(
-        glass,
-        'relative flex flex-col gap-1 overflow-hidden rounded-[18px] py-2.5 pr-2 pl-3.5',
+        'hex-glass-strong relative flex flex-col gap-1 overflow-hidden rounded-[18px] py-2.5 pr-2 pl-3.5',
         className
       )}
       data-testid={notice.testId ?? 'notice'}
@@ -144,6 +141,13 @@ function NoticeCard({
 function NoticeStack({ notices }: { notices: Notices }) {
   const [open, setOpen] = useState(false)
   const [front, ...rest] = notices
+
+  // Down to one card, the list closes: the next one arrives stacked.
+  useEffect(() => {
+    if (!rest.length) {
+      setOpen(false)
+    }
+  }, [rest.length])
 
   if (open && rest.length) {
     return (

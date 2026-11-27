@@ -251,8 +251,8 @@ with Viewport Segments place both poses on the exact halves.
   up to two others peek out behind it; "N more" lists them all and "Show
   less" stacks them again. Nothing is written into the transcript for a
   notice. What belongs to one message stays with it: its "Not sent" line,
-  a question card, an approval. The phone shows the same stack above its
-  composer.
+  a question card, an approval. The phone shows a stopped turn as the same
+  card above its composer.
 - Thinking and steps: a conversation shows what bots say, never how they
   got there. Thinking, steps, and writes to memory, notes, or soul have no
   line, card, or mark in a chat, a room, or a thread between bots, on the

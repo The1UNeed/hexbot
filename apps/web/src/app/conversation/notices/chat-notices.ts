@@ -116,7 +116,7 @@ export function useToolsNotice(sectionId: string): Notice | null {
 export function waitingNotice(name?: string, onShow?: () => void): Notice {
   return {
     actions: onShow ? [{ label: 'Show', onSelect: onShow, primary: true }] : undefined,
-    detail: 'Answer in the chat to keep going.',
+    detail: 'Answer to keep going.',
     id: 'waiting',
     title: name ? `${name} is waiting on you` : 'Waiting on you',
     tone: 'accent'
