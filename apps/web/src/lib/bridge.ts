@@ -25,8 +25,21 @@ export interface DaemonProgress {
 export interface DaemonStatus {
   pid?: null | number
   port?: null | number
-  running: boolean
+  running?: boolean
+  /** The daemon manager's state (apps/desktop/src/main/backend/manager.ts). */
+  state?: 'error' | 'external' | 'running' | 'starting' | 'stopped' | (string & {})
+  /** The install id of the daemon this app runs, while it runs one. */
+  installId?: null | string
   version?: null | string
+}
+
+/** A request from Update everything on this app (apps/desktop/src/main/updater.ts). */
+export interface RemoteRequest {
+  requestId: string
+  state: 'countdown' | 'failed' | 'installing' | 'not_applied' | 'postponed' | 'preparing' | 'ready'
+  version: null | string
+  error: null | string
+  installsAt: null | number
 }
 
 export interface BridgeHttpResponse {
@@ -72,8 +85,12 @@ export interface HexbotBridge {
     onProgress(callback: (progress: DaemonProgress) => void): () => void
     start(): Promise<DaemonStatus>
     status(): Promise<DaemonStatus>
+    /** Apps from before Update everything leave it out. */
+    onStatus?(callback: (status: DaemonStatus) => void): () => void
     stop(): Promise<void>
   }
+  /** The build's app id; apps from before Update everything leave it out. */
+  appId?: string
   /** Test-only daemon origin supplied by the Electron main process. */
   e2eTarget?: string
   /** 'full' ships the daemon runtime; 'client' can only connect to one elsewhere. */
@@ -126,6 +143,16 @@ export interface HexbotBridge {
     onStatus(callback: (state: UpdateState) => void): () => void
     setChannel(channel: UpdateChannel): Promise<UpdateState>
     state(): Promise<UpdateState>
+    // Update everything; apps from before it leave these out.
+    remote?(): Promise<null | RemoteRequest>
+    prepare?(
+      requestId: string,
+      track: null | UpdateChannel,
+      daemon: null | string
+    ): Promise<null | RemoteRequest>
+    commit?(requestId: string, countdown: boolean): Promise<null | RemoteRequest>
+    cancel?(requestId: string, later: boolean): Promise<null | RemoteRequest>
+    onRemote?(callback: (request: null | RemoteRequest) => void): () => void
   }
   version: string
 }

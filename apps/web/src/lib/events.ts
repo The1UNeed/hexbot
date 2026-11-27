@@ -47,7 +47,9 @@ import type {
 } from '../stores/transcripts'
 import { holdHeartbeatMessage, transcriptNotify, useTranscripts } from '../stores/transcripts'
 import { useUi } from '../stores/ui'
+import { useUpdateRun } from '../stores/update-run'
 
+import { handleAppUpdateRequest } from './app-reporter'
 import { handleComputerRequest } from './computer-endpoint'
 import { forgetUnsentDraft } from './draft-card'
 import type { HexbotRpcClient } from './rpc'
@@ -219,6 +221,18 @@ export function routeEvent(event: GatewayEvent, deps: EventRouterDeps = {}): voi
 
     case 'hexbot.computers.changed':
       void useComputers.getState().refreshLoaded()
+
+      return
+
+    // Update everything: an app reported, or a run started or ended.
+    case 'hexbot.apps.changed':
+      void useUpdateRun.getState().refresh()
+
+      return
+
+    // A run's request for this app, sent on this connection only.
+    case 'hexbot.apps.update_requested':
+      void handleAppUpdateRequest(payload)
 
       return
 

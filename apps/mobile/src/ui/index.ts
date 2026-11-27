@@ -50,6 +50,7 @@ export {
   SwitchRow,
   type SwitchRowProps
 } from './Row'
+export { type Notice, NoticeStack, sortNotices } from './NoticeStack'
 export { Layer, LayerRoot, type LayerProps, PEEK, useCover, useCovered } from './Layer'
 export {
   LargeHeader,

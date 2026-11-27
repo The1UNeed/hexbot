@@ -71,6 +71,7 @@ import type {
   UsageReport,
   UsageSummary
 } from './types'
+import type { AppsList, DaemonCheck } from './update-everything'
 
 /** Raw history row as projected by Hexbot `session.history`. */
 export interface HistoryRow {
@@ -152,6 +153,17 @@ export function updateRequest(
 export function updateStatus(): Promise<DaemonUpdateStatus> {
   return rpcCall<DaemonUpdateStatus>('hexbot.update.status')
 }
+
+// Update everything (docs/api.md, "Updates").
+
+/** The newest build on a track, and whether this daemon would take it. */
+export const updateCheck = (track?: 'nightly' | 'stable') =>
+  rpcCall<DaemonCheck>('hexbot.update.check', track ? { track } : {})
+/** Every app connected to the daemon, apps too old to report, and the run in progress. */
+export const appsList = () => rpcCall<AppsList>('hexbot.apps.list')
+/** This app, as Update everything sees it; sent on its own connection. */
+export const appsReport = (report: Record<string, unknown>) =>
+  rpcCall<{ reported: true }>('hexbot.apps.report', report)
 
 export function settingsGet(): Promise<Settings> {
   return rpcCall<Settings>('hexbot.settings.get')

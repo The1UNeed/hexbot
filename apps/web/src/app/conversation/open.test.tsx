@@ -425,6 +425,8 @@ it("shows a failure with nowhere else to show, such as a dream's, in an empty ch
   )
   render(<ConversationColumn />)
   expect(await screen.findByTestId('stopped-card')).toHaveTextContent('fetch failed')
+  // The card floats above the composer; the empty chat keeps its welcome.
+  expect(await screen.findByRole('heading', { name: 'Owl' })).toBeVisible()
   fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
   expect(screen.queryByTestId('stopped-card')).toBeNull()
   expect(call).toHaveBeenCalledWith('hexbot.bots.clear_status', { name: 'owl' })

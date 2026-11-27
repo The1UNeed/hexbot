@@ -18,7 +18,7 @@ Bots can mention other room members. When a main bot brings in other bots, it wa
 
 ## Waiting on you
 
-A bot can mention `@user` or direct a question to you. Hexbot stops the bot chain and shows a "waiting on you" banner. Your next message starts a new room turn.
+A bot can mention `@user` or direct a question to you. Hexbot stops the bot chain and shows a "waiting on you" card above the message box. Your next message starts a new room turn.
 
 ## Limits and approvals
 

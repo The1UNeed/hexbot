@@ -3,6 +3,7 @@ import { useEffect, useRef } from 'react'
 
 import { ChatChooser } from '../app/chat-chooser'
 import { ConnectionLost, useConnectionLost } from '../app/connection-lost'
+import { RestartCountdown } from '../app/update-everything'
 import { UpdateInstalling, useUpdateInstalling } from '../app/update-installing'
 import { cancelConfirm, ConfirmHost } from '../components/ui/confirm'
 import { sectionsList, userMemoryGet } from '../lib/api'
@@ -13,6 +14,7 @@ import { useBots } from '../stores/bots'
 import { useConnection } from '../stores/connection'
 import { sectionBot, useSections } from '../stores/sections'
 import { applyTheme, useUi } from '../stores/ui'
+import { resumeSavedRun, watchDaemonVersion } from '../stores/update-run'
 import { bindAppUpdates } from '../stores/updates'
 
 export const Route = createRootRoute({
@@ -65,6 +67,13 @@ function RootLayout() {
   useEffect(() => () => getSupervisor().stop(), [])
   useAboutYouGate()
   useEffect(() => bindAppUpdates(), [])
+  // Update everything: finish a run this app relaunched in, and move a
+  // browser tab onto the daemon's new bundle when the daemon comes back.
+  useEffect(() => {
+    void resumeSavedRun()
+
+    return watchDaemonVersion()
+  }, [])
   useEffect(() => {
     // A notification click names the section it is about. Clicked as the app
     // starts, it waits for the sections list to name the bot.
@@ -204,6 +213,7 @@ function RootLayout() {
         {needsConnection ? null : <Outlet />}
         <ChatChooser />
         <ConfirmHost blocked={lost || installing} />
+        <RestartCountdown />
       </div>
       {lost && !installing ? <ConnectionLost /> : null}
       {installing ? <UpdateInstalling /> : null}

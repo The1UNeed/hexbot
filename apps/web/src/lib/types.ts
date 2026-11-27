@@ -728,6 +728,8 @@ export interface DaemonInfo {
   transcript_identity?: boolean
   /** How the daemon can update itself when asked; absent on older daemons. */
   update_capability?: 'desktop' | 'service' | null
+  /** True once apps report to the daemon for Update everything; absent on older daemons. */
+  app_updates?: true
   version: string
 }
 
@@ -756,6 +758,7 @@ export interface DaemonUpdateStatus {
     | 'installing'
     | 'requested'
     | 'restarting'
+    | 'staged'
     | 'up-to-date'
   /** Older daemons leave these out. */
   update_id?: null | string

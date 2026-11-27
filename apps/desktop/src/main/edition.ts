@@ -10,6 +10,13 @@ export type Edition = 'full' | 'client'
 export const edition: Edition = __HEXBOT_EDITION__ === 'client' ? 'client' : 'full'
 export const hasRuntime = edition === 'full'
 
+/** The build's app id, as `appId` in scripts/desktop/release-version.mjs names it. */
+export function appIdFor(channel: string, client: boolean): string {
+  const base = client ? 'app.hexbot.client' : 'app.hexbot.desktop'
+  return channel === 'stable' ? base : `${base}.${channel}`
+}
+export const appId = appIdFor(__HEXBOT_CHANNEL__, edition === 'client')
+
 export function requireRuntime(action: string): void {
   if (!hasRuntime)
     throw new Error(

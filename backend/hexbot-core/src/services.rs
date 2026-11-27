@@ -1501,6 +1501,7 @@ async fn update_status(home: &Path) -> Result<Value> {
         }
     }
     current["capability"] = json!(capability);
+    current["staged"] = json!(data.staged.as_ref().map(|staged| &staged.version));
     current["outcome"] = crate::update_trial::outcome(home).unwrap_or(Value::Null);
     Ok(current)
 }
@@ -2467,6 +2468,119 @@ async fn signed_manifest(url: &str) -> Result<Value> {
         .map_err(|_| Error::new(5243, "native update manifest is invalid JSON"))
 }
 
+/// The track a daemon follows: the one its own build came from.
+fn daemon_track() -> &'static str {
+    if crate::version().contains("-nightly.") {
+        "nightly"
+    } else {
+        "stable"
+    }
+}
+fn update_base(home: &Path) -> Result<String> {
+    let base = common::read_config(home)?
+        .pointer("/updates/base_url")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| std::env::var("HEXBOT_UPDATE_URL").ok())
+        .unwrap_or_else(|| UPDATE_URL.into());
+    service_url(&base)?;
+    Ok(base.trim_end_matches('/').to_owned())
+}
+async fn fetch_limited(url: &str, limit: usize) -> Result<Vec<u8>> {
+    let response = client()?
+        .get(url)
+        .send()
+        .await
+        .map_err(|_| Error::new(5243, "The update server is unavailable"))?;
+    if !response.status().is_success() {
+        return Err(Error::new(
+            5243,
+            format!(
+                "The update server returned HTTP {}",
+                response.status().as_u16()
+            ),
+        ));
+    }
+    crate::http::bytes(
+        response,
+        limit,
+        |_| Error::new(5243, "The update server's reply was interrupted"),
+        Error::new(5243, "The update server's reply is too large"),
+    )
+    .await
+}
+
+/// `hexbot.update.check`: the newest build on a track, from its signed
+/// install manifest, and whether this daemon would take it. A service or
+/// app-run daemon reads that build's signed native manifest and asks the
+/// same `builtAt` question the update itself asks, so it never offers a
+/// build the update would refuse. Cached for a minute.
+async fn update_check(home: &Path, track: Option<&str>) -> Result<Value> {
+    static CACHE: std::sync::Mutex<Option<(String, String, std::time::Instant, Value)>> =
+        std::sync::Mutex::new(None);
+    let track = match track {
+        None => daemon_track(),
+        Some(track @ ("stable" | "nightly")) => track,
+        Some(_) => return Err(Error::new(4200, "invalid parameter: track")),
+    };
+    let base = update_base(home)?;
+    if let Some((t, b, at, value)) = CACHE.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+        && t == track
+        && *b == base
+        && at.elapsed() < Duration::from_secs(60)
+    {
+        return Ok(value.clone());
+    }
+    let bytes = fetch_limited(&format!("{base}/install/{track}.json"), 1024 * 1024).await?;
+    // Only the version is read before verification, to find the signature,
+    // which lives beside the immutable release (hexbot-installer, fetch_manifest).
+    let unverified: Value = serde_json::from_slice(&bytes)
+        .map_err(|_| Error::new(5243, "The install manifest is invalid"))?;
+    let latest = unverified["version"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    if !valid_version(&latest) {
+        return Err(Error::new(5243, "The install manifest is invalid"));
+    }
+    let signature = fetch_limited(
+        &format!("{base}/install/{latest}/{track}.json.sig"),
+        crate::update_signature::SIGNATURE_LIMIT,
+    )
+    .await?;
+    if !crate::update_signature::verify(&bytes, &signature) {
+        return Err(Error::new(5243, crate::update_signature::INVALID));
+    }
+    if unverified["schema"] != 1 || unverified["channel"] != track {
+        return Err(Error::new(5243, "The install manifest has the wrong track"));
+    }
+    let current = crate::version();
+    let newer = latest != current
+        && capability().is_some()
+        && native_newer(home, &base, &latest).await.unwrap_or(false);
+    let value = json!({"track":track,"current":current,"latest":latest,"newer":newer});
+    *CACHE.lock().unwrap_or_else(|e| e.into_inner()) = Some((
+        track.to_owned(),
+        base,
+        std::time::Instant::now(),
+        value.clone(),
+    ));
+    Ok(value)
+}
+async fn native_newer(home: &Path, base: &str, version: &str) -> Result<bool> {
+    let target = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+    let manifest = signed_manifest(&format!(
+        "{base}/daemon/native/{version}/{target}/manifest.json"
+    ))
+    .await?;
+    if manifest["version"] != version || manifest["target"] != target {
+        return Ok(false);
+    }
+    let native = native_directory(home)?;
+    let floor = automatic_native_floor(&native)?;
+    Ok(native_built_at(&manifest)? > floor)
+}
+
 /// Downloads and checks a build into `runtime/native/.staged-*` without
 /// switching to it. The old daemon keeps serving whatever happens here.
 async fn stage_native(home: &Path, version: &str, service: &Service) -> Result<Staged> {
@@ -2933,6 +3047,7 @@ pub async fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<
             | "hexbot.connect.register_poll"
             | "hexbot.update.request"
             | "hexbot.update.status"
+            | "hexbot.update.check"
     ) {
         return None;
     }
@@ -2973,11 +3088,31 @@ pub async fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<
                     connect_status(home).await
                 }
                 "hexbot.update.status" => update_status(home).await,
+                "hexbot.update.check" => {
+                    update_check(home, p.get("track").and_then(Value::as_str)).await
+                }
                 "hexbot.update.request" => {
-                    let version = common::required(p, "version")?;
+                    // Without a version: the newest build on the daemon's track.
+                    let newest;
+                    let version = match p.get("version").and_then(Value::as_str) {
+                        Some(version) => version,
+                        None => {
+                            let check = update_check(home, None).await?;
+                            if check["newer"] != true {
+                                return Err(Error::new(
+                                    4212,
+                                    "The daemon already runs the newest build on its track",
+                                ));
+                            }
+                            newest = check["latest"].as_str().unwrap_or_default().to_owned();
+                            &newest
+                        }
+                    };
                     if !valid_version(version) {
                         return Err(Error::new(4200, "invalid parameter: version"));
                     }
+                    // Update everything stages first and restarts later.
+                    let stage_only = p["stage_only"] == true;
                     // A driver passes its own id, so a reply the restart cuts
                     // off doesn't lose it. It becomes a directory name.
                     let update_id = match p.get("update_id").and_then(Value::as_str) {
@@ -2997,6 +3132,12 @@ pub async fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<
                             format!("The daemon already runs {version}"),
                         ));
                     }
+                    if stage_only && method == "desktop" {
+                        return Err(Error::new(
+                            4210,
+                            "This daemon updates with the app that runs it",
+                        ));
+                    }
                     let service = service(home).await?;
                     let mut data = service.data.lock().await;
                     if matches!(data.update["status"].as_str(),
@@ -3012,6 +3153,22 @@ pub async fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<
                         }
                         println!("HEXBOT_UPDATE_REQUESTED version={version}");
                         let _ = std::io::stdout().flush();
+                    } else if !stage_only
+                        && data
+                            .staged
+                            .as_ref()
+                            .is_some_and(|staged| staged.version == version && staged.dir.is_dir())
+                    {
+                        // Already staged: restart into it, after this reply has
+                        // gone out on the connection the restart closes.
+                        data.update["status"] = json!("restarting");
+                        data.update["version"] = json!(version);
+                        let worker_service = service.clone();
+                        let id = update_id.clone();
+                        data.update_task = Some(tokio::spawn(async move {
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                            worker_service.data.lock().await.restart = Some(id);
+                        }));
                     } else {
                         let home = home.to_owned();
                         let version = version.to_owned();
@@ -3020,16 +3177,14 @@ pub async fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<
                         data.update_task = Some(tokio::spawn(async move {
                             match stage_native(&home, &version, &worker_service).await {
                                 Ok(staged) => {
-                                    update_state(
-                                        &worker_service,
-                                        "restarting",
-                                        Some(&version),
-                                        None,
-                                    )
-                                    .await;
+                                    let status = if stage_only { "staged" } else { "restarting" };
+                                    update_state(&worker_service, status, Some(&version), None)
+                                        .await;
                                     let mut data = worker_service.data.lock().await;
                                     data.staged = Some(staged);
-                                    data.restart = Some(id);
+                                    if !stage_only {
+                                        data.restart = Some(id);
+                                    }
                                 }
                                 Err(error) => {
                                     update_state(
@@ -3365,5 +3520,108 @@ pub mod windows_contract_tests {
         assert!(String::from_utf8_lossy(&output.stdout).contains(CLOUDFLARED_VERSION));
         server.abort();
         let _ = server.await;
+    }
+}
+
+#[cfg(test)]
+mod update_check_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// A fake update server: files by path, signed with the debug test key.
+    async fn server(files: Vec<(String, Vec<u8>)>) -> String {
+        let files = Arc::new(files.into_iter().collect::<HashMap<_, _>>());
+        let router = axum::Router::new().fallback(move |uri: axum::http::Uri| {
+            let files = files.clone();
+            async move {
+                match files.get(uri.path()) {
+                    Some(bytes) => (axum::http::StatusCode::OK, bytes.clone()),
+                    None => (axum::http::StatusCode::NOT_FOUND, Vec::new()),
+                }
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        format!("http://{address}")
+    }
+    fn signed(path: &str, value: &Value) -> Vec<(String, Vec<u8>)> {
+        let bytes = serde_json::to_vec(value).unwrap();
+        let signature = crate::update_signature::test_signature(&bytes).into_bytes();
+        vec![(path.into(), bytes), (format!("{path}.sig"), signature)]
+    }
+
+    #[tokio::test]
+    async fn a_check_reads_the_signed_install_manifest_of_a_track() {
+        let manifest = json!({"schema":1,"channel":"nightly","version":"9.9.9-nightly.20261127.1","minInstaller":"0.1.0","targets":{}});
+        let bytes = serde_json::to_vec(&manifest).unwrap();
+        let mut files = vec![
+            ("/install/nightly.json".to_owned(), bytes.clone()),
+            (
+                "/install/9.9.9-nightly.20261127.1/nightly.json.sig".to_owned(),
+                crate::update_signature::test_signature(&bytes).into_bytes(),
+            ),
+        ];
+        // The stable manifest claims to be nightly: refused.
+        let wrong =
+            serde_json::to_vec(&json!({"schema":1,"channel":"nightly","version":"9.9.9"})).unwrap();
+        files.push(("/install/stable.json".to_owned(), wrong.clone()));
+        files.push((
+            "/install/9.9.9/stable.json.sig".to_owned(),
+            crate::update_signature::test_signature(&wrong).into_bytes(),
+        ));
+        let base = server(files).await;
+        let home = tempfile::tempdir().unwrap();
+        common::write_config(home.path(), &json!({"updates":{"base_url":base}})).unwrap();
+        let check = update_check(home.path(), Some("nightly")).await.unwrap();
+        assert_eq!(check["track"], "nightly");
+        assert_eq!(check["latest"], "9.9.9-nightly.20261127.1");
+        assert_eq!(check["current"], json!(crate::version()));
+        // A daemon nothing can update is never offered a build.
+        if capability().is_none() {
+            assert_eq!(check["newer"], false);
+        }
+        assert_eq!(
+            update_check(home.path(), Some("stable"))
+                .await
+                .unwrap_err()
+                .message,
+            "The install manifest has the wrong track"
+        );
+        assert_eq!(
+            update_check(home.path(), Some("beta"))
+                .await
+                .unwrap_err()
+                .code,
+            4200
+        );
+    }
+
+    #[tokio::test]
+    async fn a_build_is_newer_only_past_the_daemon_s_floor() {
+        let target = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+        let mut files = Vec::new();
+        for (version, built_at) in [("9.9.8", 100), ("9.9.9", 300)] {
+            files.extend(signed(
+                &format!("/daemon/native/{version}/{target}/manifest.json"),
+                &json!({"version":version,"target":target,"builtAt":built_at}),
+            ));
+        }
+        let base = server(files).await;
+        let home = tempfile::tempdir().unwrap();
+        let native = native_directory(home.path()).unwrap();
+        let selected = native.join("9.9.7-a");
+        fs::create_dir_all(&selected).unwrap();
+        fs::write(selected.join("hexbot"), "9.9.7").unwrap();
+        fs::write(
+            selected.join("manifest.json"),
+            json!({"version":"9.9.7","builtAt":200}).to_string(),
+        )
+        .unwrap();
+        activate_native(&native, "9.9.7", &selected.join("hexbot")).unwrap();
+        // Built before what runs now: the update would refuse it.
+        assert!(!native_newer(home.path(), &base, "9.9.8").await.unwrap());
+        assert!(native_newer(home.path(), &base, "9.9.9").await.unwrap());
+        assert!(native_newer(home.path(), &base, "9.9.6").await.is_err());
     }
 }

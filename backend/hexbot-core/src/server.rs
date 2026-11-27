@@ -108,6 +108,7 @@ impl App {
         let events = EventHub::new();
         crate::computers::attach(&home, events.clone());
         crate::machines::attach_events(&home, events.clone());
+        crate::app_updates::attach_events(&home, events.clone());
         let runtime = Runtime::new(home.clone(), events.clone(), pi)?;
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let runtime = runtime.clone();
@@ -160,6 +161,9 @@ impl App {
             roles: Arc::default(),
         });
         app.runtime.set_dispatcher(Arc::downgrade(&app));
+        // Before the ready line, so the app that started this daemon can tell
+        // it is its own (`hosts_daemon` in `hexbot.apps.report`).
+        app.install_id()?;
         Ok(app)
     }
     /// Serve another address with the same bots: running turns and the event
@@ -436,6 +440,8 @@ impl App {
                 // Always true; kept for older clients that still read it.
                 "auth_required": true,
                 "pairing_supported": true,
+                // Update everything: apps report here and take requests.
+                "app_updates": true,
                 "update_capability": std::env::var("HEXBOT_SUPERVISOR")
                     .ok()
                     .filter(|s| matches!(s.as_str(), "desktop" | "service")),
@@ -1886,9 +1892,12 @@ async fn upgrade(
     };
     let owner = device["owner_id"].as_str().unwrap_or("").to_owned();
     let id = device["id"].as_str().unwrap_or("").to_owned();
+    let is_app = headers
+        .get("origin")
+        .is_some_and(|origin| origin == "hexbot-app://app");
     ws.max_message_size(WS_MESSAGE_LIMIT)
         .max_frame_size(WS_MESSAGE_LIMIT)
-        .on_upgrade(move |socket| connection(app, socket, owner, id, token))
+        .on_upgrade(move |socket| connection(app, socket, owner, id, token, is_app))
 }
 async fn connection(
     app: Arc<App>,
@@ -1896,6 +1905,7 @@ async fn connection(
     owner: String,
     device_id: String,
     token: String,
+    is_app: bool,
 ) {
     let _counted = crate::diagnostics::get().socket();
     let mut events = app.events.subscribe();
@@ -1917,6 +1927,10 @@ async fn connection(
     // Work for this app's own computer, once it attaches (machines.rs).
     let (computer_tx, mut computer_rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
     let connection_id = crate::machines::connection_id();
+    if is_app {
+        // An app that never reports is too old to update from here.
+        crate::app_updates::connected(&app.home, &owner, &device_id, connection_id);
+    }
     'connection: loop {
         tokio::select! {
             Some(frame) = computer_rx.recv() => {
@@ -2046,6 +2060,7 @@ async fn connection(
     tasks.shutdown().await;
     app.media.disconnect(connection_id);
     crate::machines::detach(&app.home, &device_id, connection_id);
+    crate::app_updates::detach(&app.home, connection_id);
 }
 async fn handle_request(
     app: Arc<App>,
@@ -2085,6 +2100,16 @@ async fn handle_request(
         crate::machines::attach(
             &app.home, &owner, &device_id, computer.1, computer.0, &params,
         )
+    } else if method == "hexbot.apps.report" {
+        crate::app_updates::report(
+            &app.home, &owner, &device_id, computer.1, computer.0, &params,
+        )
+    } else if method == "hexbot.apps.list" {
+        crate::app_updates::list(&app.home, &owner, computer.1)
+    } else if method == "hexbot.apps.update" {
+        crate::app_updates::update(&app.home, &owner, &params)
+    } else if method == "hexbot.update.run" {
+        crate::app_updates::run(&app.home, &owner, &device_id, &params)
     } else if method == "hexbot.computers.reply" {
         crate::machines::reply(&app.home, &device_id, &params)
     } else {

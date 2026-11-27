@@ -241,10 +241,18 @@ with Viewport Segments place both poses on the exact halves.
   takes the reaction back; the bot's only names who left it. A bot's chat
   only. On mobile a long press on a bot's message opens the same row over
   Copy and Select text.
-- "Waiting on you" is a purple glass pill pinned under the header pill
-  while a bot has asked the human something (in a room it names the bot).
-  Nothing is written into the transcript for it. A red banner names the bot
-  when a room turn failed.
+- Notices: everything a chat wants you to know that is not a message
+  floats in one place, a stack of cards just above the composer: a turn
+  that stopped, a chat that did not finish loading, "Waiting on you" while
+  a bot has asked the human something (in a room it names the bot), tools
+  that did not connect, and the offer to turn on notifications. The most
+  urgent card is in front (failures, then what waits on you, then the
+  rest; within each, one you can act on before one you can only read) and
+  up to two others peek out behind it; "N more" lists them all and "Show
+  less" stacks them again. Nothing is written into the transcript for a
+  notice. What belongs to one message stays with it: its "Not sent" line,
+  a question card, an approval. The phone shows a stopped turn as the same
+  card above its composer.
 - Thinking and steps: a conversation shows what bots say, never how they
   got there. Thinking, steps, and writes to memory, notes, or soul have no
   line, card, or mark in a chat, a room, or a thread between bots, on the
@@ -359,11 +367,14 @@ with Viewport Segments place both poses on the exact halves.
   one that did not send. Rooms show the same bubble for sends. The phone
   keeps its error banner.
 - Errors: a turn the bot could not finish, on your message or not (a
-  provider error, a dream), is a Stopped card: "{bot} stopped", the time,
-  the reason in plain words, and Retry or Fix {connector}. A request of
-  this app's that failed with no message of its own, such as a Recall, has
-  the same card headed "Didn't go through"; an upload that fails stays on
-  its file in the composer. One card per
+  provider error, a dream), is a Stopped card in the notice stack: "{bot}
+  stopped", the time, the reason in plain words, and Retry or Fix
+  {connector}. A request of this app's that failed with no message of its
+  own, such as a Recall, has the same card headed "Didn't go through"; an
+  upload that fails stays on its file in the composer. A failure stays a
+  card while it is the chat's latest word or its Retry still sends your
+  message; once the chat moves past it, it is one muted line in the
+  history ("{bot} stopped · reason · time"), the reason on hover. One card per
   failure, even when the gateway and the daemon both report it. Retry requires
   durable input ownership. Older daemons offer no Retry for failed sends or
   answers; failed sends retain their draft for manual resend.
@@ -371,8 +382,8 @@ with Viewport Segments place both poses on the exact halves.
   including with an older daemon.
   Every Stopped card has a close button (×) in its header. Closing one built
   from the bot's Stopped state for this chat clears that state
-  (`hexbot.bots.clear_status`), so it does not come back. The phone's error
-  banner under a chat closes the same way. A failure with no room or
+  (`hexbot.bots.clear_status`), so it does not come back. The phone's
+  Stopped card closes the same way. A failure with no room or
   conversation of its own, such as a dream's or a scheduled job's, shows in
   the bot's chat, so a red dot always has a message you can read and close.
 - Recall: your latest message in a bot's chat, while the bot works on it or

@@ -210,7 +210,9 @@ const userRows = () =>
   useTranscripts.getState().bySession.chat?.messages.filter(message => message.role === 'user') ??
   []
 
-const cards = () => screen.queryAllByTestId('stopped-card')
+// The live failure is a card (by your message, or above the composer); one
+// the chat moved past is a line in the history.
+const cards = () => screen.queryAllByTestId(/^stopped-(card|line)$/)
 const retryOn = (card: HTMLElement) => within(card).queryByRole('button', { name: 'Retry' })
 const retries = () => screen.queryAllByRole('button', { name: 'Retry' })
 
