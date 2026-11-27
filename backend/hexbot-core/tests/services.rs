@@ -312,7 +312,10 @@ async fn native_archive_child() {
             assert!(!home.path().join("runtime/native-current.json").exists());
         } else {
             assert_eq!(result["status"], "restarting");
-            let path = services::take_restart(home.path()).await.unwrap().unwrap();
+            let (id, staged) = services::take_restart(home.path()).await.unwrap().unwrap();
+            // Nothing was switched while the daemon still served.
+            assert!(!home.path().join("runtime/native-current.json").exists());
+            let path = services::begin_update(home.path(), staged, &id).unwrap();
             assert_eq!(fs::read(path).unwrap(), binary);
             let selected: Value = serde_json::from_slice(
                 &fs::read(home.path().join("runtime/native-current.json")).unwrap(),
@@ -542,8 +545,8 @@ async fn native_update_child() {
     assert_eq!(result["accepted"], true);
     let path = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            if let Some(path) = services::take_restart(home.path()).await.unwrap() {
-                break path;
+            if let Some((id, staged)) = services::take_restart(home.path()).await.unwrap() {
+                break services::begin_update(home.path(), staged, &id).unwrap();
             }
             tokio::task::yield_now().await;
         }

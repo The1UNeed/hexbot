@@ -53,6 +53,8 @@ pub mod system_service;
 pub mod team;
 mod update_path;
 pub mod update_signature;
+#[cfg(unix)]
+pub mod update_trial;
 pub mod usage;
 
 // The services and file formats of the Google and Microsoft connectors.

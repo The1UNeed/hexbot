@@ -2146,8 +2146,11 @@ See [Connect trust](connect.md#trust) for the TLS and compatibility limits.
 A client newer than the daemon asks the daemon to update itself
 (`docs/channels.md`, "Updating a daemon from a client").
 
-- `hexbot.update.request {version}` → `{accepted: true, method,
-  version}`. `method` is the daemon's `update_capability`. With `desktop` the
+- `hexbot.update.request {version, update_id?}` → `{accepted: true, method,
+  version, update_id}`. `update_id` names this update in `outcome`; a client
+  may pass its own (letters, digits, `-` and `_`, at most 64), otherwise the
+  daemon makes one. 4216: not enough free space for the snapshot a service
+  update takes first (`docs/channels.md`, "Trial and rollback"). `method` is the daemon's `update_capability`. With `desktop` the
   app running the daemon downloads and installs its own update and relaunches;
   with `service` the daemon fetches
   `daemon/native/<version>/<target>/manifest.json`, verifies the target archive
@@ -2197,7 +2200,9 @@ A client newer than the daemon asks the daemon to update itself
   before anything downloads, and the SHA-256 in the signed manifest then pins
   the archive.
 - `hexbot.update.status {}` → `{capability, status, requested, version,
-  percent, message, at}`. `status` is `idle`, `requested`, `checking`,
+  update_id, percent, message, at, outcome}`. `outcome` is the last service
+  update's result, `{id, from, to, status, reason, at}` with `status`
+  `committed`, `rolled-back`, `failed` or `superseded`, or null. `status` is `idle`, `requested`, `checking`,
   `downloading`, `installing`, `restarting`, `up-to-date`, or `failed`.
   A successful update ends with the connection dropping and the daemon
   coming back on a verified runtime that satisfies the requesting client.

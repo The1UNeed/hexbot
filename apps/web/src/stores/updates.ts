@@ -13,6 +13,7 @@ import { create } from 'zustand'
 import { updateRequest, updateStatus } from '../lib/api'
 import { getBridge, type UpdateState } from '../lib/bridge'
 import type { DaemonUpdateStatus } from '../lib/types'
+import { outcomeFailure } from '../lib/update-outcome'
 import { daemonBehind } from '../lib/version-skew'
 
 import { useConnection } from './connection'
@@ -72,22 +73,24 @@ export async function updateDaemon(version: string): Promise<void> {
 
   store.setDaemon({ message: null, percent: null, status: 'requested', target: version })
 
+  let updateId: string | undefined
+
   try {
-    await updateRequest(version)
+    updateId = (await updateRequest(version)).update_id
   } catch (error) {
     store.setDaemon({ message: errorText(error), percent: null, status: 'failed', target: version })
 
     return
   }
 
-  followDaemonUpdate(version)
+  followDaemonUpdate(version, updateId)
 }
 
 export function dismissDaemonUpdate(): void {
   useUpdates.getState().setDaemon(null)
 }
 
-function followDaemonUpdate(target: string, now: () => number = Date.now): void {
+function followDaemonUpdate(target: string, updateId?: string, now: () => number = Date.now): void {
   const started = now()
   let polling = false
 
@@ -133,7 +136,12 @@ function followDaemonUpdate(target: string, now: () => number = Date.now): void 
     polling = true
     updateStatus()
       .then(result => {
-        if (result.status === 'failed' || result.status === 'up-to-date') {
+        // A service daemon that rolled back comes back on the old version.
+        const rolledBack = outcomeFailure(result.outcome, updateId)
+
+        if (rolledBack) {
+          finish({ ...current, message: rolledBack, status: 'failed' })
+        } else if (result.status === 'failed' || result.status === 'up-to-date') {
           finish({
             ...current,
             message: result.message ?? 'The daemon could not update.',
