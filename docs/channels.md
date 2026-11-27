@@ -305,6 +305,16 @@ ones (`apps/mobile/src/UpdateEverything.tsx`).
   installs; "Later" keeps this version and the earlier track. The version
   being installed is remembered by app id, so a relaunch that didn't apply it
   reports `not_applied`.
+- **The track** is the daemon's, in `updates.track` (`hexbot.update.set_track`),
+  defaulting to the track of the daemon's own build. It is the fleet's track:
+  Settings, Updates and the phone switch it for the daemon and every app at
+  once. The daemon moves only to a newer `builtAt`, so after a switch the
+  plan either updates everything onto the new track, the apps moving with
+  the daemon through `prepare`, or says the daemon "Moves to Stable with the
+  next Stable release" and leaves every app where it is. An app on another
+  track is never moved in a run where the daemon doesn't move, so the apps
+  never end up older than their daemon. The app's own `allowDowngrade` rule
+  is unchanged, because 0.x Stable (`-alpha`) sorts below Nightly.
 - **Browsers** the daemon served reload onto its new bundle when it comes
   back on another version, except the tab driving a run, which reloads when
   its result is dismissed. The phone updates itself from TestFlight or the App

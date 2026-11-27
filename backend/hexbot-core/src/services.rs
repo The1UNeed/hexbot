@@ -1491,6 +1491,7 @@ async fn update_status(home: &Path) -> Result<Value> {
         }
     }
     current["capability"] = json!(capability);
+    current["track"] = json!(daemon_track(home));
     current["staged"] = json!(data.staged.as_ref().map(|staged| &staged.version));
     current["outcome"] = crate::update_trial::outcome(home).unwrap_or(Value::Null);
     Ok(current)
@@ -2386,12 +2387,23 @@ async fn signed_manifest(url: &str) -> Result<Value> {
         .map_err(|_| Error::new(5243, "native update manifest is invalid JSON"))
 }
 
-/// The track a daemon follows: the one its own build came from.
-fn daemon_track() -> &'static str {
-    if crate::version().contains("-nightly.") {
-        "nightly"
-    } else {
-        "stable"
+/// The track the daemon, and with it every app, follows: the one chosen with
+/// `hexbot.update.set_track`, else the one its own build came from.
+fn daemon_track(home: &Path) -> &'static str {
+    match common::read_config(home)
+        .ok()
+        .and_then(|config| {
+            config
+                .pointer("/updates/track")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .as_deref()
+    {
+        Some("stable") => "stable",
+        Some("nightly") => "nightly",
+        _ if crate::version().contains("-nightly.") => "nightly",
+        _ => "stable",
     }
 }
 fn update_base(home: &Path) -> Result<String> {
@@ -2437,7 +2449,7 @@ async fn update_check(home: &Path, track: Option<&str>) -> Result<Value> {
     static CACHE: std::sync::Mutex<Option<(String, String, std::time::Instant, Value)>> =
         std::sync::Mutex::new(None);
     let track = match track {
-        None => daemon_track(),
+        None => daemon_track(home),
         Some(track @ ("stable" | "nightly")) => track,
         Some(_) => return Err(Error::new(4200, "invalid parameter: track")),
     };
@@ -2942,6 +2954,7 @@ pub async fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<
             | "hexbot.update.request"
             | "hexbot.update.status"
             | "hexbot.update.check"
+            | "hexbot.update.set_track"
     ) {
         return None;
     }
@@ -2982,6 +2995,26 @@ pub async fn call(home: &Path, caller: &str, method: &str, p: &Value) -> Option<
                     connect_status(home).await
                 }
                 "hexbot.update.status" => update_status(home).await,
+                // The fleet's track: the daemon moves when the new track has a
+                // newer build, and every app moves with it (docs/channels.md).
+                "hexbot.update.set_track" => {
+                    let track = match p.get("track").and_then(Value::as_str) {
+                        Some(track @ ("stable" | "nightly")) => track,
+                        _ => return Err(Error::new(4200, "invalid parameter: track")),
+                    };
+                    common::update_config(home, |config| {
+                        if !config["updates"].is_object() {
+                            config["updates"] = json!({});
+                        }
+                        config["updates"]["track"] = json!(track);
+                        Ok(())
+                    })?;
+                    match update_check(home, Some(track)).await {
+                        Ok(check) => Ok(check),
+                        // Saved either way; the check says what it can later.
+                        Err(_) => Ok(json!({"track": track, "current": crate::version(), "latest": null, "newer": false})),
+                    }
+                }
                 "hexbot.update.check" => {
                     update_check(home, p.get("track").and_then(Value::as_str)).await
                 }
@@ -3337,6 +3370,47 @@ mod update_check_tests {
         );
         assert_eq!(
             update_check(home.path(), Some("beta"))
+                .await
+                .unwrap_err()
+                .code,
+            4200
+        );
+    }
+
+    #[tokio::test]
+    async fn the_fleet_track_is_saved_and_followed_by_every_check() {
+        let manifest = json!({"schema":1,"channel":"nightly","version":"9.9.9-nightly.20261127.1","minInstaller":"0.1.0","targets":{}});
+        let bytes = serde_json::to_vec(&manifest).unwrap();
+        let base = server(vec![
+            ("/install/nightly.json".to_owned(), bytes.clone()),
+            (
+                "/install/9.9.9-nightly.20261127.1/nightly.json.sig".to_owned(),
+                crate::update_signature::test_signature(&bytes).into_bytes(),
+            ),
+        ])
+        .await;
+        let home = tempfile::tempdir().unwrap();
+        crate::db::migrate(home.path()).unwrap();
+        common::write_config(home.path(), &json!({"updates":{"base_url":base}})).unwrap();
+        let call = |method: &'static str, p: Value| {
+            let home = home.path().to_owned();
+            async move { call(&home, "local", method, &p).await.unwrap() }
+        };
+        let switched = call("hexbot.update.set_track", json!({"track":"nightly"}))
+            .await
+            .unwrap();
+        assert_eq!(switched["track"], "nightly");
+        assert_eq!(switched["latest"], "9.9.9-nightly.20261127.1");
+        // The base URL stays beside it.
+        let config = common::read_config(home.path()).unwrap();
+        assert_eq!(config["updates"]["track"], "nightly");
+        assert_eq!(config["updates"]["base_url"], json!(base));
+        let check = call("hexbot.update.check", json!({})).await.unwrap();
+        assert_eq!(check["track"], "nightly");
+        let status = call("hexbot.update.status", json!({})).await.unwrap();
+        assert_eq!(status["track"], "nightly");
+        assert_eq!(
+            call("hexbot.update.set_track", json!({"track":"beta"}))
                 .await
                 .unwrap_err()
                 .code,

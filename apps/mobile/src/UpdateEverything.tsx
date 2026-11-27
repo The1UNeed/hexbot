@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { AppState } from 'react-native'
+import { Alert, AppState } from 'react-native'
 
 import type { DaemonInfo } from '../../web/src/lib/types'
 import {
@@ -15,7 +15,7 @@ import {
 } from '../../web/src/lib/update-everything'
 import { daemonSteps, newId } from '../../web/src/lib/update-run-steps'
 import type { Rpc } from './core/types'
-import { confirm, Group, Row } from './ui'
+import { ChoiceRow, confirm, Group, Row } from './ui'
 
 /**
  * Settings, Updates on the phone: Update everything, the daemon and every
@@ -27,8 +27,7 @@ import { confirm, Group, Row } from './ui'
 const SAVED = 'hexbot:update-run'
 
 function detail(row: PlanRow | RunRow): string {
-  if ('status' in row && row.status !== 'waiting' && row.message)
-    return row.message
+  if ('status' in row && row.status !== 'waiting' && row.message) return row.message
   if (row.skip) return row.from ? `${row.from} · ${row.skip}` : row.skip
   const to = row.to === 'newest' || !row.to ? 'the newest build' : row.to
   return `${row.from} → ${to}${row.track ? ` on ${row.track === 'nightly' ? 'Nightly' : 'Stable'}` : ''}`
@@ -45,22 +44,24 @@ export function UpdateEverything({
 }) {
   const [plan, setPlan] = useState<Plan | null>(null)
   const [run, setRun] = useState<RunState | null>(null)
+  const [track, setTrack] = useState<'nightly' | 'stable' | null>(null)
   const running = useRef(false)
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (): Promise<Plan | null> => {
     const [apps, check] = await Promise.all([
       rpc<AppsList>('hexbot.apps.list').catch(() => null),
       rpc<DaemonCheck>('hexbot.update.check').catch(() => null)
     ])
-    if (!apps) return
-    setPlan(
-      collectTargets({
-        apps,
-        check,
-        daemon: { capability: info.update_capability ?? null, version: info.version },
-        thisApp: null
-      })
-    )
+    if (!apps) return null
+    setTrack(check?.track ?? null)
+    const next = collectTargets({
+      apps,
+      check,
+      daemon: { capability: info.update_capability ?? null, version: info.version },
+      thisApp: null
+    })
+    setPlan(next)
+    return next
   }, [info.update_capability, info.version, rpc])
 
   useEffect(() => {
@@ -85,13 +86,14 @@ export function UpdateEverything({
     return () => subscription.remove()
   }, [])
 
-  const start = async () => {
-    if (!plan?.actionable || running.current) return
+  // The plan to run comes in, so a switch's new plan isn't read from an older render.
+  const start = async (target: Plan | null = plan) => {
+    if (!target?.actionable || running.current) return
     running.current = true
     const daemon = daemonSteps(rpc)
     try {
       await runUpdateEverything(
-        plan,
+        target,
         {
           ...daemon,
           prepareApp: (row, requestId) => daemon.prepareRemoteApp(row, requestId),
@@ -159,6 +161,43 @@ export function UpdateEverything({
             }
           />
         )}
+      </Group>
+      <Group
+        title="Track"
+        footer="Stable is tagged releases. Nightly is built from main every day and may break. The daemon and every app switch together, and each moves once the new track has a newer build than it runs."
+      >
+        {(['stable', 'nightly'] as const).map(choice => (
+          <ChoiceRow
+            key={choice}
+            title={choice === 'stable' ? 'Stable' : 'Nightly'}
+            selected={track === choice}
+            disabled={!connected || !track || !!run}
+            testID={`update-track-${choice}`}
+            onPress={() => {
+              if (choice === track) return
+              const previous = track
+              setTrack(choice)
+              rpc('hexbot.update.set_track', { track: choice })
+                .then(() => refresh())
+                .then(next => {
+                  // The daemon has a newer build there: offer to update everything onto it.
+                  if (next?.actionable && !next.rows.find(row => row.kind === 'daemon')?.skip)
+                    confirm(
+                      'Update everything?',
+                      `${next.summary}. Bots stop while the daemon restarts.`,
+                      () => void start(next)
+                    )
+                })
+                .catch((error: unknown) => {
+                  setTrack(previous)
+                  Alert.alert(
+                    'Could not switch tracks',
+                    error instanceof Error ? error.message : String(error)
+                  )
+                })
+            }}
+          />
+        ))}
       </Group>
       <Group title="This phone" footer="Update the app from TestFlight or the App Store.">
         <Row

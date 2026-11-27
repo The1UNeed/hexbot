@@ -258,7 +258,8 @@ export function collectTargets(
     if (input.disabled) {
       row.skip = 'Updates are off on this build'
     } else if (input.appTrack !== track) {
-      if (!daemonMoves) {
+      // It catches up once the daemon moves, or now if the daemon is there already.
+      if (!daemonMoves && trackOf(fleet.daemon.version) !== track) {
         row.skip = MOVES_WITH_DAEMON
       }
       // Squirrel.Mac can't relaunch a bundle the switch renamed (T3 Code's rule).

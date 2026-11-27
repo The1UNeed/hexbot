@@ -46,6 +46,8 @@ export interface UpdateRunStore {
   start: () => Promise<void>
   later: () => void
   dismiss: () => void
+  /** Switch the daemon, and with it every app, to a track; resolves with the new plan. */
+  setTrack: (track: Track) => Promise<Plan | null>
 }
 
 let skipCountdown: (() => void) | null = null
@@ -199,6 +201,15 @@ export const useUpdateRun = create<UpdateRunStore>((set, get) => ({
     void get().refresh()
   },
   later: () => skipCountdown?.(),
+  setTrack: async track => {
+    const check = await rpcCall<DaemonCheck>('hexbot.update.set_track', { track })
+    const apps = await appsList().catch(() => get().apps)
+    const next = plan(check, apps, get().run?.runId)
+
+    set({ apps, check, plan: next })
+
+    return next
+  },
   dismiss: () => {
     set({ run: null })
     // The tab that drove the run reloads now, onto the daemon's new bundle.

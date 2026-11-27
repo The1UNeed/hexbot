@@ -2240,6 +2240,9 @@ these. `hexbot.info` says `app_updates: true` once the daemon has them.
   runs), and no `version`, which means the newest on the daemon's track. A
   request for the staged version restarts into it without downloading again,
   half a second after the reply.
+- `hexbot.update.set_track {track}` → the same as `hexbot.update.check` for
+  that track. Saves the fleet's track in `updates.track`; checks, requests
+  without a version and `hexbot.update.status` (`track`) follow it.
 - `hexbot.update.run {action: "begin" | "end", run_id}` → `{run}`. One run per
   daemon, kept in `runtime/update-run.json` for 30 minutes so it outlives the
   daemon's restart: a `begin` with another `run_id` while one is live is
