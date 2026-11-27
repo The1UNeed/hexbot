@@ -15,7 +15,11 @@ export function appIdFor(channel: string, client: boolean): string {
   const base = client ? 'app.hexbot.client' : 'app.hexbot.desktop'
   return channel === 'stable' ? base : `${base}.${channel}`
 }
-export const appId = appIdFor(__HEXBOT_CHANNEL__, edition === 'client')
+// A bundle built without the channel, such as a test fixture, counts as dev.
+export const appId = appIdFor(
+  typeof __HEXBOT_CHANNEL__ === 'string' ? __HEXBOT_CHANNEL__ : 'dev',
+  edition === 'client'
+)
 
 export function requireRuntime(action: string): void {
   if (!hasRuntime)
